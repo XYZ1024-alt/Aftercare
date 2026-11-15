@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { resetDisposableTestDatabase, runMigrations } from '../src/admin/index.ts';
-import { openRolePool } from '../src/index.ts';
+import { resetDisposableTestDatabase, runMigrations, TEST_ADMIN_ROLE } from '../src/admin/index.ts';
+import { openLoginPool, openRolePool } from '../src/index.ts';
 import { openTestDatabase, type TestDatabase } from './support.ts';
 
 let db: TestDatabase;
@@ -18,7 +18,7 @@ describe('migrations', () => {
     const ledgerBefore = await db.migratorPool.query(
       'SELECT name, checksum, applied_at FROM aftercare_meta.schema_migrations ORDER BY name',
     );
-    expect(ledgerBefore.rows.length).toBeGreaterThanOrEqual(4);
+    expect(ledgerBefore.rows.length).toBeGreaterThanOrEqual(10);
 
     const [first, second] = await Promise.all([
       runMigrations(db.migratorPool),
@@ -52,6 +52,32 @@ describe('test database reset guard', () => {
         `SELECT nspname FROM pg_namespace WHERE nspname LIKE 'aftercare%' ORDER BY nspname`,
       );
       expect(schemasAfter.rows).toEqual(schemasBefore.rows);
+    } finally {
+      await developmentPool.end();
+    }
+  });
+
+  it('confines the destructive test administrator to the test database', async () => {
+    const { rows } = await db.adminPool.query<{ database: string; login: string; acting: string }>(
+      'SELECT current_database() AS database, session_user AS login, current_user AS acting',
+    );
+    expect(rows).toEqual([
+      {
+        database: process.env.AFTERCARE_TEST_DATABASE,
+        login: 'aftercare_test_admin',
+        acting: 'aftercare_migrator',
+      },
+    ]);
+
+    const developmentPool = openLoginPool(
+      process.env,
+      TEST_ADMIN_ROLE,
+      'development',
+      'aftercare/test_admin',
+    );
+    try {
+      // FATAL: permission denied for database — it has no CONNECT privilege there.
+      await expect(developmentPool.query('SELECT 1')).rejects.toMatchObject({ code: '42501' });
     } finally {
       await developmentPool.end();
     }

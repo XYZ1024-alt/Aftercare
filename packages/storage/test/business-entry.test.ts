@@ -134,7 +134,7 @@ describe('set_price', () => {
 
   it('still advances the version when the same price is written again', async () => {
     const productId = await createProduct(700n);
-    const ledgerBefore = await readLedgerSummary(db.investigatorPool);
+    const ledgerBefore = await readLedgerSummary(db.migratorPool);
 
     const first = written(
       await db.entry.setPrice({ principal: PRINCIPAL, productId, priceCents: 700n }),
@@ -148,7 +148,7 @@ describe('set_price', () => {
     expect(second.commitSeq).toBe(first.commitSeq + 1n);
     expect(await db.reader.readProduct(productId)).toMatchObject({ priceCents: 700n, version: 3n });
     // Two separate history entries, not one merged entry.
-    const ledgerAfter = await readLedgerSummary(db.investigatorPool);
+    const ledgerAfter = await readLedgerSummary(db.migratorPool);
     expect(ledgerAfter.operations).toBe(ledgerBefore.operations + 2);
     expect(ledgerAfter.commits).toBe(ledgerBefore.commits + 2);
   });
@@ -361,13 +361,13 @@ describe('rejected writes leave no trace', () => {
   ): Promise<void> {
     const productBefore = await db.reader.readProduct(productId);
     const watermarkBefore = await db.reader.readCommitWatermark();
-    const ledgerBefore = await readLedgerSummary(db.investigatorPool);
+    const ledgerBefore = await readLedgerSummary(db.migratorPool);
 
     expect((await attempt()).code).toBe(expectedCode);
 
     expect(await db.reader.readProduct(productId)).toEqual(productBefore);
     expect(await db.reader.readCommitWatermark()).toBe(watermarkBefore);
-    expect(await readLedgerSummary(db.investigatorPool)).toEqual(ledgerBefore);
+    expect(await readLedgerSummary(db.migratorPool)).toEqual(ledgerBefore);
   }
 
   it('rejects a delta that would make the price negative', async () => {
@@ -547,7 +547,7 @@ describe('rejected writes leave no trace', () => {
 describe('commit watermark', () => {
   it('equals the number of commit rows, which are exactly 1..watermark with no gaps', async () => {
     const watermark = await db.reader.readCommitWatermark();
-    const { rows } = await db.investigatorPool.query<{
+    const { rows } = await db.migratorPool.query<{
       count: string;
       lowest: string;
       highest: string;

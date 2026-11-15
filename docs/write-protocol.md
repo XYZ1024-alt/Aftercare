@@ -1,6 +1,6 @@
 # 受控写入协议（Stage 1）
 
-本文档是固定协议，供后续阶段（一致快照、隔离分支）复用。实现见
+本文档是固定协议，供后续阶段复用。一致快照见 [snapshot-protocol.md](snapshot-protocol.md)。实现见
 [0003_entry.sql](../packages/storage/migrations/0003_entry.sql)，常量见
 [locks.ts](../packages/domain/src/locks.ts)。
 
@@ -12,6 +12,9 @@ PostgreSQL advisory lock，双 int4 形式，命名空间 `1095128146`（`0x4146
 | -------------- | -------------------------------------- | ------------ |
 | 受控业务写     | `pg_advisory_xact_lock(1095128146, 1)` | 事务级、排他 |
 | 迁移执行器互斥 | `pg_advisory_lock(1095128146, 2)`      | 会话级、排他 |
+| 一致快照创建   | `pg_advisory_lock(1095128146, 1)`      | 会话级、排他 |
+
+快照创建与受控业务写使用同一个键，因此互斥；前者是会话级（先于事务取得），后者是事务级。
 
 advisory lock 的作用域是「当前数据库」，开发库与测试库互不影响。
 
@@ -83,12 +86,12 @@ TypeScript 侧的声明在 [templates.ts](../packages/domain/src/templates.ts)�
 | `AC006`           | （不映射，直接抛出）    | 试图修改/删除只追加的历史             |
 | `AC007`           | （不映射，直接抛出）    | 商品版本或水位没有按 +1 前进          |
 
-## 7. 一致快照（后续阶段的复用方式，本轮未实现、未测试）
+## 7. 一致快照
 
-- **只读调查**：在一个 `REPEATABLE READ, READ ONLY` 事务里读 `commit_watermark` 得到 `W`，
-  该事务内看到的业务数据与审计恰好对应 `commit_seq ≤ W`。因为写事务按锁串行提交，任何单一 MVCC 快照都是提交序列的一个前缀，读者不需要拿锁。
-- **需要停写的操作**（例如创建隔离分支）：在 `READ COMMITTED` 事务里先取同一把
-  `pg_advisory_xact_lock(1095128146, 1)`，持锁期间没有受控写能提交。
+已在第二阶段实现，协议见 [snapshot-protocol.md](snapshot-protocol.md)：专用连接先取同键的会话级锁，
+再开启 `REPEATABLE READ` 事务，在同一事务内读水位、复制并登记。
+
+自 `0009_grants.sql` 起，`aftercare_investigator` 不再能读源库，只能读已发布的快照 schema。
 
 ## 8. 保证的边界
 
@@ -96,5 +99,6 @@ TypeScript 侧的声明在 [templates.ts](../packages/domain/src/templates.ts)�
 
 - 表 owner（迁移角色）或超级用户可以禁用触发器、改函数、直接改表。触发器只防误操作，**不防 DBA 篡改**。
 - advisory lock 任何登录角色都能获取。持有登录凭证的一方可以长时间占锁使写入停顿（可用性问题），但无法借此绕过审计。
+  快照管理连接持锁的时间由锁等待、语句、事务与空闲超时共同限定。
 - 调用方若在显式事务里调用入口后迟迟不提交，同样会阻塞其他写入。`BusinessEntry` 每次调用是单语句隐式事务，不存在这个问题。
 - `principal` 是受控应用自己声明的主体，数据库不验证其真实性；`db_role` 才是数据库实际认证的登录角色。

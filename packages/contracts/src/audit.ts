@@ -1,8 +1,7 @@
 import { DEPENDENCY_CLASSES, OBJECT_TYPES, OPERATION_TYPES } from '@aftercare/domain';
 import { z } from 'zod';
 import { counterSchema, priceCentsSchema, quantitySchema } from './primitives.ts';
-
-const jsonObjectSchema = z.record(z.string(), z.json());
+import { jsonObjectSchema } from './wire.ts';
 
 export const auditReadSchema = z.object({
   ordinal: z.number().int(),

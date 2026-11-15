@@ -133,7 +133,7 @@ describe('batch_set_price', () => {
         [first, second, third].map((id) => db.reader.readProduct(id)),
       );
       const watermarkBefore = await db.reader.readCommitWatermark();
-      const ledgerBefore = await readLedgerSummary(db.investigatorPool);
+      const ledgerBefore = await readLedgerSummary(db.migratorPool);
 
       // Targets are applied in order: the first one is really written before the second one fails.
       const failing =
@@ -159,7 +159,7 @@ describe('batch_set_price', () => {
       // Watermark: not advanced.
       expect(await db.reader.readCommitWatermark()).toBe(watermarkBefore);
       // Audit: no commit, batch, operation, read or write row was left behind.
-      expect(await readLedgerSummary(db.investigatorPool)).toEqual(ledgerBefore);
+      expect(await readLedgerSummary(db.migratorPool)).toEqual(ledgerBefore);
       expect(await db.reader.listOperationsAfter(watermarkBefore, 10)).toEqual([]);
 
       // The next successful write takes exactly the next watermark value: the failure left no gap.
@@ -173,7 +173,7 @@ describe('batch_set_price', () => {
 
   it('rejects duplicate targets and malformed arrays at the database, not only in the contracts', async () => {
     const [productId] = (await createProducts([100n])) as [string];
-    const ledgerBefore = await readLedgerSummary(db.investigatorPool);
+    const ledgerBefore = await readLedgerSummary(db.migratorPool);
 
     const duplicate = rejectionOf(
       await db.entry.batchSetPrice({
@@ -196,7 +196,7 @@ describe('batch_set_price', () => {
       ]),
     ).rejects.toMatchObject({ code: 'AC001' });
 
-    expect(await readLedgerSummary(db.investigatorPool)).toEqual(ledgerBefore);
+    expect(await readLedgerSummary(db.migratorPool)).toEqual(ledgerBefore);
     expect(await db.reader.readProduct(productId)).toMatchObject({ priceCents: 100n, version: 1n });
   });
 });

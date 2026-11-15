@@ -1,6 +1,6 @@
 import type { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { DATABASE_ROLES, probeDatabase } from '../src/index.ts';
+import { DATABASE_ROLES, type DatabaseRole, openRolePool, probeDatabase } from '../src/index.ts';
 import {
   openTestDatabase,
   PRINCIPAL,
@@ -62,26 +62,32 @@ async function expectDenied(
 
 describe('role separation', () => {
   it('connects every runtime role as an unprivileged, non-superuser login', async () => {
-    const pools = {
-      migrator: db.migratorPool,
-      business_writer: db.writerPool,
-      investigator: db.investigatorPool,
-    } as const;
-    for (const [role, pool] of Object.entries(pools)) {
-      expect((await probeDatabase(pool)).role).toBe(
-        DATABASE_ROLES[role as keyof typeof pools].user,
-      );
-      const { rows } = await pool.query(
-        `SELECT rolsuper, rolcreaterole, rolcreatedb, rolbypassrls, rolreplication
-           FROM pg_roles WHERE rolname = current_user`,
-      );
-      expect(rows[0], role).toEqual({
-        rolsuper: false,
-        rolcreaterole: false,
-        rolcreatedb: false,
-        rolbypassrls: false,
-        rolreplication: false,
-      });
+    const roles = Object.keys(DATABASE_ROLES) as DatabaseRole[];
+    expect(roles).toEqual([
+      'migrator',
+      'business_writer',
+      'investigator',
+      'snapshot_manager',
+      'runtime',
+    ]);
+    for (const role of roles) {
+      const pool = openRolePool(process.env, role, 'test');
+      try {
+        expect((await probeDatabase(pool)).role).toBe(DATABASE_ROLES[role].user);
+        const { rows } = await pool.query(
+          `SELECT rolsuper, rolcreaterole, rolcreatedb, rolbypassrls, rolreplication
+             FROM pg_roles WHERE rolname = current_user`,
+        );
+        expect(rows[0], role).toEqual({
+          rolsuper: false,
+          rolcreaterole: false,
+          rolcreatedb: false,
+          rolbypassrls: false,
+          rolreplication: false,
+        });
+      } finally {
+        await pool.end();
+      }
     }
   });
 
@@ -192,17 +198,30 @@ describe('business writer (simulator) role', () => {
 });
 
 describe('investigator role', () => {
-  it('can read business rows, audit and watermark', async () => {
-    for (const table of ['products', 'orders', 'commit_watermark', ...AUDIT_TABLES]) {
-      const { rowCount } = await db.investigatorPool.query(
-        `SELECT * FROM aftercare.${table} LIMIT 1`,
-      );
-      expect(rowCount, table).toBe(1);
-    }
+  it('cannot read the live source at all: business rows, audit, watermark, templates, baselines', async () => {
+    const tables = [
+      'products',
+      'orders',
+      'commit_watermark',
+      'operation_templates',
+      'coverage_baselines',
+      ...AUDIT_TABLES,
+    ];
+    await expectDenied(
+      db.investigatorPool,
+      tables.map((table) => `SELECT * FROM aftercare.${table} LIMIT 1`),
+      INSUFFICIENT_PRIVILEGE,
+    );
+    const { rows } = await db.migratorPool.query<{ privileged: boolean }>(
+      `SELECT has_schema_privilege('aftercare_investigator', 'aftercare', 'USAGE')
+              OR has_schema_privilege('aftercare_investigator', 'aftercare_control', 'USAGE')
+              OR has_schema_privilege('aftercare_investigator', 'aftercare_meta', 'USAGE') AS privileged`,
+    );
+    expect(rows).toEqual([{ privileged: false }]);
   });
 
   it('cannot modify business data, audit or watermark, nor reach anything else', async () => {
-    const ledgerBefore = await readLedgerSummary(db.investigatorPool);
+    const ledgerBefore = await readLedgerSummary(db.migratorPool);
     const tableWrites = ['products', 'orders', 'commit_watermark', ...AUDIT_TABLES].flatMap(
       (table) => [`DELETE FROM aftercare.${table}`, `TRUNCATE aftercare.${table}`],
     );
@@ -217,12 +236,13 @@ describe('investigator role', () => {
         'UPDATE aftercare.commit_watermark SET value = value + 1',
         'CREATE TABLE aftercare.rogue (id integer)',
         'CREATE TABLE public.rogue (id integer)',
+        'CREATE TEMPORARY TABLE rogue (id integer)',
         'CREATE SCHEMA rogue',
         'SELECT * FROM aftercare_meta.schema_migrations',
       ],
       INSUFFICIENT_PRIVILEGE,
     );
-    expect(await readLedgerSummary(db.investigatorPool)).toEqual(ledgerBefore);
+    expect(await readLedgerSummary(db.migratorPool)).toEqual(ledgerBefore);
   });
 
   it('cannot call any write entry or helper', async () => {

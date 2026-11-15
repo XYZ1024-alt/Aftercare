@@ -1,7 +1,13 @@
-import { CONTROLLED_WRITE_LOCK } from '@aftercare/domain';
-import type { ClientBase } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { openTestDatabase, PRINCIPAL, type TestDatabase, uniqueId, written } from './support.ts';
+import {
+  holdControlledWriteLock,
+  openTestDatabase,
+  PRINCIPAL,
+  type TestDatabase,
+  uniqueId,
+  untilLockWaiters,
+  written,
+} from './support.ts';
 
 let db: TestDatabase;
 
@@ -12,37 +18,6 @@ beforeAll(() => {
 afterAll(async () => {
   await db.close();
 });
-
-const LOCK_KEYS = [CONTROLLED_WRITE_LOCK.namespace, CONTROLLED_WRITE_LOCK.key];
-
-/**
- * Explicit coordination, no sleeping: resolves once exactly `expected` sessions
- * are observably blocked waiting for the controlled-write advisory lock.
- */
-async function untilWritersAreQueued(observer: ClientBase, expected: number): Promise<void> {
-  const deadline = Date.now() + 15_000;
-  for (;;) {
-    const { rows } = await observer.query<{ waiting: number }>(
-      `SELECT count(*)::int AS waiting
-         FROM pg_locks AS l
-         JOIN pg_database AS d ON d.oid = l.database
-        WHERE l.locktype = 'advisory'
-          AND d.datname = current_database()
-          AND l.classid = $1::oid
-          AND l.objid = $2::oid
-          AND NOT l.granted`,
-      LOCK_KEYS,
-    );
-    if (rows[0]?.waiting === expected) {
-      return;
-    }
-    if (Date.now() > deadline) {
-      throw new Error(
-        `expected ${expected} queued writers, last saw ${rows[0]?.waiting ?? 'none'}`,
-      );
-    }
-  }
-}
 
 describe('concurrent controlled writes', () => {
   it('serialises two concurrent deltas: no lost update, consistent version chain and watermark', async () => {
@@ -58,10 +33,8 @@ describe('concurrent controlled writes', () => {
     const watermarkBefore = await db.reader.readCommitWatermark();
 
     // Hold the controlled-write lock so both writers must queue behind it.
-    const gate = await db.migratorPool.connect();
+    let releaseGate = await holdControlledWriteLock(db.migratorPool);
     try {
-      await gate.query('SELECT pg_advisory_lock($1, $2)', LOCK_KEYS);
-
       const firstDelta = db.entry.addPriceDelta({
         principal: PRINCIPAL,
         productId,
@@ -72,7 +45,7 @@ describe('concurrent controlled writes', () => {
         productId,
         deltaCents: 250n,
       });
-      await untilWritersAreQueued(gate, 2);
+      await untilLockWaiters(db.migratorPool, 2);
 
       // Both are in flight and neither has changed anything: the lock is taken before any modification.
       expect(await db.reader.readProduct(productId)).toMatchObject({
@@ -81,7 +54,8 @@ describe('concurrent controlled writes', () => {
       });
       expect(await db.reader.readCommitWatermark()).toBe(watermarkBefore);
 
-      await gate.query('SELECT pg_advisory_unlock($1, $2)', LOCK_KEYS);
+      await releaseGate();
+      releaseGate = async () => {};
       const results = [written(await firstDelta), written(await secondDelta)].sort((a, b) =>
         a.commitSeq < b.commitSeq ? -1 : 1,
       );
@@ -122,7 +96,7 @@ describe('concurrent controlled writes', () => {
       expect(laterAudit.beforeState).toEqual(earlierAudit.afterState);
       expect(laterAudit.afterState).toEqual({ price_cents: '1350', version: '3' });
     } finally {
-      gate.release();
+      await releaseGate();
     }
   });
 
@@ -139,16 +113,16 @@ describe('concurrent controlled writes', () => {
     );
     const watermarkBefore = await db.reader.readCommitWatermark();
 
-    const gate = await db.migratorPool.connect();
+    let releaseGate = await holdControlledWriteLock(db.migratorPool);
     try {
-      await gate.query('SELECT pg_advisory_lock($1, $2)', LOCK_KEYS);
       const pending = [
         db.entry.setPrice({ principal: PRINCIPAL, productId, priceCents: 800n }),
         db.entry.addPriceDelta({ principal: PRINCIPAL, productId, deltaCents: 30n }),
         db.entry.createOrder({ principal: PRINCIPAL, orderId, productId, quantity: 1 }),
       ] as const;
-      await untilWritersAreQueued(gate, 3);
-      await gate.query('SELECT pg_advisory_unlock($1, $2)', LOCK_KEYS);
+      await untilLockWaiters(db.migratorPool, 3);
+      await releaseGate();
+      releaseGate = async () => {};
       const [absolute, delta, order] = await Promise.all(pending);
       written(absolute);
       written(delta);
@@ -187,7 +161,7 @@ describe('concurrent controlled writes', () => {
       expect(await db.reader.readProduct(productId)).toMatchObject({ priceCents: price, version });
       expect(version).toBe(3n);
     } finally {
-      gate.release();
+      await releaseGate();
     }
   });
 });

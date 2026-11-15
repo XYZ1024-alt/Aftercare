@@ -1,3 +1,5 @@
+import type { JsonObject } from './canonical.ts';
+
 export const OPERATION_TYPES = [
   'create_product',
   'set_price',
@@ -33,12 +35,15 @@ export interface DeclaredWrite {
 
 export interface OperationTemplate {
   readonly templateVersion: number;
+  /** The exact key set of the recorded operation parameters, sorted. */
+  readonly params: readonly string[];
   readonly reads: readonly DeclaredRead[];
   readonly writes: readonly DeclaredWrite[];
 }
 
 const ABSOLUTE_PRICE_TEMPLATE: OperationTemplate = {
   templateVersion: 1,
+  params: ['price_cents', 'product_id'],
   // Absolute pricing does not compute from the old price: both reads only guard the write.
   reads: [
     { objectType: 'product', field: 'version', dependencyClass: 'concurrency_guard' },
@@ -48,13 +53,15 @@ const ABSOLUTE_PRICE_TEMPLATE: OperationTemplate = {
 };
 
 /**
- * The controlled business templates. The database entry functions are the
- * implementation; integration tests assert that every recorded audit row
- * matches the template declared here.
+ * The current controlled business templates. The database entry functions are
+ * the implementation; integration tests assert that every recorded audit row
+ * matches the template declared here, and that aftercare.operation_templates
+ * holds the same definitions.
  */
 export const OPERATION_TEMPLATES: Readonly<Record<OperationType, OperationTemplate>> = {
   create_product: {
     templateVersion: 1,
+    params: ['initial_price_cents', 'name', 'product_id'],
     reads: [],
     writes: [
       { objectType: 'product', field: 'name' },
@@ -65,6 +72,7 @@ export const OPERATION_TEMPLATES: Readonly<Record<OperationType, OperationTempla
   batch_set_price: ABSOLUTE_PRICE_TEMPLATE,
   add_price_delta: {
     templateVersion: 1,
+    params: ['delta_cents', 'product_id'],
     reads: [
       { objectType: 'product', field: 'version', dependencyClass: 'concurrency_guard' },
       // The new price is old price + delta: a genuine dependency on the old price version.
@@ -74,6 +82,7 @@ export const OPERATION_TEMPLATES: Readonly<Record<OperationType, OperationTempla
   },
   create_order: {
     templateVersion: 1,
+    params: ['order_id', 'product_id', 'quantity'],
     // The struck unit price is copied from the product price version that was read.
     reads: [{ objectType: 'product', field: 'price_cents', dependencyClass: 'business_value' }],
     writes: [
@@ -84,3 +93,47 @@ export const OPERATION_TEMPLATES: Readonly<Record<OperationType, OperationTempla
     ],
   },
 };
+
+/**
+ * Every template version this adapter can interpret, including superseded
+ * ones. An audited operation citing a version that is not listed here cannot
+ * be interpreted, whatever the source database says about it.
+ */
+export const OPERATION_TEMPLATE_VERSIONS: Readonly<
+  Record<OperationType, readonly OperationTemplate[]>
+> = {
+  create_product: [OPERATION_TEMPLATES.create_product],
+  set_price: [OPERATION_TEMPLATES.set_price],
+  add_price_delta: [OPERATION_TEMPLATES.add_price_delta],
+  batch_set_price: [OPERATION_TEMPLATES.batch_set_price],
+  create_order: [OPERATION_TEMPLATES.create_order],
+};
+
+export function isOperationType(value: string): value is OperationType {
+  return (OPERATION_TYPES as readonly string[]).includes(value);
+}
+
+export function findOperationTemplate(
+  operationType: string,
+  templateVersion: number,
+): OperationTemplate | undefined {
+  if (!isOperationType(operationType)) {
+    return undefined;
+  }
+  return OPERATION_TEMPLATE_VERSIONS[operationType].find(
+    (template) => template.templateVersion === templateVersion,
+  );
+}
+
+/** The template as stored in aftercare.operation_templates.definition. */
+export function templateDefinition(template: OperationTemplate): JsonObject {
+  return {
+    params: [...template.params],
+    reads: template.reads.map((read) => ({
+      object_type: read.objectType,
+      field: read.field,
+      dependency_class: read.dependencyClass,
+    })),
+    writes: template.writes.map((write) => ({ object_type: write.objectType, field: write.field })),
+  };
+}

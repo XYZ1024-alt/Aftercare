@@ -4,16 +4,33 @@ import {
   DATABASE_TARGETS,
   type DatabaseEndpoint,
   type DatabaseTarget,
+  type LoginRole,
   readDatabaseEndpoint,
   readSecret,
 } from '../config.ts';
-import { DEVELOPMENT_MARKER, DISPOSABLE_TEST_MARKER } from './test-database.ts';
+import { DEVELOPMENT_MARKER, DISPOSABLE_TEST_MARKER, TEST_ADMIN_ROLE } from './test-database.ts';
 
 const SUPERUSER = 'postgres';
 const SUPERUSER_PASSWORD_VARIABLE = 'POSTGRES_SUPERUSER_PASSWORD';
 
 /** Every Aftercare login role is a plain, unprivileged login. */
 const ROLE_ATTRIBUTES = 'LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS';
+
+const RUNTIME_LOGINS: readonly LoginRole[] = Object.values(DATABASE_ROLES);
+
+/**
+ * Server-side ceilings for every snapshot manager session, in force even if a
+ * client forgets to set its own (tighter) limits. The lock wait, each
+ * statement, the whole transaction and both idle states are bounded, so a
+ * stalled manager can never hold the controlled-write lock indefinitely.
+ */
+const SNAPSHOT_MANAGER_SESSION_DEFAULTS: Readonly<Record<string, string>> = {
+  lock_timeout: '60s',
+  statement_timeout: '120s',
+  transaction_timeout: '300s',
+  idle_in_transaction_session_timeout: '30s',
+  idle_session_timeout: '60s',
+};
 
 const DATABASE_MARKERS: Readonly<Record<DatabaseTarget, string>> = {
   development: DEVELOPMENT_MARKER,
@@ -43,7 +60,7 @@ async function asSuperuser<T>(
 }
 
 async function ensureRoles(client: Client, env: NodeJS.ProcessEnv): Promise<void> {
-  for (const { user, passwordVariable } of Object.values(DATABASE_ROLES)) {
+  for (const { user, passwordVariable } of [...RUNTIME_LOGINS, TEST_ADMIN_ROLE]) {
     const password = readSecret(env, passwordVariable);
     const { rowCount } = await client.query('SELECT 1 FROM pg_roles WHERE rolname = $1', [user]);
     const verb = rowCount === 0 ? 'CREATE' : 'ALTER';
@@ -51,9 +68,25 @@ async function ensureRoles(client: Client, env: NodeJS.ProcessEnv): Promise<void
       `${verb} ROLE ${escapeIdentifier(user)} WITH ${ROLE_ATTRIBUTES} PASSWORD ${escapeLiteral(password)}`,
     );
   }
+
+  const manager = escapeIdentifier(DATABASE_ROLES.snapshot_manager.user);
+  for (const [setting, value] of Object.entries(SNAPSHOT_MANAGER_SESSION_DEFAULTS)) {
+    await client.query(
+      `ALTER ROLE ${manager} SET ${escapeIdentifier(setting)} = ${escapeLiteral(value)}`,
+    );
+  }
+
+  // The test administrator may SET ROLE to the schema owner, but does not
+  // inherit the owner's privileges — in particular not its CONNECT privilege
+  // on the development database. It can only ever connect to the disposable
+  // test database (see ensureDatabase).
+  await client.query(
+    `GRANT ${escapeIdentifier(DATABASE_ROLES.migrator.user)} TO ${escapeIdentifier(TEST_ADMIN_ROLE.user)}
+       WITH INHERIT FALSE, SET TRUE`,
+  );
 }
 
-async function ensureDatabase(client: Client, database: string, marker: string): Promise<void> {
+async function ensureDatabase(client: Client, target: DatabaseTarget, database: string) {
   const name = escapeIdentifier(database);
   const { rowCount } = await client.query('SELECT 1 FROM pg_database WHERE datname = $1', [
     database,
@@ -61,23 +94,27 @@ async function ensureDatabase(client: Client, database: string, marker: string):
   if (rowCount === 0) {
     await client.query(`CREATE DATABASE ${name}`);
   }
-  const roles = Object.values(DATABASE_ROLES)
-    .map(({ user }) => escapeIdentifier(user))
-    .join(', ');
+  const roles = RUNTIME_LOGINS.map(({ user }) => escapeIdentifier(user)).join(', ');
+  const testAdmin = escapeIdentifier(TEST_ADMIN_ROLE.user);
   await client.query(`REVOKE ALL ON DATABASE ${name} FROM PUBLIC`);
   await client.query(`GRANT CONNECT ON DATABASE ${name} TO ${roles}`);
+  await client.query(
+    target === 'test'
+      ? `GRANT CONNECT ON DATABASE ${name} TO ${testAdmin}`
+      : `REVOKE ALL ON DATABASE ${name} FROM ${testAdmin}`,
+  );
   // The migrator may create schemas; the database itself stays owned by the superuser.
   await client.query(
     `GRANT CREATE ON DATABASE ${name} TO ${escapeIdentifier(DATABASE_ROLES.migrator.user)}`,
   );
-  await client.query(`COMMENT ON DATABASE ${name} IS ${escapeLiteral(marker)}`);
+  await client.query(`COMMENT ON DATABASE ${name} IS ${escapeLiteral(DATABASE_MARKERS[target])}`);
 }
 
 /**
  * One-off local administrator step, run as the PostgreSQL superuser: creates
- * the three unprivileged login roles and the development and test databases,
- * and marks which one is disposable. Safe to re-run. Nothing at runtime ever
- * uses the superuser credential.
+ * the unprivileged login roles and the development and test databases, and
+ * marks which one is disposable. Safe to re-run. Nothing at runtime ever uses
+ * the superuser credential.
  */
 export async function bootstrapLocalCluster(env: NodeJS.ProcessEnv): Promise<void> {
   const endpoint = readDatabaseEndpoint(env);
@@ -86,7 +123,7 @@ export async function bootstrapLocalCluster(env: NodeJS.ProcessEnv): Promise<voi
   await asSuperuser(endpoint, password, 'postgres', async (client) => {
     await ensureRoles(client, env);
     for (const target of DATABASE_TARGETS) {
-      await ensureDatabase(client, endpoint.databases[target], DATABASE_MARKERS[target]);
+      await ensureDatabase(client, target, endpoint.databases[target]);
     }
   });
 

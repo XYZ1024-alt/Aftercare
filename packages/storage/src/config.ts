@@ -1,9 +1,20 @@
 import { z } from 'zod';
 
+export interface LoginRole {
+  readonly user: string;
+  readonly passwordVariable: string;
+  /** A role this login switches to at connection start (it must be allowed to SET ROLE to it). */
+  readonly actsAs?: string;
+}
+
 /**
- * The three database login roles. Runtime code never connects as a superuser.
- * `business_writer` is the business simulator's credential — it is not an
- * Agent credential and must never be handed to one.
+ * The database login roles. Runtime code never connects as a superuser.
+ * - `business_writer` is the business simulator's credential — it is not an
+ *   Agent credential and must never be handed to one.
+ * - `investigator` can read published snapshot schemas and nothing else.
+ * - `snapshot_manager` can only call the snapshot create/drop functions.
+ * - `runtime` is the Runtime-side control store: cases, coverage manifests,
+ *   certificates and append-only evidence, through restricted functions.
  */
 export const DATABASE_ROLES = {
   migrator: { user: 'aftercare_migrator', passwordVariable: 'AFTERCARE_MIGRATOR_PASSWORD' },
@@ -15,7 +26,15 @@ export const DATABASE_ROLES = {
     user: 'aftercare_investigator',
     passwordVariable: 'AFTERCARE_INVESTIGATOR_PASSWORD',
   },
-} as const;
+  snapshot_manager: {
+    user: 'aftercare_snapshot_manager',
+    passwordVariable: 'AFTERCARE_SNAPSHOT_MANAGER_PASSWORD',
+  },
+  runtime: {
+    user: 'aftercare_runtime',
+    passwordVariable: 'AFTERCARE_RUNTIME_PASSWORD',
+  },
+} as const satisfies Record<string, LoginRole>;
 
 export type DatabaseRole = keyof typeof DATABASE_ROLES;
 

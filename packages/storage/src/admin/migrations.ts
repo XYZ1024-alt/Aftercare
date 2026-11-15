@@ -46,6 +46,22 @@ async function loadMigrationFiles(): Promise<MigrationFile[]> {
   );
 }
 
+/**
+ * The schema version a database reports once exactly the migrations shipped
+ * with this code have been applied — the version a coverage declaration made
+ * against this code refers to. Mirrors the computation in
+ * aftercare_control.create_snapshot().
+ */
+export async function reviewedSchemaVersion(): Promise<string> {
+  const files = await loadMigrationFiles();
+  const latest = files.at(-1);
+  if (latest === undefined) {
+    throw new Error(`no migrations found in ${MIGRATIONS_DIRECTORY}`);
+  }
+  const ledger = files.map((file) => `${file.name}:${file.checksum}`).join('\n');
+  return `${latest.name}@${createHash('sha256').update(ledger).digest('hex').slice(0, 16)}`;
+}
+
 async function applyPending(
   client: ClientBase,
   files: readonly MigrationFile[],

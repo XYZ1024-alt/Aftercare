@@ -225,6 +225,31 @@ importers:
 
   packages/domain: {}
 
+  packages/evidence:
+    dependencies:
+      '@aftercare/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@aftercare/domain':
+        specifier: workspace:*
+        version: link:../domain
+      '@aftercare/storage':
+        specifier: workspace:*
+        version: link:../storage
+      pg:
+        specifier: ^8.23.1
+        version: 8.23.1
+      zod:
+        specifier: ^4.6.7
+        version: 4.6.7
+    devDependencies:
+      '@types/pg':
+        specifier: ^8.23.1
+        version: 8.23.1
+      tsx:
+        specifier: ^4.23.15
+        version: 4.23.15
+
   packages/storage:
     dependencies:
       '@aftercare/contracts':

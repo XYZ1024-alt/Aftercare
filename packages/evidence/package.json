@@ -1,0 +1,24 @@
+{
+  "name": "@aftercare/evidence",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "demo": "tsx --env-file-if-exists=../../.env scripts/demo.ts"
+  },
+  "dependencies": {
+    "@aftercare/contracts": "workspace:*",
+    "@aftercare/domain": "workspace:*",
+    "@aftercare/storage": "workspace:*",
+    "pg": "^8.23.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.23.1",
+    "tsx": "^4.23.15"
+  }
+}

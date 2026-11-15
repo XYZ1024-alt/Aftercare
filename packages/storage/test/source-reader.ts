@@ -13,6 +13,11 @@ import { formatInt64 } from '@aftercare/domain';
 import type { Pool, QueryResultRow } from 'pg';
 import type { z } from 'zod';
 
+// TEST ONLY. Reads the LIVE source so integration tests can assert on what the
+// controlled entry actually wrote. No runtime role can do this: since
+// 0009_grants.sql the investigator reads published snapshots only, so the pool
+// here is the schema owner's.
+//
 // bigint columns are selected as text so that every int64 crosses the driver
 // boundary as a decimal string and is parsed in exactly one place: the contracts.
 const READ_STATEMENTS = {
@@ -101,10 +106,7 @@ export interface AuditReader {
   ) => Promise<AuditOperation[]>;
 }
 
-/**
- * Fixed, read-only queries over business rows, audit and watermark. The pool
- * is expected to be connected as `aftercare_investigator`.
- */
+/** Fixed, read-only queries over the live business rows, audit and watermark. */
 export function createAuditReader(pool: Pool): AuditReader {
   return {
     readProduct: async (productId) =>
