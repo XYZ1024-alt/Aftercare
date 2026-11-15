@@ -1,0 +1,54 @@
+import { z } from 'zod';
+import { counterSchema, priceCentsSchema, quantitySchema } from './primitives.ts';
+
+/** One applied price write: the operation instance and the resulting product state. */
+export const priceWriteSchema = z.object({
+  operationId: z.uuid(),
+  productId: z.string(),
+  priceCents: priceCentsSchema,
+  version: counterSchema,
+});
+
+export const productWriteResultSchema = priceWriteSchema.extend({
+  commitSeq: counterSchema,
+});
+
+export const batchSetPriceResultSchema = z.object({
+  batchId: z.uuid(),
+  commitSeq: counterSchema,
+  targets: z.array(priceWriteSchema),
+});
+
+export const createOrderResultSchema = z.object({
+  operationId: z.uuid(),
+  commitSeq: counterSchema,
+  orderId: z.string(),
+  productId: z.string(),
+  quantity: quantitySchema,
+  unitPriceCents: priceCentsSchema,
+  priceVersion: counterSchema,
+});
+
+export type ProductWriteResult = z.output<typeof productWriteResultSchema>;
+export type BatchSetPriceResult = z.output<typeof batchSetPriceResultSchema>;
+export type CreateOrderResult = z.output<typeof createOrderResultSchema>;
+
+/** Business-rule rejections of a controlled write. Nothing was written when one is returned. */
+export const WRITE_REJECTION_CODES = [
+  'invalid_argument',
+  'amount_out_of_range',
+  'negative_price',
+  'product_not_found',
+  'already_exists',
+  'unsupported_isolation',
+] as const;
+export type WriteRejectionCode = (typeof WRITE_REJECTION_CODES)[number];
+
+export interface WriteRejection {
+  readonly code: WriteRejectionCode;
+  readonly message: string;
+}
+
+export type WriteOutcome<T> =
+  | { readonly ok: true; readonly value: T }
+  | { readonly ok: false; readonly rejection: WriteRejection };

@@ -1,0 +1,12 @@
+node_modules/
+.next/
+next-env.d.ts
+coverage/
+*.tsbuildinfo
+*.log
+.DS_Store
+
+# Secrets: only the example file is tracked.
+.env
+.env.*
+!.env.example

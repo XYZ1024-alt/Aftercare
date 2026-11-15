@@ -1,0 +1,31 @@
+{
+  "name": "aftercare",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@12.11.2",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "db:up": "docker compose up -d --wait",
+    "db:down": "docker compose down",
+    "db:bootstrap": "pnpm --filter @aftercare/storage run db:bootstrap",
+    "db:migrate": "pnpm --filter @aftercare/storage run db:migrate development",
+    "db:migrate:test": "pnpm --filter @aftercare/storage run db:migrate test",
+    "db:reset:test": "pnpm --filter @aftercare/storage run db:reset:test",
+    "db:seed": "pnpm --filter @aftercare/storage run db:seed",
+    "dev:web": "pnpm --filter @aftercare/web run dev",
+    "dev:worker": "pnpm --filter @aftercare/worker run start",
+    "typecheck": "tsc -p tsconfig.json && pnpm -r run typecheck",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.6.7",
+    "@types/node": "^26.6.6",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "^5.1.0"
+  }
+}
