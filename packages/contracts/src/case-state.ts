@@ -323,40 +323,6 @@ export const eventCursorSchema = z.strictObject({
   limit: z.number().int().min(1).max(200).default(50),
 });
 
-/**
- * Whether a plan may still be relied on, and what executing it would need on
- * top. It describes one instant: it is for display and preparation and is
- * never a licence to execute. An execution has to repeat the check inside its
- * own transaction, under the case lock.
- */
-export const planApplicabilitySchema = z.strictObject({
-  caseId: z.uuid(),
-  revision: int64TextSchema,
-  dependencyRevision: int64TextSchema,
-  run: z.strictObject({ runId: z.uuid(), runSeq: z.number().int(), phase: z.enum(RUN_PHASES) }),
-  plan: z.strictObject({
-    planId: z.uuid(),
-    planDigest: sha256HexSchema,
-    snapshotId: z.uuid(),
-    lifecycle: z.enum(PLAN_LIFECYCLES),
-    /** null: stored before dependencies were tracked; such a plan is never applicable. */
-    validity: z.enum(VALIDITIES).nullable(),
-    staleReason: z.enum(STATUS_REASONS).nullable(),
-    staleSinceRevision: int64TextSchema.nullable(),
-    boundDependencyRevision: int64TextSchema.nullable(),
-    /** The registry references of the plan's inputs. */
-    inputBindings: jsonObjectSchema,
-  }),
-  /** No blocker: the plan is valid, of the current snapshot, and the run is planning. */
-  applicable: z.boolean(),
-  blockers: z.array(z.string()),
-  /** What does not exist yet in this stage and is needed before anything may run. */
-  missingForExecution: z.array(z.string()),
-  /** Always false in this stage. */
-  executable: z.literal(false),
-});
-export type PlanApplicability = z.output<typeof planApplicabilitySchema>;
-
 /** The acting principal of a recorded human statement. */
 export const actorSchema = z.strictObject({
   principal: principalSchema,

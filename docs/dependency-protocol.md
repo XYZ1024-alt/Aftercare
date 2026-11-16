@@ -133,13 +133,12 @@ clarification 是人工声明而非业务确认：本编译器没有把自由文
 编译前读取 `CaseState`：要求当前快照 = 提案快照、run 处于 `planning`、证书为**激活的**那张、每条证据与假设为 `applicable` / `supported`、策略版本为案例的活动策略、案例未 pin 到本编译器不实现的组件版本。
 落库 `record_compiled_plan(... p_dependency_revision, p_manifest)` 在案例锁内再次核对，依赖修订已变则 `AC406`（反例 `inputs_changed_during_compilation`）。相同内容的**有效**计划直接返回；stale 的同内容计划不复活，而是作为新计划存储。
 
-## 8. 第五阶段接口
+## 8. 第五阶段接入（已实现，见 [execution-protocol.md](execution-protocol.md)）
 
-- `describe_plan_applicability(case, plan)`：展示/准备用；返回 run 状态、计划适用性与阻断原因、`dependencyRevision`、输入绑定、`missingForExecution`，`executable` 恒为 false。**不是执行许可**。
-- `assert_plan_applicable_locked(case, plan, planDigest, dependencyRevision)`：执行事务内调用，先取案例锁并持有到事务结束，重新检查适用性、摘要与依赖修订；本阶段未授权给任何角色。
-- 锁顺序固定为 Case → Branch → BranchControl → 数据行；后续模块不得反向获取。
-- 批准记录本阶段不存在；接入时须在变化激活同事务内撤销相关批准资格（在 `propagate_invalidation` 之后、`close_event` 之前）。
-- `run_phase_transitions` 与 `plan_lifecycle` 的守卫由第五阶段迁移连同对应命令一起扩展。
+- `describe_plan_applicability(case, plan)` 现在带 `execution`（契约、活动批准、应用）；`executable` 为"有效计划 + bound 契约 + active 批准"，仍不是执行许可。
+- 执行入口自己在案例锁内重做全部检查（`exec_admit`），`assert_plan_applicable_locked` 保留但仍未授权任何角色。
+- `execute_case_command()` 在 `propagate_invalidation` 之后、`close_event` 之前调用 `freeze_execution()`：输入或有效性变化即冻结全部 bound 契约。
+- `run_phase_transitions` 增加 executing / validating 的迁移；`plan_lifecycle` 增加 compiled → approved → applied；进入这些状态由执行入口与批准命令的事务局部 gate 保护。
 
 ## 9. 错误码
 

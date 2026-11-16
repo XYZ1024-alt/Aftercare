@@ -37,6 +37,8 @@ export const CASE_CAPABILITIES = [
   'investigate_case',
   'manage_case',
   'declare_business_fact',
+  /** May approve or revoke the execution of ONE execution contract. Distinct from every confirm_* capability. */
+  'approve_execution',
 ] as const;
 export type CaseCapability = (typeof CASE_CAPABILITIES)[number];
 

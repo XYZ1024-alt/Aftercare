@@ -1,5 +1,5 @@
 import { escapeIdentifier, type Pool } from 'pg';
-import { DATABASE_ROLES, type LoginRole } from '../config.ts';
+import { DATABASE_ROLES, type LoginRole, SANDBOX_OWNER_ROLE } from '../config.ts';
 import { openLoginPool } from '../pool.ts';
 import { withTransaction } from '../transaction.ts';
 
@@ -35,10 +35,11 @@ interface MarkerRow {
 
 interface SchemaRow {
   readonly name: string;
+  readonly owner: string;
 }
 
 /**
- * Drops all Aftercare schemas (source, control plane, every snapshot schema)
+ * Drops all Aftercare schemas (source, control plane, execution entries, every snapshot and branch schema)
  * of the database the pool is connected to — but only if that database is
  * explicitly marked as a disposable test database. The marker is read from the
  * live connection, so a mis-pointed pool is refused.
@@ -57,14 +58,20 @@ export async function resetDisposableTestDatabase(pool: Pool): Promise<void> {
       );
     }
     const { rows: schemas } = await client.query<SchemaRow>(
-      `SELECT n.nspname AS name
+      `SELECT n.nspname AS name, n.nspowner::regrole::text AS owner
          FROM pg_namespace AS n
-        WHERE n.nspname IN ('aftercare', 'aftercare_control', 'aftercare_meta')
-           OR n.nspname ~ '^aftercare_snap_[0-9a-f]{32}$'
+        WHERE n.nspname IN ('aftercare', 'aftercare_control', 'aftercare_meta', 'aftercare_execution')
+           OR n.nspname ~ '^aftercare_(snap|branch)_[0-9a-f]{32}$'
         ORDER BY n.nspname`,
     );
+    // The execution entry schema is owned by the non-login sandbox owner; the
+    // schema owner may SET ROLE to it (without inheriting) to drop it.
     for (const schema of schemas) {
+      if (schema.owner === SANDBOX_OWNER_ROLE) {
+        await client.query(`SET ROLE ${escapeIdentifier(SANDBOX_OWNER_ROLE)}`);
+      }
       await client.query(`DROP SCHEMA ${escapeIdentifier(schema.name)} CASCADE`);
+      await client.query('RESET ROLE');
     }
   });
 }

@@ -295,11 +295,8 @@ describe('what a conclusion depends on', () => {
       applicable: true,
       blockers: [],
       executable: false,
-      missingForExecution: [
-        'execution_contract_with_target_branch',
-        'obligations_verified',
-        'execution_approval',
-      ],
+      missingForExecution: ['execution_contract_with_target_branch', 'obligations_verified'],
+      execution: { contract: null, activeApprovalId: null, applicationId: null },
     });
     expect((await lastEvent()).eventType).toBe('plan_compiled');
   });
@@ -318,6 +315,7 @@ describe('a clarification about C', () => {
       changed: 3,
       conclusionsInvalidated: 3,
       closureExceeded: false,
+      execution: { contractsInvalidated: 0, applicationsMadeStale: 0 },
     });
     expect(await staleParts()).toEqual([UNRESOLVED('c'), ISOLATION(), PLAN()].sort());
     expect(await conclusions()).toMatchObject({

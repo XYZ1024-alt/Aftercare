@@ -8,9 +8,12 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "@aftercare/execution": "workspace:*",
     "@aftercare/storage": "workspace:*"
   },
   "devDependencies": {
+    "@types/pg": "^8.23.1",
+    "pg": "^8.23.1",
     "tsx": "^4.23.15"
   }
 }

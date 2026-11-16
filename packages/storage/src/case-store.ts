@@ -13,6 +13,12 @@ import {
   certificateSchema,
   type DeclarationRecord,
   declarationRecordSchema,
+  type ExecutionBranch,
+  type ExecutionContract,
+  type ExecutionState,
+  executionBranchSchema,
+  executionContractSchema,
+  executionStateSchema,
   type IdentityContext,
   invalidationSummarySchema,
   type NodeDependencies,
@@ -135,6 +141,22 @@ const CASE_STATEMENTS = {
      ORDER BY v.revision
      LIMIT $3`,
   applicability: 'SELECT aftercare_control.describe_plan_applicability($1, $2) AS document',
+  execution: 'SELECT aftercare_control.describe_execution($1) AS document',
+  branch: `
+    SELECT aftercare_control.branch_json(b) AS document
+      FROM aftercare_control.execution_branches AS b
+     WHERE b.case_id = $1 AND b.branch_id = $2`,
+  contract: `
+    SELECT aftercare_control.contract_json(c) AS document
+      FROM aftercare_control.execution_contracts AS c
+     WHERE c.case_id = $1 AND c.contract_id = $2`,
+  /** The current content of a branch's products table, read as the runtime through the registered manifest only. */
+  branchProducts: `
+    SELECT jsonb_build_object('objectId', p.product_id, 'version', p.version::text, 'cents', p.price_cents::text) AS document
+      FROM aftercare_control.execution_branches AS b
+      CROSS JOIN LATERAL aftercare_control.branch_products(b) AS p
+     WHERE b.case_id = $1 AND b.branch_id = $2
+     ORDER BY p.product_id`,
   activeCertificate: `
     SELECT jsonb_build_object(
              'certificateId', c.certificate_id,
@@ -170,6 +192,15 @@ const REJECTION_BY_SQLSTATE: Readonly<Record<string, CommandRejectionCode>> = {
   AC405: 'answer_not_applicable',
   AC408: 'negative_claim_unsupported',
   AC409: 'nothing_to_change',
+  AC303: 'dependency_not_usable',
+  AC406: 'dependency_not_usable',
+  AC504: 'execution_not_possible',
+  AC505: 'execution_not_possible',
+  AC506: 'execution_not_possible',
+  AC507: 'execution_scope_rejected',
+  AC508: 'execution_scope_rejected',
+  AC512: 'limit_exceeded',
+  AC513: 'execution_scope_rejected',
 };
 
 const appliedSchema = z.strictObject({
@@ -240,7 +271,22 @@ export interface CaseStore {
     caseId: string,
     snapshotId: string,
   ) => Promise<DeclarationRecord[]>;
+  /** Lease, branches, contracts (with approvals), attempts and applications of a case. Read-only. */
+  readonly describeExecution: (caseId: string) => Promise<ExecutionState>;
+  readonly findBranch: (caseId: string, branchId: string) => Promise<ExecutionBranch | null>;
+  readonly findContract: (caseId: string, contractId: string) => Promise<ExecutionContract | null>;
+  /** Product id, version and price of every product row a branch holds right now. */
+  readonly readBranchProducts: (
+    caseId: string,
+    branchId: string,
+  ) => Promise<{ objectId: string; version: string; cents: string }[]>;
 }
+
+const branchProductSchema = z.strictObject({
+  objectId: z.string(),
+  version: z.string(),
+  cents: z.string(),
+});
 
 export function createCaseStore(pool: Pool): CaseStore {
   async function documents<Schema extends z.ZodType>(
@@ -378,5 +424,18 @@ export function createCaseStore(pool: Pool): CaseStore {
       }
       return declarations;
     },
+
+    describeExecution: async (caseId) => {
+      const state = await first('execution', [caseId], executionStateSchema);
+      if (state === null) {
+        throw new Error(`describe_execution returned no row for case ${caseId}`);
+      }
+      return state;
+    },
+    findBranch: (caseId, branchId) => first('branch', [caseId, branchId], executionBranchSchema),
+    findContract: (caseId, contractId) =>
+      first('contract', [caseId, contractId], executionContractSchema),
+    readBranchProducts: (caseId, branchId) =>
+      documents('branchProducts', [caseId, branchId], branchProductSchema),
   };
 }

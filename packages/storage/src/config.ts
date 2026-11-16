@@ -18,6 +18,10 @@ export interface LoginRole {
  *   through restricted functions.
  * - `authority_admin` registers who may confirm what. It can do nothing else,
  *   and the runtime role cannot do this — so the Runtime cannot authorise itself.
+ * - `executor` is the repair executor's login: it can only call the execution
+ *   entry functions (lease, attempt, apply, failure, reconcile), which are
+ *   owned by the non-login sandbox owner role and can write case-specific
+ *   branch schemas only. It holds no table privilege of its own.
  */
 export const DATABASE_ROLES = {
   migrator: { user: 'aftercare_migrator', passwordVariable: 'AFTERCARE_MIGRATOR_PASSWORD' },
@@ -41,7 +45,19 @@ export const DATABASE_ROLES = {
     user: 'aftercare_authority_admin',
     passwordVariable: 'AFTERCARE_AUTHORITY_ADMIN_PASSWORD',
   },
+  executor: {
+    user: 'aftercare_executor',
+    passwordVariable: 'AFTERCARE_EXECUTOR_PASSWORD',
+  },
 } as const satisfies Record<string, LoginRole>;
+
+/**
+ * Non-login role that owns the execution entry functions and may write the
+ * branch tables of a case. It has no privilege on the source business schema,
+ * no write on snapshots and none on approvals, evidence or validity: a
+ * SECURITY DEFINER function it owns can never reach those.
+ */
+export const SANDBOX_OWNER_ROLE = 'aftercare_sandbox_owner';
 
 export type DatabaseRole = keyof typeof DATABASE_ROLES;
 

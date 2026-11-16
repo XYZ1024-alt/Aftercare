@@ -5,6 +5,7 @@ export * from './confirmation.ts';
 export * from './coverage.ts';
 export * from './dependency.ts';
 export * from './evidence.ts';
+export * from './execution.ts';
 export * from './inputs.ts';
 export * from './policy.ts';
 export * from './primitives.ts';

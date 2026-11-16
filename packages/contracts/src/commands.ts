@@ -2,6 +2,7 @@ import type { JsonObject } from '@aftercare/domain';
 import { z } from 'zod';
 import { semanticComponentSchema } from './case-state.ts';
 import { confirmationRequestSchema, provenanceSchema } from './confirmation.ts';
+import { executionApprovalRequestSchema } from './execution.ts';
 import { domainRefSchema } from './repair.ts';
 import { instantSchema, int64TextSchema, sha256HexSchema } from './wire.ts';
 
@@ -177,6 +178,25 @@ export const caseCommandBodySchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('register_hypothesis'), hypothesis: hypothesisRequestSchema }),
   z.strictObject({ type: z.literal('support_hypothesis'), ...assessment }),
   z.strictObject({ type: z.literal('refute_hypothesis'), ...assessment }),
+  // ── Execution (stage five) ──
+  /** Copies the business tables of the current snapshot into a fresh, case-specific branch schema. */
+  z.strictObject({ type: z.literal('create_branch'), snapshotId: z.uuid() }),
+  /**
+   * Binds one compiled plan to one branch under an immutable execution
+   * contract. The request names the plan and the branch only; the Runtime
+   * derives the contract from the stored records and the database re-checks it.
+   */
+  z.strictObject({
+    type: z.literal('bind_execution_contract'),
+    planId: z.uuid(),
+    branchId: z.uuid(),
+  }),
+  z.strictObject({ type: z.literal('approve_execution'), ...executionApprovalRequestSchema.shape }),
+  z.strictObject({
+    type: z.literal('revoke_execution_approval'),
+    approvalId: z.uuid(),
+    reason: reasonSchema,
+  }),
 ]);
 export type CaseCommandBody = z.output<typeof caseCommandBodySchema>;
 export type CaseCommandType = CaseCommandBody['type'];
@@ -213,6 +233,12 @@ export const COMMAND_REJECTION_CODES = [
   'negative_claim_unsupported',
   'nothing_to_change',
   'already_revoked',
+  /** The contract, branch or approval the command names cannot be executed as it stands. */
+  'execution_not_possible',
+  /** The branch, the patch or the approval scope does not match what the plan allows. */
+  'execution_scope_rejected',
+  /** The supported scale of this stage was exceeded; nothing was split or applied. */
+  'limit_exceeded',
 ] as const;
 export type CommandRejectionCode = (typeof COMMAND_REJECTION_CODES)[number];
 
@@ -231,6 +257,13 @@ export const invalidationSummarySchema = z.strictObject({
   conclusionsInvalidated: z.number().int(),
   /** True when the closure was too large to compute and the whole case was invalidated instead. */
   closureExceeded: z.boolean(),
+  /** What the change did to execution eligibility, in the same transaction. */
+  execution: z
+    .strictObject({
+      contractsInvalidated: z.number().int(),
+      applicationsMadeStale: z.number().int(),
+    })
+    .default({ contractsInvalidated: 0, applicationsMadeStale: 0 }),
 });
 export type InvalidationSummary = z.output<typeof invalidationSummarySchema>;
 

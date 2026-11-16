@@ -7,6 +7,7 @@ import {
   type LoginRole,
   readDatabaseEndpoint,
   readSecret,
+  SANDBOX_OWNER_ROLE,
 } from '../config.ts';
 import { DEVELOPMENT_MARKER, DISPOSABLE_TEST_MARKER, TEST_ADMIN_ROLE } from './test-database.ts';
 
@@ -30,6 +31,18 @@ const SNAPSHOT_MANAGER_SESSION_DEFAULTS: Readonly<Record<string, string>> = {
   transaction_timeout: '300s',
   idle_in_transaction_session_timeout: '30s',
   idle_session_timeout: '60s',
+};
+
+/**
+ * Server-side ceilings for every executor session: an execution transaction
+ * can never wait, run or sit idle without bound, whatever the client does.
+ */
+const EXECUTOR_SESSION_DEFAULTS: Readonly<Record<string, string>> = {
+  lock_timeout: '15s',
+  statement_timeout: '60s',
+  transaction_timeout: '120s',
+  idle_in_transaction_session_timeout: '60s',
+  idle_session_timeout: '300s',
 };
 
 const DATABASE_MARKERS: Readonly<Record<DatabaseTarget, string>> = {
@@ -75,6 +88,30 @@ async function ensureRoles(client: Client, env: NodeJS.ProcessEnv): Promise<void
       `ALTER ROLE ${manager} SET ${escapeIdentifier(setting)} = ${escapeLiteral(value)}`,
     );
   }
+
+  const executor = escapeIdentifier(DATABASE_ROLES.executor.user);
+  for (const [setting, value] of Object.entries(EXECUTOR_SESSION_DEFAULTS)) {
+    await client.query(
+      `ALTER ROLE ${executor} SET ${escapeIdentifier(setting)} = ${escapeLiteral(value)}`,
+    );
+  }
+
+  // The sandbox owner cannot log in. The migrator may SET ROLE to it (to
+  // create the execution entry functions under its ownership) without
+  // inheriting anything from it, and it inherits nothing from the migrator:
+  // it owns no source object and holds no privilege on the source schema.
+  const { rowCount: ownerExists } = await client.query(
+    'SELECT 1 FROM pg_roles WHERE rolname = $1',
+    [SANDBOX_OWNER_ROLE],
+  );
+  await client.query(
+    `${ownerExists === 0 ? 'CREATE' : 'ALTER'} ROLE ${escapeIdentifier(SANDBOX_OWNER_ROLE)}
+       WITH NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS NOINHERIT`,
+  );
+  await client.query(
+    `GRANT ${escapeIdentifier(SANDBOX_OWNER_ROLE)} TO ${escapeIdentifier(DATABASE_ROLES.migrator.user)}
+       WITH INHERIT FALSE, SET TRUE`,
+  );
 
   // The test administrator may SET ROLE to the schema owner, but does not
   // inherit the owner's privileges — in particular not its CONNECT privilege

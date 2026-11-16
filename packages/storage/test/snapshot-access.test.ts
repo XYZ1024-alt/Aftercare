@@ -213,12 +213,27 @@ describe('published snapshot: who can do what', () => {
       expect(row.owner, row.name).toBe('aftercare_migrator');
       expect(row.everyone, row.name).toBe(false);
     }
+    // The exec_* coordination entries are reachable by the non-login sandbox
+    // owner only; everything else by the runtime, the snapshot manager or the
+    // authority administrator. The executor login can execute none of them.
     expect(rows.filter((row) => row.definer).map((row) => [row.name, row.grantees])).toEqual([
       ['append_evidence', ['aftercare_runtime']],
+      ['approval_state', ['aftercare_runtime']],
+      ['branch_products', ['aftercare_runtime']],
       ['create_case', ['aftercare_runtime']],
       ['create_snapshot', ['aftercare_snapshot_manager']],
+      ['describe_execution', ['aftercare_runtime']],
       ['describe_plan_applicability', ['aftercare_runtime']],
       ['drop_snapshot', ['aftercare_snapshot_manager']],
+      ['exec_admit', ['aftercare_sandbox_owner']],
+      ['exec_begin_attempt', ['aftercare_sandbox_owner']],
+      ['exec_claim_lease', ['aftercare_sandbox_owner']],
+      ['exec_mark_outcome_unknown', ['aftercare_sandbox_owner']],
+      ['exec_open_attempts', ['aftercare_sandbox_owner']],
+      ['exec_reconcile', ['aftercare_sandbox_owner']],
+      ['exec_record_application', ['aftercare_sandbox_owner']],
+      ['exec_record_failure', ['aftercare_sandbox_owner']],
+      ['exec_renew_lease', ['aftercare_sandbox_owner']],
       ['execute_case_command', ['aftercare_runtime']],
       ['grant_confirmation_authority', ['aftercare_authority_admin']],
       ['record_certificate', ['aftercare_runtime']],
@@ -233,14 +248,21 @@ describe('published snapshot: who can do what', () => {
         .filter((row) => !row.definer && row.grantees.length > 0)
         .map((row) => [row.name, row.grantees]),
     ).toEqual([
+      ['application_json', ['aftercare_runtime']],
+      ['approval_json', ['aftercare_runtime']],
+      ['attempt_json', ['aftercare_runtime']],
+      ['branch_json', ['aftercare_runtime']],
       ['confirmation_json', ['aftercare_runtime']],
+      ['contract_json', ['aftercare_runtime']],
       ['declaration_json', ['aftercare_runtime']],
       ['instant_text', ['aftercare_runtime']],
+      ['lease_json', ['aftercare_runtime']],
       ['plan_json', ['aftercare_runtime']],
       ['run_json', ['aftercare_runtime']],
       ['snapshot_json', ['aftercare_runtime']],
       ['source_environment', ['aftercare_authority_admin', 'aftercare_runtime']],
     ]);
+    expect(rows.filter((row) => row.grantees.includes('aftercare_executor'))).toEqual([]);
   });
 });
 

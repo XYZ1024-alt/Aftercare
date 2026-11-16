@@ -8,8 +8,7 @@
     "./testing": "./test/support.ts"
   },
   "scripts": {
-    "typecheck": "tsc -p tsconfig.json",
-    "demo": "tsx --env-file-if-exists=../../.env scripts/demo.ts"
+    "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
     "@aftercare/contracts": "workspace:*",
@@ -20,7 +19,6 @@
     "zod": "^4.6.7"
   },
   "devDependencies": {
-    "@aftercare/repair": "workspace:*",
     "@types/pg": "^8.23.1",
     "tsx": "^4.23.15"
   }

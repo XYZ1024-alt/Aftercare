@@ -126,7 +126,9 @@ try {
     snapshotPool: investigatorPool,
   });
   const operator = createRegistrationService({ repairStore }).forIdentity(OPERATOR);
-  const commands = createCaseCommandService({ store, caseStore }).forIdentity(OPERATOR);
+  const commands = createCaseCommandService({ store, caseStore, repairStore }).forIdentity(
+    OPERATOR,
+  );
   /** One case command at the case's current revision, under a fresh request id. */
   const command = async (caseId: string, body: JsonObject & { type: string }) =>
     appliedResult(

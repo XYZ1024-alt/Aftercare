@@ -82,8 +82,9 @@ describe('run phases', () => {
     });
   });
 
-  it('has no command that reaches executing, validating, completed or verified', async () => {
-    // The reserved phases are not transitions of this stage, not even for the owner.
+  it('has no command that reaches completed, partially_resolved or verified; executing and validating need the executor', async () => {
+    // completed and partially_resolved stay reserved; executing/validating are
+    // reached only through the execution entries (stage five), never by hand.
     for (const target of ['executing', 'validating', 'completed', 'partially_resolved']) {
       await expect(
         h.db.migratorPool.query(
@@ -99,12 +100,14 @@ describe('run phases', () => {
       'awaiting_input',
       'cancelled',
       'created',
+      'executing',
       'failed',
       'investigating',
       'paused',
       'planning',
+      'validating',
     ]);
-    // Nor is there a way past "compiled" for a plan.
+    // A plan starts at compiled; nothing inserts it further along, and verified is unreachable.
     await expect(
       h.db.migratorPool.query(
         `INSERT INTO aftercare_control.plan_lifecycle (plan_id, lifecycle)

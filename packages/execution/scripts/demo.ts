@@ -1,6 +1,14 @@
 import { randomUUID } from 'node:crypto';
+import { createCaseCommandService, createCaseInspection } from '@aftercare/casework';
 import type { CommandOutcome, EvidenceOutcome, WriteOutcome } from '@aftercare/contracts';
-import { CAPABILITIES, confirmationRecordSchema, POLICY_COMPOSITION } from '@aftercare/contracts';
+import {
+  CAPABILITIES,
+  confirmationRecordSchema,
+  executionApprovalSchema,
+  executionBranchSchema,
+  executionContractSchema,
+  POLICY_COMPOSITION,
+} from '@aftercare/contracts';
 import { type JsonObject, OPERATION_TYPES } from '@aftercare/domain';
 import { buildCoverageManifest, createEvidenceService } from '@aftercare/evidence';
 import { createRegistrationService, createRepairCompiler } from '@aftercare/repair';
@@ -9,27 +17,31 @@ import {
   createBusinessEntry,
   createCaseStore,
   createControlStore,
+  createExecutorStore,
   createRepairStore,
   createRoleClient,
   createSnapshotManager,
   openRolePool,
 } from '@aftercare/storage';
 import { reviewedSchemaVersion } from '@aftercare/storage/admin';
-import { createCaseCommandService, createCaseInspection } from '../src/index.ts';
+import { createCaseExecutor, describeExecutability, reviewContract } from '../src/index.ts';
 
-// Stage 4 demonstration on the DEVELOPMENT database:
-//   case and compiled plan -> what the plan depends on
-//   -> a clarification about one product: only its part and the plan go stale
-//   -> the reasons, revisions and events
-//   -> the plan is compiled again: a new plan, reused parts point back
-//   -> the baseline confirmation is revoked: everything goes stale.
-// No model is called. Nothing is applied or executed.
+// Stage 5 demonstration on the DEVELOPMENT database:
+//   compiled plan -> a branch of the snapshot -> an execution contract
+//   -> an explicit approval by a SEPARATE principal -> one application
+//   -> the same repair id again (replayed, not re-applied)
+//   -> the unique application ledger and the validating phase
+//   -> a second case where an input changes first: the old contract is refused.
+// No model is called. The source and the snapshot are never written.
 
-const SIMULATOR = 'simulator:stage4-demo';
+const SIMULATOR = 'simulator:stage5-demo';
+const EXECUTOR_ID = 'worker:stage5-demo';
 const TARGET = 'development';
 /** Stands in for an authenticated operator session; never taken from a request. */
 const OPERATOR = { principal: 'ops:demo-pricing-lead', source: 'demo-operator-session' };
-const SOURCE = { kind: 'business_decision_record', reference: 'stage 4 demo' } as const;
+/** A second identity: holds approve_execution only. A business confirmation is not an approval. */
+const APPROVER = { principal: 'ops:demo-release-approver', source: 'demo-operator-session' };
+const SOURCE = { kind: 'business_decision_record', reference: 'stage 5 demo' } as const;
 const EVERYTHING = { kind: 'all_products' } as const;
 const ALWAYS = { fromInclusive: '0', toInclusive: null };
 
@@ -58,15 +70,21 @@ function accepted<T>(
   return outcome.value;
 }
 
+/** Only this run's products: the branch copies every product of the snapshot. */
+const ours = (rows: readonly { objectId: string }[]) =>
+  rows.filter((row) => row.objectId.endsWith(suffix));
+
 function show(title: string, value: object): void {
   console.log(`\n── ${title} ${'─'.repeat(Math.max(0, 72 - title.length))}`);
   console.log(JSON.stringify(value, null, 2));
 }
 
+const suffix = randomUUID().slice(0, 8);
 const writerPool = openRolePool(process.env, 'business_writer', TARGET);
 const runtimePool = openRolePool(process.env, 'runtime', TARGET);
 const investigatorPool = openRolePool(process.env, 'investigator', TARGET);
 const authorityPool = openRolePool(process.env, 'authority_admin', TARGET);
+const executorPool = openRolePool(process.env, 'executor', TARGET);
 
 try {
   const entry = createBusinessEntry(writerPool);
@@ -84,8 +102,17 @@ try {
     snapshotPool: investigatorPool,
   });
   const registrations = createRegistrationService({ repairStore }).forIdentity(OPERATOR);
-  const commands = createCaseCommandService({ store, caseStore }).forIdentity(OPERATOR);
+  const commandService = createCaseCommandService({ store, caseStore, repairStore });
+  const commands = commandService.forIdentity(OPERATOR);
+  const approverCommands = commandService.forIdentity(APPROVER);
   const inspection = createCaseInspection(caseStore);
+  const applicabilityOf = async (planId: string) => {
+    const applicability = await inspection.planApplicability({ caseId, planId });
+    if (applicability === null) {
+      throw new Error(`plan ${planId} is not a plan of the demo case`);
+    }
+    return applicability;
+  };
 
   const command = async (
     caseId: string,
@@ -112,11 +139,8 @@ try {
     );
 
   // 1. Business activity: three products, one wrong batch, a delta on the
-  //    first, a later absolute write on the third. The policy below has no
-  //    override-retention rule, so that later write on c is UNDECIDED: the
-  //    plan repairs a and b and leaves c unresolved.
-  const suffix = randomUUID().slice(0, 8);
-  const [a, b, c] = ['a', 'b', 'c'].map((name) => `demo4-${name}-${suffix}`) as [
+  //    first, a later absolute write on the third (kept as an override).
+  const [a, b, c] = ['a', 'b', 'c'].map((name) => `demo5-${name}-${suffix}`) as [
     string,
     string,
     string,
@@ -148,7 +172,9 @@ try {
     'override',
     await entry.setPrice({ principal: SIMULATOR, productId: c, priceCents: 9_500n }),
   );
-  console.log(`1. wrote ${a}, ${b}, ${c}; one batch to 80.00; +10.00 on a; c set to 95.00`);
+  console.log(
+    `1. wrote ${a}, ${b}, ${c}; one batch to 80.00; +10.00 on a; c set to 95.00 (an override to keep)`,
+  );
 
   // 2. Case, snapshot as the current one, certificate and evidence activated.
   const sourceEnvironment = await store.readSourceEnvironment();
@@ -168,17 +194,23 @@ try {
     );
   }
   const authorities = createAuthorityAdmin(authorityPool);
-  for (const capability of CAPABILITIES) {
+  for (const capability of CAPABILITIES.filter((entry) => entry !== 'approve_execution')) {
     await authorities.grant({
       principal: OPERATOR.principal,
       capability,
       sourceEnvironment,
-      basis: 'stage 4 demo',
+      basis: 'stage 5 demo',
     });
   }
+  await authorities.grant({
+    principal: APPROVER.principal,
+    capability: 'approve_execution',
+    sourceEnvironment,
+    basis: 'stage 5 demo: release approver',
+  });
   const { caseId } = await store.createCase({
     principal: SIMULATOR,
-    title: `Stage 4 demo ${suffix}`,
+    title: `Stage 5 demo ${suffix}`,
   });
   const created = await snapshots.createSnapshot({ caseId });
   if (!created.ok) {
@@ -254,7 +286,15 @@ try {
           disposition: 'recompute_on_corrected_input',
         },
       ],
-      overrideRetentionRules: [],
+      overrideRetentionRules: [
+        {
+          ruleId: 'keep-overrides',
+          objects: EVERYTHING,
+          watermark: ALWAYS,
+          operationTypes: ['set_price', 'batch_set_price'],
+          disposition: 'retain_as_recorded',
+        },
+      ],
       terminalConstraints: [],
       composition: {
         order: [...POLICY_COMPOSITION.order],
@@ -292,7 +332,7 @@ try {
     throw new Error('the demo proposal did not compile');
   }
   const plan = compiled.plan;
-  show('3. compiled plan', {
+  show('2. compiled plan (candidates only; nothing applied)', {
     planId: plan.planId,
     planDigest: plan.planDigest,
     binding: plan.binding,
@@ -304,118 +344,182 @@ try {
     applicability: await inspection.planApplicability({ caseId, planId: plan.planId }),
   });
 
-  // 4. What the candidate for a depends on.
-  const described = await inspection.describeCase({ caseId });
-  const candidateA = described?.nodes.find(
-    (node) => node.nodeType === 'plan_candidate' && node.nodeKey.endsWith(`${a}.price_cents`),
+  // 3. A branch: a verified copy of the snapshot's business tables, case-specific.
+  const branch = executionBranchSchema.parse(
+    (await must(caseId, { type: 'create_branch', snapshotId: ref.snapshotId })).result.branch,
   );
-  const dependencies =
-    candidateA === undefined
-      ? null
-      : await inspection.dependenciesOf({ caseId, nodeId: candidateA.nodeId });
-  show('4. what the candidate for a depends on', {
-    state: described?.state,
-    dependsOn: dependencies?.dependsOn.map(
-      (entry) => `${entry.role} -> ${entry.node.nodeType}:${entry.node.nodeKey}`,
-    ),
-    items: dependencies?.items.map((item) => `${item.kind}:${item.key}`),
-    businessRefs: dependencies?.businessRefs.map(
-      (entry) => `${entry.role} -> ${entry.businessKey}`,
-    ),
+  show('3. branch created from the snapshot', {
+    branchId: branch.branchId,
+    status: branch.status,
+    manifest: branch.manifest,
+    before: ours(await caseStore.readBranchProducts(caseId, branch.branchId)),
   });
 
-  // 5. A clarification about c: only c's part (and the plan as a whole) go stale.
+  // 4. The execution contract: plan digest bound to THIS branch under every condition.
+  const contract = executionContractSchema.parse(
+    (
+      await must(caseId, {
+        type: 'bind_execution_contract',
+        planId: plan.planId,
+        branchId: branch.branchId,
+      })
+    ).result.contract,
+  );
+  const review = reviewContract(contract);
+  show('4. execution contract — what the approver reads', review);
+  console.log(describeExecutability(await applicabilityOf(plan.planId)));
+
+  // 5. The operator who confirmed everything cannot approve; the approver can.
+  const refusedApproval = await commands.execute({
+    caseId,
+    requestId: randomUUID(),
+    expectedRevision: (await caseStore.readCaseState(caseId))?.revision ?? '0',
+    command: {
+      type: 'approve_execution',
+      contractId: contract.contractId,
+      executionDigest: contract.executionDigest,
+      validForSeconds: 900,
+      acknowledgedUnresolvedDomains: contract.body.unresolvedDomains,
+      statement: 'trying as the operator',
+    },
+  });
+  const approvalOutcome = await approverCommands.execute({
+    caseId,
+    requestId: randomUUID(),
+    expectedRevision: (await caseStore.readCaseState(caseId))?.revision ?? '0',
+    command: {
+      type: 'approve_execution',
+      contractId: contract.contractId,
+      executionDigest: contract.executionDigest,
+      validForSeconds: 900,
+      acknowledgedUnresolvedDomains: contract.body.unresolvedDomains,
+      statement: 'Reviewed the three changes, the kept override and the rules.',
+    },
+  });
+  if (!approvalOutcome.ok) {
+    throw new Error(`approval refused: ${approvalOutcome.rejection.message}`);
+  }
+  show('5. approval', {
+    operatorAttempt: refusedApproval.ok ? 'approved?!' : refusedApproval.rejection.code,
+    approval: executionApprovalSchema.parse(approvalOutcome.result.approval),
+  });
+  console.log(describeExecutability(await applicabilityOf(plan.planId)));
+
+  // 6. The executor: lease, intent, one transaction, result. Then the same repair id again.
+  const executor = createCaseExecutor(caseId, {
+    store: createExecutorStore(executorPool),
+    executorId: EXECUTOR_ID,
+    leaseTtlSeconds: 60,
+  });
+  const lease = await executor.claim();
+  if (!lease.ok) {
+    throw new Error(`lease refused: ${lease.rejection.message}`);
+  }
+  const recovery = await executor.recover();
+  const repairId = randomUUID();
+  const first = await executor.execute(contract.contractId, repairId);
+  const second = await executor.execute(contract.contractId, repairId);
+  show('6. applied once, replayed once', {
+    lease: lease.lease,
+    recoveryBeforeExecuting: recovery,
+    first:
+      first.outcome === 'applied'
+        ? {
+            replayed: first.replayed,
+            applicationId: first.application.applicationId,
+            writtenFootprint: first.application.writtenFootprint,
+          }
+        : first,
+    second:
+      second.outcome === 'applied'
+        ? { replayed: second.replayed, applicationId: second.application.applicationId }
+        : second,
+    after: ours(await caseStore.readBranchProducts(caseId, branch.branchId)),
+  });
+
+  // 7. The ledger and the state: exactly one application; the run waits for verification.
+  const execution = await caseStore.describeExecution(caseId);
+  show('7. the application ledger and the state', {
+    applications: execution.applications.map((application) => ({
+      applicationId: application.applicationId,
+      repairId: application.repairId,
+      executionDigest: application.executionDigest,
+      fencingToken: application.fencingToken,
+      diffDigest: application.diffDigest,
+      stillCurrent: application.stillCurrent,
+    })),
+    attempts: execution.attempts.map((attempt) => attempt.status),
+    branch: execution.branches.map((entry) => entry.status),
+    contract: execution.contracts.map((entry) => entry.status),
+    run: (await caseStore.readCaseState(caseId))?.run.phase,
+    planApplicability: await inspection.planApplicability({ caseId, planId: plan.planId }),
+    snapshotUnchanged: (
+      await investigatorPool.query(
+        `SELECT product_id, price_cents::text AS cents, version::text AS version FROM ${created.snapshot.schemaName}.products WHERE product_id LIKE $1 ORDER BY product_id`,
+        [`%${suffix}`],
+      )
+    ).rows,
+  });
+
+  // 8. A second run of the same story where an input changes before execution:
+  //    the old contract is invalidated in the same transaction and refused.
+  await must(caseId, { type: 'reopen_investigation', reason: 'demonstrate invalidation' });
+  await must(caseId, { type: 'begin_planning' });
+  const recompiled = await compiler.compile({
+    ...proposal,
+    parentPlanRef: { planId: plan.planId },
+  });
+  if (!recompiled.ok) {
+    throw new Error('recompilation failed');
+  }
+  const branch2 = executionBranchSchema.parse(
+    (await must(caseId, { type: 'create_branch', snapshotId: ref.snapshotId })).result.branch,
+  );
+  const contract2 = executionContractSchema.parse(
+    (
+      await must(caseId, {
+        type: 'bind_execution_contract',
+        planId: recompiled.plan.planId,
+        branchId: branch2.branchId,
+      })
+    ).result.contract,
+  );
+  const approval2 = await approverCommands.execute({
+    caseId,
+    requestId: randomUUID(),
+    expectedRevision: (await caseStore.readCaseState(caseId))?.revision ?? '0',
+    command: {
+      type: 'approve_execution',
+      contractId: contract2.contractId,
+      executionDigest: contract2.executionDigest,
+      validForSeconds: 900,
+      acknowledgedUnresolvedDomains: contract2.body.unresolvedDomains,
+      statement: 'second approval',
+    },
+  });
   const clarified = await must(caseId, {
     type: 'record_declaration',
     declaration: {
       kind: 'clarification',
       snapshotId: ref.snapshotId,
-      statement: 'The 95.00 on c was a deliberate list-price correction.',
-      scope: { domains: [{ objectType: 'product', objectId: c, field: 'price_cents' }] },
+      statement: 'The +10.00 on a was itself a correction and must not be replayed.',
+      scope: { domains: [{ objectType: 'product', objectId: a, field: 'price_cents' }] },
       evidenceRefs: [],
-      source: { kind: 'operations_review', reference: 'ticket 42' },
+      source: { kind: 'operations_review', reference: 'ticket 43' },
     },
   });
-  const after = await inspection.describeCase({ caseId });
-  show('5. after the clarification', {
-    revision: clarified.revision,
-    dependencyRevision: clarified.dependencyRevision,
+  const refused = await executor.execute(contract2.contractId, randomUUID());
+  show('8. an input changed first: the bound contract is invalidated and refused', {
+    approvalRecorded: approval2.ok,
     invalidation: clarified.invalidation,
-    conclusions: after?.nodes
-      .filter((node) => node.category === 'conclusion')
-      .map(
-        (node) =>
-          `${node.nodeType}:${node.nodeKey.slice(-40)} = ${node.validity}${node.statusReason === null ? '' : ` (${node.statusReason})`}`,
-      ),
-    planApplicability: await inspection.planApplicability({ caseId, planId: plan.planId }),
-    events: (
-      await inspection.readEvents({
-        caseId,
-        afterRevision: (BigInt(clarified.revision) - 1n).toString(),
-      })
-    ).map((event) => ({
-      revision: event.revision,
-      type: event.eventType,
-      effects: event.effects.map(
-        (effect) =>
-          `${effect.effect} ${effect.nodeType}:${effect.nodeKey.slice(-40)} (${effect.reason})`,
-      ),
-    })),
+    contractNow: (await caseStore.findContract(caseId, contract2.contractId))?.status,
+    executorResult: refused,
+    branch2Untouched: ours(await caseStore.readBranchProducts(caseId, branch2.branchId)),
+    firstApplicationStillOnRecord: (await caseStore.describeExecution(caseId)).applications.length,
   });
 
-  // 6. Compiled again: a new plan, unchanged parts point back at the reused ones.
-  const again = await compiler.compile(proposal);
-  if (!again.ok) {
-    show('recompile refused', { counterexamples: again.counterexamples });
-    throw new Error('the recompilation did not go through');
-  }
-  const nodes = (await inspection.describeCase({ caseId }))?.nodes ?? [];
-  show('6. recompiled', {
-    previousPlanId: plan.planId,
-    planId: again.plan.planId,
-    sameDigest: again.plan.planDigest === plan.planDigest,
-    declarationsConsidered: again.plan.content.inputs.declarations,
-    parts: nodes
-      .filter((node) => node.nodeKey.startsWith(again.plan.planId))
-      .map((node) => ({
-        node: `${node.nodeType}:${node.nodeKey.slice(-40)}`,
-        validity: node.validity,
-        reuseBasis: node.reuseBasis,
-      })),
-  });
-
-  // 7. The baseline is withdrawn: nothing of either plan can be relied on.
-  const revoked = await must(caseId, {
-    type: 'revoke_confirmation',
-    confirmationId: baseline.confirmationId,
-    reason: 'the trusted watermark was wrong',
-  });
-  show('7. after the baseline was revoked', {
-    invalidation: revoked.invalidation,
-    plans: await Promise.all(
-      [plan.planId, again.plan.planId].map(async (planId) => {
-        const applicability = await inspection.planApplicability({ caseId, planId });
-        return {
-          planId,
-          validity: applicability?.plan.validity,
-          staleReason: applicability?.plan.staleReason,
-          blockers: applicability?.blockers,
-        };
-      }),
-    ),
-    compileNow: await compiler
-      .compile(proposal)
-      .then((outcome) =>
-        outcome.ok ? 'compiled?!' : outcome.counterexamples.map((entry) => entry.code),
-      ),
-  });
-
-  const dropped = await snapshots.dropSnapshot(ref);
-  if (!dropped.ok) {
-    throw new Error(`snapshot cleanup failed: ${dropped.failure.code}`);
-  }
   console.log(
-    `\n8. snapshot ${dropped.snapshot.status}; the case, its events and both plans stay on record`,
+    '\n9. nothing here is verified: the application is a committed patch in a branch, awaiting the independent verifier of stage six.',
   );
 } finally {
   await Promise.all([
@@ -423,5 +527,6 @@ try {
     runtimePool.end(),
     investigatorPool.end(),
     authorityPool.end(),
+    executorPool.end(),
   ]);
 }

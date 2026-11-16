@@ -8,13 +8,15 @@ import {
 } from '@aftercare/contracts';
 import { digestJson, type JsonObject, type JsonValue } from '@aftercare/domain';
 import { evidenceDependencyManifest } from '@aftercare/evidence';
-import type { CaseStore, ControlStore } from '@aftercare/storage';
+import type { CaseStore, ControlStore, RepairStore } from '@aftercare/storage';
 import { z } from 'zod';
+import { buildExecutionContract } from './execution-contract.ts';
 
 export interface CaseCommandServiceOptions {
   /** Runtime-side control store (role `aftercare_runtime`). */
   readonly store: ControlStore;
   readonly caseStore: CaseStore;
+  readonly repairStore: RepairStore;
 }
 
 /** What one authenticated principal may submit. */
@@ -56,7 +58,7 @@ interface Prepared {
  * the affected closure itself.
  */
 export function createCaseCommandService(options: CaseCommandServiceOptions): CaseCommandService {
-  const { store, caseStore } = options;
+  const { store, caseStore, repairStore } = options;
 
   async function prepare(
     caseId: string,
@@ -108,6 +110,41 @@ export function createCaseCommandService(options: CaseCommandServiceOptions): Ca
             resultDigest: evidence.resultDigest,
             manifest: evidenceDependencyManifest(evidence) as unknown as JsonObject,
           },
+        };
+      }
+      case 'bind_execution_contract': {
+        // The contract is derived from stored records; the request contributes
+        // two identifiers. The database checks every field again under the lock.
+        const [state, plan, branch] = await Promise.all([
+          caseStore.readCaseState(caseId),
+          repairStore.findCompiledPlan({ caseId, planId: command.planId }),
+          caseStore.findBranch(caseId, command.branchId),
+        ]);
+        if (state === null) {
+          return rejected('reference_rejected', `case ${caseId} does not exist`);
+        }
+        if (plan === null) {
+          return rejected('reference_rejected', `case ${caseId} has no plan ${command.planId}`);
+        }
+        if (branch === null) {
+          return rejected('reference_rejected', `case ${caseId} has no branch ${command.branchId}`);
+        }
+        if (state.activePolicyVersionId === null) {
+          return rejected('dependency_not_usable', `case ${caseId} has no active policy version`);
+        }
+        const policy = await repairStore.findPolicyVersion(state.activePolicyVersionId);
+        if (policy === null) {
+          return rejected('reference_rejected', 'the active policy version is not registered');
+        }
+        const contract = buildExecutionContract({
+          runId: state.run.runId,
+          dependencyRevision: state.dependencyRevision,
+          plan,
+          branch,
+          policy,
+        });
+        return {
+          effects: { body: contract.body as unknown as JsonObject, digest: contract.digest },
         };
       }
       default:

@@ -45,6 +45,8 @@ export interface TestDatabase {
   readonly runtimePool: Pool;
   /** Authority administration role: may only grant and revoke confirmation authorities. */
   readonly authorityAdminPool: Pool;
+  /** Repair executor role: may only call the aftercare_execution.* entries. */
+  readonly executorPool: Pool;
   /**
    * TEST ONLY: acts as the schema owner, and can connect to the disposable
    * test database alone. Used to fabricate damaged histories.
@@ -73,6 +75,7 @@ export function openTestDatabase(): TestDatabase {
   const migratorPool = openRolePool(process.env, 'migrator', 'test');
   const runtimePool = openRolePool(process.env, 'runtime', 'test');
   const authorityAdminPool = openRolePool(process.env, 'authority_admin', 'test');
+  const executorPool = openRolePool(process.env, 'executor', 'test');
   const adminPool = openTestAdminPool(process.env);
   const connect = () => createRoleClient(process.env, 'snapshot_manager', 'test');
   return {
@@ -81,6 +84,7 @@ export function openTestDatabase(): TestDatabase {
     migratorPool,
     runtimePool,
     authorityAdminPool,
+    executorPool,
     adminPool,
     entry: createBusinessEntry(writerPool),
     reader: createAuditReader(migratorPool),
@@ -98,6 +102,7 @@ export function openTestDatabase(): TestDatabase {
           migratorPool,
           runtimePool,
           authorityAdminPool,
+          executorPool,
           adminPool,
         ].map((pool) => pool.end()),
       );

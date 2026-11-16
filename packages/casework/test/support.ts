@@ -16,7 +16,7 @@ import {
   createCaseInspection,
 } from '../src/index.ts';
 
-/** The operator of the tests: holds every capability. */
+/** The operator of the tests: holds every investigation and confirmation capability, but not approve_execution. */
 export const OPERATOR: IdentityContext = {
   principal: 'ops:pricing-lead',
   source: 'test-operator-session',
@@ -66,12 +66,12 @@ export function rejectionOf(outcome: CommandOutcome): CommandRejection {
   return outcome.rejection;
 }
 
-/** Opens the harness on the test database: coverage manifest registered, OPERATOR holds every capability. */
+/** Opens the harness on the test database: coverage manifest registered, OPERATOR holds every capability but approve_execution. */
 export async function openCaseHarness(): Promise<CaseHarness> {
   const evidence = openEvidenceHarness();
   const { db } = evidence;
   const sourceEnvironment = await db.authorities.readSourceEnvironment();
-  for (const capability of CAPABILITIES) {
+  for (const capability of CAPABILITIES.filter((entry) => entry !== 'approve_execution')) {
     await db.authorities.grant({
       principal: OPERATOR.principal,
       capability,
@@ -80,7 +80,11 @@ export async function openCaseHarness(): Promise<CaseHarness> {
     });
   }
   await evidence.registerManifest();
-  const commands = createCaseCommandService({ store: db.store, caseStore: db.caseStore });
+  const commands = createCaseCommandService({
+    store: db.store,
+    caseStore: db.caseStore,
+    repairStore: db.repairStore,
+  });
   const revisionOf = async (caseId: string) =>
     (await db.caseStore.readCaseState(caseId))?.revision ?? '0';
   const run: CaseHarness['run'] = async (identity, caseId, command) =>
