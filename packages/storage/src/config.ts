@@ -14,7 +14,10 @@ export interface LoginRole {
  * - `investigator` can read published snapshot schemas and nothing else.
  * - `snapshot_manager` can only call the snapshot create/drop functions.
  * - `runtime` is the Runtime-side control store: cases, coverage manifests,
- *   certificates and append-only evidence, through restricted functions.
+ *   certificates, evidence, confirmations, policy versions and compiled plans,
+ *   through restricted functions.
+ * - `authority_admin` registers who may confirm what. It can do nothing else,
+ *   and the runtime role cannot do this — so the Runtime cannot authorise itself.
  */
 export const DATABASE_ROLES = {
   migrator: { user: 'aftercare_migrator', passwordVariable: 'AFTERCARE_MIGRATOR_PASSWORD' },
@@ -33,6 +36,10 @@ export const DATABASE_ROLES = {
   runtime: {
     user: 'aftercare_runtime',
     passwordVariable: 'AFTERCARE_RUNTIME_PASSWORD',
+  },
+  authority_admin: {
+    user: 'aftercare_authority_admin',
+    passwordVariable: 'AFTERCARE_AUTHORITY_ADMIN_PASSWORD',
   },
 } as const satisfies Record<string, LoginRole>;
 

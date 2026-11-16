@@ -1,6 +1,12 @@
 import { OBJECT_TYPES, OPERATION_TYPES } from '@aftercare/domain';
 import { z } from 'zod';
-import { instantSchema, int64TextSchema, objectRefSchema, sha256HexSchema } from './wire.ts';
+import {
+  instantSchema,
+  int64TextSchema,
+  objectRefSchema,
+  sha256HexSchema,
+  watermarkRangeSchema,
+} from './wire.ts';
 
 /**
  * - eligible: within the declared and checked support domain, the snapshot
@@ -15,12 +21,6 @@ import { instantSchema, int64TextSchema, objectRefSchema, sha256HexSchema } from
  */
 export const ELIGIBILITIES = ['eligible', 'investigation_only', 'quarantined'] as const;
 export type Eligibility = (typeof ELIGIBILITIES)[number];
-
-const watermarkRangeSchema = z.strictObject({
-  fromInclusive: int64TextSchema,
-  /** null: open-ended. */
-  toInclusive: int64TextSchema.nullable(),
-});
 
 const functionRefSchema = z.strictObject({
   functionName: z.string().min(1),

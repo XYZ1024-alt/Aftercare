@@ -1,4 +1,4 @@
-import { OBJECT_TYPES, parseInt64 } from '@aftercare/domain';
+import { OBJECT_TYPES, parseInt64, SNAPSHOT_TABLES } from '@aftercare/domain';
 import { z } from 'zod';
 
 // Shapes of JSON DOCUMENTS (snapshot records, manifests, certificates,
@@ -20,6 +20,16 @@ export const sha256HexSchema = z.string().regex(/^[0-9a-f]{64}$/, 'expected a sh
 export const instantSchema = z.iso.datetime();
 
 export const jsonObjectSchema = z.record(z.string(), z.json());
+
+/** A closed-or-open interval of commit sequence numbers. */
+export const watermarkRangeSchema = z.strictObject({
+  fromInclusive: int64TextSchema,
+  /** null: open-ended. */
+  toInclusive: int64TextSchema.nullable(),
+});
+export type WatermarkRange = z.output<typeof watermarkRangeSchema>;
+
+export const snapshotTableNamesSchema = z.array(z.enum(SNAPSHOT_TABLES)).min(1);
 
 export const objectRefSchema = z.strictObject({
   objectType: z.enum(OBJECT_TYPES),

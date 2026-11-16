@@ -218,17 +218,25 @@ describe('published snapshot: who can do what', () => {
       ['create_case', ['aftercare_runtime']],
       ['create_snapshot', ['aftercare_snapshot_manager']],
       ['drop_snapshot', ['aftercare_snapshot_manager']],
+      ['grant_confirmation_authority', ['aftercare_authority_admin']],
       ['record_certificate', ['aftercare_runtime']],
+      ['record_compiled_plan', ['aftercare_runtime']],
+      ['record_confirmation', ['aftercare_runtime']],
       ['register_coverage_manifest', ['aftercare_runtime']],
+      ['register_incident_operation_set', ['aftercare_runtime']],
+      ['register_policy_version', ['aftercare_runtime']],
+      ['revoke_confirmation', ['aftercare_runtime']],
+      ['revoke_confirmation_authority', ['aftercare_authority_admin']],
     ]);
     expect(
       rows
         .filter((row) => !row.definer && row.grantees.length > 0)
         .map((row) => [row.name, row.grantees]),
     ).toEqual([
+      ['confirmation_json', ['aftercare_runtime']],
       ['instant_text', ['aftercare_runtime']],
       ['snapshot_json', ['aftercare_runtime']],
-      ['source_environment', ['aftercare_runtime']],
+      ['source_environment', ['aftercare_authority_admin', 'aftercare_runtime']],
     ]);
   });
 });

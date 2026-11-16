@@ -14,13 +14,17 @@ import {
   runMigrations,
 } from '../src/admin/index.ts';
 import {
+  type AuthorityAdmin,
   type BusinessEntry,
   type ControlStore,
+  createAuthorityAdmin,
   createBusinessEntry,
   createControlStore,
+  createRepairStore,
   createRoleClient,
   createSnapshotManager,
   openRolePool,
+  type RepairStore,
   type SnapshotCheckpoint,
   type SnapshotManager,
 } from '../src/index.ts';
@@ -37,6 +41,8 @@ export interface TestDatabase {
   readonly migratorPool: Pool;
   /** Runtime-side control store role. */
   readonly runtimePool: Pool;
+  /** Authority administration role: may only grant and revoke confirmation authorities. */
+  readonly authorityAdminPool: Pool;
   /**
    * TEST ONLY: acts as the schema owner, and can connect to the disposable
    * test database alone. Used to fabricate damaged histories.
@@ -46,6 +52,8 @@ export interface TestDatabase {
   /** Live-source reader on the owner connection (test only). */
   readonly reader: AuditReader;
   readonly store: ControlStore;
+  readonly repairStore: RepairStore;
+  readonly authorities: AuthorityAdmin;
   /** Snapshot manager on dedicated `aftercare_snapshot_manager` connections. */
   readonly snapshots: SnapshotManager;
   /** A snapshot manager that pauses at the protocol checkpoints. */
@@ -61,6 +69,7 @@ export function openTestDatabase(): TestDatabase {
   const investigatorPool = openRolePool(process.env, 'investigator', 'test');
   const migratorPool = openRolePool(process.env, 'migrator', 'test');
   const runtimePool = openRolePool(process.env, 'runtime', 'test');
+  const authorityAdminPool = openRolePool(process.env, 'authority_admin', 'test');
   const adminPool = openTestAdminPool(process.env);
   const connect = () => createRoleClient(process.env, 'snapshot_manager', 'test');
   return {
@@ -68,17 +77,25 @@ export function openTestDatabase(): TestDatabase {
     investigatorPool,
     migratorPool,
     runtimePool,
+    authorityAdminPool,
     adminPool,
     entry: createBusinessEntry(writerPool),
     reader: createAuditReader(migratorPool),
     store: createControlStore(runtimePool),
+    repairStore: createRepairStore(runtimePool),
+    authorities: createAuthorityAdmin(authorityAdminPool),
     snapshots: createSnapshotManager({ connect }),
     snapshotsWith: (onCheckpoint) => createSnapshotManager({ connect, onCheckpoint }),
     close: async () => {
       await Promise.all(
-        [writerPool, investigatorPool, migratorPool, runtimePool, adminPool].map((pool) =>
-          pool.end(),
-        ),
+        [
+          writerPool,
+          investigatorPool,
+          migratorPool,
+          runtimePool,
+          authorityAdminPool,
+          adminPool,
+        ].map((pool) => pool.end()),
       );
     },
   };
@@ -92,6 +109,38 @@ export async function recreateTestDatabase(): Promise<void> {
     await runMigrations(pool);
   } finally {
     await pool.end();
+  }
+}
+
+/**
+ * TEST ONLY. Runs statements as the test administrator (acting as the schema
+ * owner) in one transaction, with the user triggers of the given source tables
+ * disabled meanwhile. This is how tests fabricate damaged or uninterpretable
+ * histories; no runtime role and no production entry can do any of it.
+ */
+export async function sabotage(
+  db: TestDatabase,
+  statements: readonly string[],
+  disableTriggersOn: readonly string[] = [],
+): Promise<void> {
+  const admin = await db.adminPool.connect();
+  try {
+    await admin.query('BEGIN');
+    for (const table of disableTriggersOn) {
+      await admin.query(`ALTER TABLE aftercare.${table} DISABLE TRIGGER USER`);
+    }
+    for (const statement of statements) {
+      await admin.query(statement);
+    }
+    for (const table of disableTriggersOn) {
+      await admin.query(`ALTER TABLE aftercare.${table} ENABLE TRIGGER USER`);
+    }
+    await admin.query('COMMIT');
+  } catch (error) {
+    await admin.query('ROLLBACK');
+    throw new Error('test sabotage failed and was rolled back', { cause: error });
+  } finally {
+    admin.release();
   }
 }
 

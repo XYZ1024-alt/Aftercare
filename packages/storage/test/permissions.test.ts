@@ -69,6 +69,7 @@ describe('role separation', () => {
       'investigator',
       'snapshot_manager',
       'runtime',
+      'authority_admin',
     ]);
     for (const role of roles) {
       const pool = openRolePool(process.env, role, 'test');

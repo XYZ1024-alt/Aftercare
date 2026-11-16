@@ -1,6 +1,11 @@
 import type { Certificate, CoverageManifest } from '@aftercare/contracts';
 import { openRolePool } from '@aftercare/storage';
-import { PRINCIPAL, recreateTestDatabase, written } from '@aftercare/storage/testing';
+import {
+  sabotage as damage,
+  PRINCIPAL,
+  recreateTestDatabase,
+  written,
+} from '@aftercare/storage/testing';
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   accepted,
@@ -63,30 +68,9 @@ afterEach(async () => {
 // Whatever the last case did to the source, later test files start from a clean database.
 afterAll(recreateTestDatabase);
 
-/** Runs statements as the test administrator in one transaction, with the given triggers disabled. */
-async function sabotage(
-  statements: readonly string[],
-  disableTriggersOn: readonly string[] = [],
-): Promise<void> {
-  const admin = await harness.db.adminPool.connect();
-  try {
-    await admin.query('BEGIN');
-    for (const table of disableTriggersOn) {
-      await admin.query(`ALTER TABLE aftercare.${table} DISABLE TRIGGER USER`);
-    }
-    for (const statement of statements) {
-      await admin.query(statement);
-    }
-    for (const table of disableTriggersOn) {
-      await admin.query(`ALTER TABLE aftercare.${table} ENABLE TRIGGER USER`);
-    }
-    await admin.query('COMMIT');
-  } catch (error) {
-    await admin.query('ROLLBACK');
-    throw new Error('test sabotage failed and was rolled back', { cause: error });
-  } finally {
-    admin.release();
-  }
+/** Damages the source as the test administrator (see the shared test support). */
+function sabotage(statements: readonly string[], disableTriggersOn: readonly string[] = []) {
+  return damage(harness.db, statements, disableTriggersOn);
 }
 
 /** Registers a manifest, snapshots the (possibly damaged) source and issues its certificate. */

@@ -73,7 +73,7 @@ describe('consistent snapshot protocol', () => {
       },
     });
     expect(snapshot.schemaName).toBe(`aftercare_snap_${snapshot.snapshotId.replaceAll('-', '')}`);
-    expect(snapshot.versions.schema).toMatch(/^0010_control_binding\.sql@[0-9a-f]{16}$/);
+    expect(snapshot.versions.schema).toMatch(/^0012_repair_grants\.sql@[0-9a-f]{16}$/);
     expect(snapshot.scope.map((table) => table.table)).toEqual([
       'products',
       'orders',

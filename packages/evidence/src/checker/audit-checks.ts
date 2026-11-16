@@ -122,12 +122,12 @@ export function buildAuditIndex(rows: SnapshotRows): AuditIndex {
   };
 }
 
-function templateKey(operationType: string, templateVersion: number): string {
+export function templateKey(operationType: string, templateVersion: number): string {
   return `${operationType}@${templateVersion}`;
 }
 
 /** Template versions that are both registered in the snapshot and identical to what this adapter knows. */
-function interpretableTemplates(rows: SnapshotRows): Map<string, OperationTemplate> {
+export function interpretableTemplates(rows: SnapshotRows): Map<string, OperationTemplate> {
   const interpretable = new Map<string, OperationTemplate>();
   for (const registered of rows.operation_templates) {
     const known = findOperationTemplate(registered.operation_type, registered.template_version);
