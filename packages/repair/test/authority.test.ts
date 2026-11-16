@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   BYSTANDER,
   createProduct,
+  enterPlanning,
   type Frozen,
   freeze,
   OPERATOR,
@@ -65,9 +66,11 @@ function incidentRequest(extra: object = {}) {
   };
 }
 
-async function expectDenied(pool: Pool, statements: readonly string[], code: string) {
+async function expectDenied(pool: Pool, statements: readonly string[], code: string | RegExp) {
   for (const statement of statements) {
-    await expect(pool.query(statement), statement).rejects.toMatchObject({ code });
+    await expect(pool.query(statement), statement).rejects.toMatchObject({
+      code: typeof code === 'string' ? code : expect.stringMatching(code),
+    });
   }
 }
 
@@ -197,7 +200,7 @@ describe('who may confirm', () => {
     ).toBe('reference_rejected');
     expect(
       refused(await h.operator.confirm(incidentRequest({ snapshotId: other.ref.snapshotId }))).code,
-    ).toBe('snapshot_not_in_case');
+    ).toBe('reference_rejected');
     expect(
       refused(
         await h.operator.confirm({
@@ -223,7 +226,7 @@ describe('who may confirm', () => {
           reason: 'wrong case',
         }),
       ).code,
-    ).toBe('confirmation_not_in_case');
+    ).toBe('reference_rejected');
   });
 });
 
@@ -288,7 +291,14 @@ describe('what the roles and the records allow', () => {
         'SELECT * FROM aftercare_control.confirmation_authorities',
         'SELECT * FROM aftercare_control.confirmation_authority_revocations',
         `INSERT INTO aftercare_control.confirmations SELECT * FROM aftercare_control.confirmations`,
-        `UPDATE aftercare_control.compiled_plans SET status = 'approved'`,
+        `UPDATE aftercare_control.plan_lifecycle SET lifecycle = 'approved'`,
+        `UPDATE aftercare_control.basis_nodes SET validity = 'valid'`,
+        `UPDATE aftercare_control.case_runs SET phase = 'completed'`,
+        `UPDATE aftercare_control.case_control SET revision = revision + 1`,
+        `INSERT INTO aftercare_control.basis_edges SELECT * FROM aftercare_control.basis_edges`,
+        `DELETE FROM aftercare_control.case_events`,
+        // The execution-stage check is granted to nobody yet.
+        `SELECT aftercare_control.assert_plan_applicable_locked(gen_random_uuid(), gen_random_uuid(), 'x', 0)`,
         `DELETE FROM aftercare_control.confirmation_revocations`,
         'SELECT * FROM aftercare.products',
         "SELECT aftercare.set_price('x', 'a', 1)",
@@ -301,8 +311,9 @@ describe('what the roles and the records allow', () => {
         'SELECT * FROM aftercare_control.confirmation_authorities',
         'SELECT * FROM aftercare_control.confirmations',
         'SELECT * FROM aftercare_control.compiled_plans',
-        `SELECT aftercare_control.record_confirmation('a', 'b', gen_random_uuid(), gen_random_uuid(), 'incident', '{}', 'x')`,
-        `SELECT aftercare_control.record_compiled_plan(gen_random_uuid(), gen_random_uuid(), '{}', 'x', 'x')`,
+        'SELECT * FROM aftercare_control.case_control',
+        `SELECT aftercare_control.execute_case_command('a', 'b', gen_random_uuid(), gen_random_uuid(), 0, 'cancel_run', '{}', 'x', NULL)`,
+        `SELECT aftercare_control.record_compiled_plan(gen_random_uuid(), gen_random_uuid(), '{}', 'x', 'x', 0, '{}')`,
         'SELECT * FROM aftercare.products',
       ],
       INSUFFICIENT_PRIVILEGE,
@@ -315,7 +326,10 @@ describe('what the roles and the records allow', () => {
           [
             'SELECT * FROM aftercare_control.confirmations',
             'SELECT * FROM aftercare_control.compiled_plans',
-            `SELECT aftercare_control.record_compiled_plan(gen_random_uuid(), gen_random_uuid(), '{}', 'x', 'x')`,
+            'SELECT * FROM aftercare_control.basis_nodes',
+            'SELECT * FROM aftercare_control.case_events',
+            `SELECT aftercare_control.execute_case_command('a', 'b', gen_random_uuid(), gen_random_uuid(), 0, 'cancel_run', '{}', 'x', NULL)`,
+            `SELECT aftercare_control.record_compiled_plan(gen_random_uuid(), gen_random_uuid(), '{}', 'x', 'x', 0, '{}')`,
             `SELECT aftercare_control.grant_confirmation_authority('a', 'confirm_incident', 'x', 'x')`,
           ],
           INSUFFICIENT_PRIVILEGE,
@@ -326,7 +340,7 @@ describe('what the roles and the records allow', () => {
     }
   });
 
-  it('keeps confirmations, revocations and plans append-only, and a plan in its one status — even for the owner', async () => {
+  it('keeps confirmations, revocations and plans append-only, and a plan lifecycle at compiled — even for the owner', async () => {
     const plan = planOf(await h.compiler.compile(prepared.proposal));
     await expectDenied(
       h.db.migratorPool,
@@ -336,30 +350,27 @@ describe('what the roles and the records allow', () => {
         'TRUNCATE aftercare_control.confirmation_revocations',
         'DELETE FROM aftercare_control.confirmation_authorities',
         `UPDATE aftercare_control.policy_versions SET body = '{}'`,
-        `UPDATE aftercare_control.compiled_plans SET status = 'approved' WHERE plan_id = '${plan.planId}'`,
         `UPDATE aftercare_control.compiled_plans SET content = '{}' WHERE plan_id = '${plan.planId}'`,
         'DELETE FROM aftercare_control.compiled_plans',
       ],
       IMMUTABLE,
     );
-    // No status but the one exists, not even on insert.
-    await expect(
-      h.db.migratorPool.query(
-        `INSERT INTO aftercare_control.compiled_plans
-           (plan_id, case_id, snapshot_id, compiler_id, compiler_version, status, result, content,
-            plan_digest, content_digest, compiled_at)
-         SELECT gen_random_uuid(), case_id, snapshot_id, compiler_id, compiler_version, 'approved', result,
-                content, plan_digest, repeat('0', 64), now()
-           FROM aftercare_control.compiled_plans WHERE plan_id = $1`,
-        [plan.planId],
-      ),
-    ).rejects.toMatchObject({ constraint: 'plans_status_fixed' });
+    // No command of this stage leads past compiled, and the owner cannot set it by hand either.
+    await expectDenied(
+      h.db.migratorPool,
+      [
+        `UPDATE aftercare_control.plan_lifecycle SET lifecycle = 'approved' WHERE plan_id = '${plan.planId}'`,
+        `UPDATE aftercare_control.plan_lifecycle SET lifecycle = 'verified' WHERE plan_id = '${plan.planId}'`,
+        `DELETE FROM aftercare_control.plan_lifecycle`,
+      ],
+      /^AC40[16]$|^AC006$/,
+    );
     expect(await h.compiler.readPlan({ caseId: frozen.ref.caseId, planId: plan.planId })).toEqual(
       plan,
     );
   });
 
-  it('has the database refuse to store a plan that cites a revoked or foreign confirmation', async () => {
+  it('has the database refuse to store a plan that cites a revoked confirmation, or one for another case', async () => {
     const { content } = planOf(await h.compiler.compile(prepared.proposal));
     const extra = ok(await h.operator.confirm(incidentRequest({ statement: 'to be withdrawn' })));
     ok(
@@ -369,21 +380,54 @@ describe('what the roles and the records allow', () => {
         reason: 'withdrawn',
       }),
     );
+    const binding = async (caseId: string) => ({
+      dependencyRevision: (await h.db.caseStore.readCaseState(caseId))?.dependencyRevision ?? '0',
+      manifest: {
+        nodes: [],
+        edges: [],
+        items: [],
+        business: { nodes: [], edges: [] },
+        businessRefs: [],
+      },
+    });
 
     // Bypassing the compiler and handing the store a plan that leans on the withdrawn confirmation.
     const leaning = {
       ...content,
       references: { ...content.references, incidentConfirmationIds: [extra.confirmationId] },
     };
-    expect(await h.db.repairStore.recordCompiledPlan(leaning)).toBeNull();
+    expect(
+      await h.db.repairStore.recordCompiledPlan(leaning, await binding(frozen.ref.caseId)),
+    ).toMatchObject({ stored: false, refusal: 'confirmation_revoked' });
 
+    // The same plan filed under another case: that case has not activated this policy,
+    // and none of the confirmations are its own.
     const foreign = accepted(await h.evidence.describeSnapshot(other.ref));
-    await expect(
-      h.db.repairStore.recordCompiledPlan({
-        ...content,
-        caseId: other.ref.caseId,
-        snapshotId: foreign.snapshot.snapshotId,
-      }),
-    ).rejects.toMatchObject({ cause: { code: 'AC202' } });
+    await enterPlanning(h, other.ref.caseId);
+    expect(
+      await h.db.repairStore.recordCompiledPlan(
+        { ...content, caseId: other.ref.caseId, snapshotId: foreign.snapshot.snapshotId },
+        await binding(other.ref.caseId),
+      ),
+    ).toMatchObject({ stored: false, refusal: 'input_not_usable' });
+
+    // A dependency record that leaves out what the plan cites is refused outright: the
+    // database holds the plan node against every record the plan content names.
+    const { dependencyRevision, manifest } = await binding(frozen.ref.caseId);
+    const different = { ...content, obligations: [] };
+    for (const underReported of [
+      manifest,
+      { ...manifest, nodes: [{ type: 'plan' as const, key: 'plan', detail: {} }] },
+    ]) {
+      await expect(
+        h.db.repairStore.recordCompiledPlan(different, {
+          dependencyRevision,
+          manifest: underReported,
+        }),
+      ).rejects.toMatchObject({ cause: { code: 'AC201' } });
+    }
+    expect(await h.db.caseStore.readCaseState(frozen.ref.caseId)).toMatchObject({
+      dependencyRevision,
+    });
   });
 });

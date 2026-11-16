@@ -1,15 +1,12 @@
 import {
   type CompiledPlan,
-  type ConfirmationBody,
   type ConfirmationKind,
-  type ConfirmationOutcome,
   type ConfirmationRecord,
   type ConfirmationRef,
-  type ConfirmationRejectionCode,
   compiledPlanSchema,
   confirmationRecordSchema,
+  type DependencyManifest,
   digestPlan,
-  type IdentityContext,
   type IncidentOperationSet,
   type IncidentOperationSetBody,
   incidentOperationSetSchema,
@@ -30,7 +27,8 @@ import type { z } from 'zod';
  *
  * Every document is stored with the sha256 of its canonical JSON and verified
  * against it on every read. There is no statement here that updates or deletes
- * anything, and none that touches the source or a snapshot.
+ * anything, and none that touches the source or a snapshot. Confirmations are
+ * recorded and revoked through case commands (see case-store.ts), not here.
  */
 const REPAIR_STATEMENTS = {
   registerPolicy:
@@ -50,10 +48,6 @@ const REPAIR_STATEMENTS = {
              'registeredAt', aftercare_control.instant_text(s.registered_at), 'body', s.body) AS document
       FROM aftercare_control.incident_operation_sets AS s
      WHERE s.case_id = $1 AND s.set_id = $2`,
-  recordConfirmation:
-    'SELECT aftercare_control.record_confirmation($1, $2, $3, $4, $5, $6::jsonb, $7) AS document',
-  revokeConfirmation:
-    'SELECT aftercare_control.revoke_confirmation($1, $2, $3, $4, $5) AS document',
   confirmation: `
     SELECT aftercare_control.confirmation_json(c) AS document
       FROM aftercare_control.confirmations AS c
@@ -64,12 +58,11 @@ const REPAIR_STATEMENTS = {
      WHERE c.case_id = $1 AND c.kind = $2
      ORDER BY c.confirmed_at, c.confirmation_id
      LIMIT $3`,
-  recordPlan:
-    'SELECT aftercare_control.record_compiled_plan($1, $2, $3::jsonb, $4, $5) AS document',
+  recordPlan: `
+    SELECT aftercare_control.record_compiled_plan(
+             $1, $2, $3::jsonb, $4, $5, $6::bigint, $7::jsonb) AS document`,
   plan: `
-    SELECT jsonb_build_object(
-             'planId', p.plan_id, 'compiledAt', aftercare_control.instant_text(p.compiled_at),
-             'status', p.status, 'planDigest', p.plan_digest, 'content', p.content) AS document
+    SELECT aftercare_control.plan_json(p) AS document
       FROM aftercare_control.compiled_plans AS p
      WHERE p.case_id = $1 AND p.plan_id = $2`,
 } as const;
@@ -79,15 +72,25 @@ type RepairStatement = keyof typeof REPAIR_STATEMENTS;
 /** At most this many confirmations of one kind are considered per case. */
 export const MAX_CONFIRMATIONS_LISTED = 1_000;
 
-const REJECTION_BY_SQLSTATE: Readonly<Record<string, ConfirmationRejectionCode>> = {
-  AC201: 'invalid_request',
-  AC202: 'reference_rejected',
-  AC301: 'not_authorized',
-  AC302: 'already_revoked',
-};
+/**
+ * Why the database did not store a compiled plan. Each of these means an
+ * input changed, or the case moved, between reading the inputs and storing.
+ */
+const PLAN_REFUSAL_BY_SQLSTATE = {
+  AC303: 'confirmation_revoked',
+  AC406: 'inputs_changed',
+  AC401: 'case_not_planning',
+  AC403: 'input_not_usable',
+} as const;
+export type PlanRefusal = (typeof PLAN_REFUSAL_BY_SQLSTATE)[keyof typeof PLAN_REFUSAL_BY_SQLSTATE];
 
-/** A plan could not be stored because a confirmation it relies on is no longer valid. */
-export const PLAN_CONFIRMATION_INVALID = 'AC303';
+export type PlanRecordOutcome =
+  | { readonly stored: true; readonly plan: CompiledPlan }
+  | { readonly stored: false; readonly refusal: PlanRefusal; readonly message: string };
+
+function isPlanRefusalState(code: string): code is keyof typeof PLAN_REFUSAL_BY_SQLSTATE {
+  return code in PLAN_REFUSAL_BY_SQLSTATE;
+}
 
 function verified<Document extends { readonly digest: string; readonly body: JsonValue }>(
   kind: string,
@@ -123,16 +126,6 @@ export interface RepairStore {
     readonly caseId: string;
     readonly setId: string;
   }) => Promise<IncidentOperationSet | null>;
-  /** Records a confirmation by the identity's principal; the database checks its authority. */
-  readonly recordConfirmation: (
-    identity: IdentityContext,
-    body: ConfirmationBody,
-  ) => Promise<ConfirmationOutcome<ConfirmationRecord>>;
-  readonly revokeConfirmation: (
-    identity: IdentityContext,
-    ref: ConfirmationRef,
-    reason: string,
-  ) => Promise<ConfirmationOutcome<ConfirmationRecord>>;
   /** The confirmation, with its revocation if any, only if it belongs to the given case. */
   readonly findConfirmation: (ref: ConfirmationRef) => Promise<ConfirmationRecord | null>;
   /** Every confirmation of one kind of a case, revoked ones included, oldest first. */
@@ -141,11 +134,15 @@ export interface RepairStore {
     kind: ConfirmationKind,
   ) => Promise<ConfirmationRecord[]>;
   /**
-   * Stores the plan, or returns the plan already stored with exactly this
-   * content. Null when a confirmation the plan relies on was revoked in the
-   * meantime.
+   * Stores the plan with its dependency record, or returns the VALID plan
+   * already stored with exactly this content. `dependencyRevision` is the
+   * dependency revision of the case the inputs were read at: if the case has
+   * moved on since, or an input is no longer usable, nothing is stored.
    */
-  readonly recordCompiledPlan: (content: PlanContent) => Promise<CompiledPlan | null>;
+  readonly recordCompiledPlan: (
+    content: PlanContent,
+    binding: { readonly dependencyRevision: string; readonly manifest: DependencyManifest },
+  ) => Promise<PlanRecordOutcome>;
   readonly findCompiledPlan: (ref: PlanRef) => Promise<CompiledPlan | null>;
 }
 
@@ -177,25 +174,6 @@ export function createRepairStore(pool: Pool): RepairStore {
     return document;
   }
 
-  /** Runs a confirmation write; the authorisation and reference refusals of the database become rejections. */
-  async function confirmationWrite(
-    statement: 'recordConfirmation' | 'revokeConfirmation',
-    parameters: readonly string[],
-  ): Promise<ConfirmationOutcome<ConfirmationRecord>> {
-    try {
-      return { ok: true, value: await one(statement, parameters, confirmationRecordSchema) };
-    } catch (error) {
-      const cause = error instanceof Error ? error.cause : undefined;
-      if (cause instanceof DatabaseError && cause.code !== undefined) {
-        const code = REJECTION_BY_SQLSTATE[cause.code];
-        if (code !== undefined) {
-          return { ok: false, rejection: { code, message: cause.message } };
-        }
-      }
-      throw error;
-    }
-  }
-
   return {
     registerPolicyVersion: (principal, body) =>
       one(
@@ -225,26 +203,6 @@ export function createRepairStore(pool: Pool): RepairStore {
       return set === undefined ? null : verified('incident operation set', ref.setId, set);
     },
 
-    recordConfirmation: (identity, body) =>
-      confirmationWrite('recordConfirmation', [
-        identity.principal,
-        identity.source,
-        body.caseId,
-        body.snapshotId,
-        body.kind,
-        JSON.stringify(body),
-        digestJson(body),
-      ]),
-
-    revokeConfirmation: (identity, ref, reason) =>
-      confirmationWrite('revokeConfirmation', [
-        identity.principal,
-        identity.source,
-        ref.caseId,
-        ref.confirmationId,
-        reason,
-      ]),
-
     findConfirmation: async (ref) => {
       const [confirmation] = await documents(
         'confirmation',
@@ -267,25 +225,34 @@ export function createRepairStore(pool: Pool): RepairStore {
       );
     },
 
-    recordCompiledPlan: async (content) => {
+    recordCompiledPlan: async (content, binding) => {
       try {
-        return verifiedPlan(
-          await one(
-            'recordPlan',
-            [
-              content.caseId,
-              content.snapshotId,
-              JSON.stringify(content),
-              digestPlan(content),
-              digestJson(content),
-            ],
-            compiledPlanSchema,
-          ),
+        const plan = await one(
+          'recordPlan',
+          [
+            content.caseId,
+            content.snapshotId,
+            JSON.stringify(content),
+            digestPlan(content),
+            digestJson(content),
+            binding.dependencyRevision,
+            JSON.stringify(binding.manifest),
+          ],
+          compiledPlanSchema,
         );
+        return { stored: true, plan: verifiedPlan(plan) };
       } catch (error) {
         const cause = error instanceof Error ? error.cause : undefined;
-        if (cause instanceof DatabaseError && cause.code === PLAN_CONFIRMATION_INVALID) {
-          return null;
+        if (
+          cause instanceof DatabaseError &&
+          cause.code !== undefined &&
+          isPlanRefusalState(cause.code)
+        ) {
+          return {
+            stored: false,
+            refusal: PLAN_REFUSAL_BY_SQLSTATE[cause.code],
+            message: cause.message,
+          };
         }
         throw error;
       }

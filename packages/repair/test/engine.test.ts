@@ -190,6 +190,7 @@ function replay(
     },
     policy: POLICY,
     untrustedObjects: new Map(),
+    distrustedOperations: new Map(),
     refs: { policy: 'policy', certificate: 'certificate', baselineConfirmation: 'baseline' },
   });
 }

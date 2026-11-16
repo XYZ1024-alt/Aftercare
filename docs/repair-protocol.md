@@ -48,7 +48,7 @@
 - 确认绑定**一个快照**。换快照必须重新确认，不会静默沿用。
 - 撤回是 `confirmation_revocations` 里的一条追加记录，确认行本身永不修改；撤回者同样需要对应能力。
 - 编译时检查所引用确认均未撤回；`record_compiled_plan()` 在落库时对这些确认行加共享锁并再查一次（与撤回的行锁互斥），撤回与落库不会交错。
-- 已落库的计划**不会**因后续撤回而失效——完整的失效传播属于第四阶段。计划里的义务 `confirmations_still_valid` 与批准前提 `confirmations_revalidated` 明确要求届时复核。
+- 自第四阶段起，确认的记录与撤回是案例命令（`record_confirmation` / `revoke_confirmation`），撤回在同一事务内使依赖它的计划 stale；见 [dependency-protocol.md](dependency-protocol.md)。计划里的义务 `confirmations_still_valid` 与批准前提 `confirmations_revalidated` 仍要求执行时复核。
 - **业务确认不是执行批准**。本阶段没有任何记录能授予写权限。
 
 ## 4. PolicyVersion
@@ -157,8 +157,8 @@ parentPlanRef?          { planId }
 
 ## 8. CompiledPlan
 
-存于 `aftercare_control.compiled_plans`，只追加，不可变。`status` 恒为 `compiled_pending_execution_binding`
-（列约束固定，owner 也无法写入 approved/applied/verified）。
+存于 `aftercare_control.compiled_plans`，只追加，不可变。生命周期（`plan_lifecycle`，本阶段恒为 `compiled`）与有效性（`basis_nodes`）
+自第四阶段起是案例状态，不在计划行上；见 [dependency-protocol.md](dependency-protocol.md) §2。
 
 | 部分                               | 内容                                                                                                           |
 | ---------------------------------- | -------------------------------------------------------------------------------------------------------------- |
@@ -263,7 +263,7 @@ suggestions     [{ action, detail }]   可行动的补证或澄清建议
 - 证据引用只用于绑定与校验（属于本案例本快照、观察到事故操作）；计算使用编译器自己对快照的整段读取。
 - 每个案例每类确认最多读取 1000 条；超出时较新的确认不会被看到，结果只会更保守（报未确认）。
 - 身份上下文的真实性、Runtime 传入主体的真实性是信任前提，本仓库不实现也不验证认证。
-- 计划落库后不随确认撤回、凭证更新或快照清理而失效。
+- 计划落库后的失效由第四阶段的依赖图与命令处理器负责（见 dependency-protocol.md）。
 
 ## 13. 下一阶段需要的接口
 

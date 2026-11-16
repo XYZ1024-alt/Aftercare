@@ -27,7 +27,20 @@ export const CONFIRMATION_CAPABILITIES = {
   replay_policy: 'confirm_replay_policy',
 } as const satisfies Record<ConfirmationKind, string>;
 export type ConfirmationCapability = (typeof CONFIRMATION_CAPABILITIES)[ConfirmationKind];
-export const CAPABILITIES = Object.values(CONFIRMATION_CAPABILITIES);
+
+/**
+ * Capabilities that gate control commands of a case. Like the confirmation
+ * capabilities they are granted per principal and source environment by the
+ * authority administrator, never by the Runtime.
+ */
+export const CASE_CAPABILITIES = [
+  'investigate_case',
+  'manage_case',
+  'declare_business_fact',
+] as const;
+export type CaseCapability = (typeof CASE_CAPABILITIES)[number];
+
+export const CAPABILITIES = [...Object.values(CONFIRMATION_CAPABILITIES), ...CASE_CAPABILITIES];
 
 /** A grant of one capability to one principal for one source environment. */
 export const authorityGrantRequestSchema = z.strictObject({
@@ -172,29 +185,3 @@ export const confirmationRefSchema = z.strictObject({
   confirmationId: z.uuid(),
 });
 export type ConfirmationRef = z.output<typeof confirmationRefSchema>;
-
-export const revocationRequestSchema = confirmationRefSchema.extend({
-  reason: z.string().min(1).max(2000),
-});
-
-export const CONFIRMATION_REJECTION_CODES = [
-  'invalid_request',
-  'snapshot_not_in_case',
-  'snapshot_dropped',
-  /** The identity context's principal holds no active grant of the needed capability. */
-  'not_authorized',
-  /** Something the request cites does not belong to the case or environment. */
-  'reference_rejected',
-  'confirmation_not_in_case',
-  'already_revoked',
-] as const;
-export type ConfirmationRejectionCode = (typeof CONFIRMATION_REJECTION_CODES)[number];
-
-export interface ConfirmationRejection {
-  readonly code: ConfirmationRejectionCode;
-  readonly message: string;
-}
-
-export type ConfirmationOutcome<T> =
-  | { readonly ok: true; readonly value: T }
-  | { readonly ok: false; readonly rejection: ConfirmationRejection };

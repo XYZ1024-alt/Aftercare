@@ -16,9 +16,11 @@ import {
 import {
   type AuthorityAdmin,
   type BusinessEntry,
+  type CaseStore,
   type ControlStore,
   createAuthorityAdmin,
   createBusinessEntry,
+  createCaseStore,
   createControlStore,
   createRepairStore,
   createRoleClient,
@@ -53,6 +55,7 @@ export interface TestDatabase {
   readonly reader: AuditReader;
   readonly store: ControlStore;
   readonly repairStore: RepairStore;
+  readonly caseStore: CaseStore;
   readonly authorities: AuthorityAdmin;
   /** Snapshot manager on dedicated `aftercare_snapshot_manager` connections. */
   readonly snapshots: SnapshotManager;
@@ -83,6 +86,7 @@ export function openTestDatabase(): TestDatabase {
     reader: createAuditReader(migratorPool),
     store: createControlStore(runtimePool),
     repairStore: createRepairStore(runtimePool),
+    caseStore: createCaseStore(runtimePool),
     authorities: createAuthorityAdmin(authorityAdminPool),
     snapshots: createSnapshotManager({ connect }),
     snapshotsWith: (onCheckpoint) => createSnapshotManager({ connect, onCheckpoint }),

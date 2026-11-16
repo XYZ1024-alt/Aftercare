@@ -73,6 +73,14 @@ export interface ReplayInput {
    * with the checks that failed. Their fields cannot be resolved by any rule.
    */
   readonly untrustedObjects: ReadonlyMap<string, readonly string[]>;
+  /**
+   * Operations a human declared the recorded reads of to be unreliable, with
+   * the reference of that declaration. They are replayed like operations of
+   * unknown meaning: what they wrote after the incident is unresolved. An
+   * incident operation is omitted either way, so the declaration changes
+   * nothing for it.
+   */
+  readonly distrustedOperations: ReadonlyMap<string, string>;
   /** References used as rule sources in counterexamples. */
   readonly refs: {
     readonly policy: string;
@@ -184,7 +192,7 @@ function isBusinessRead(read: HistoryRead): boolean {
  * recorded a business dependency the meaning does not have (or lacks the one
  * it needs) is treated like an operation of unknown meaning.
  */
-function readsFitSemantics(operation: HistoryOperation, semantics: SemanticKind): boolean {
+export function readsFitSemantics(operation: HistoryOperation, semantics: SemanticKind): boolean {
   const businessReads = operation.reads.filter(isBusinessRead);
   const [only] = businessReads;
   switch (semantics) {
@@ -432,8 +440,12 @@ export function replayHistory(input: ReplayInput): ReplayResult {
   const applyUnknown = (
     operation: HistoryOperation,
     replayed: boolean,
-    reason: 'template_not_interpretable' | 'reads_do_not_fit_semantics',
+    reason:
+      | 'template_not_interpretable'
+      | 'reads_do_not_fit_semantics'
+      | 'read_scope_declared_unknown',
   ): void => {
+    const declaration = input.distrustedOperations.get(operation.operationId);
     const seen = new Set<Track>();
     for (const write of operation.writes) {
       // An order is one immutable fact: it is tracked as a whole, not per field.
@@ -490,14 +502,19 @@ export function replayHistory(input: ReplayInput): ReplayResult {
               description:
                 reason === 'template_not_interpretable'
                   ? `the registered meaning and read set of ${operation.operationType}@${operation.templateVersion}`
-                  : `what ${operation.operationType}@${operation.templateVersion} computed from the business values it recorded reading`,
+                  : reason === 'read_scope_declared_unknown'
+                    ? `what operation ${operation.operationId} actually read: its recorded reads were declared unreliable`
+                    : `what ${operation.operationType}@${operation.templateVersion} computed from the business values it recorded reading`,
             },
           ],
           expected: {
             condition: reached
               ? 'every operation writing an incident-affected field cites a template version this adapter interprets'
               : 'every operation recorded after the incident has a verifiable read set, so that it can be shown not to depend on incident-affected values',
-            ruleSource: { kind: 'operation_template', ref: templateRef(operation) },
+            ruleSource:
+              reason === 'read_scope_declared_unknown' && declaration !== undefined
+                ? { kind: 'human_declaration', ref: declaration }
+                : { kind: 'operation_template', ref: templateRef(operation) },
           },
           observed: {
             sourceKind: 'snapshot',
@@ -918,6 +935,13 @@ export function replayHistory(input: ReplayInput): ReplayResult {
     }
     if (!readsFitSemantics(operation, semantics)) {
       applyUnknown(operation, replayed, 'reads_do_not_fit_semantics');
+      continue;
+    }
+    if (
+      input.distrustedOperations.has(operation.operationId) &&
+      !input.incidentOperationIds.has(operation.operationId)
+    ) {
+      applyUnknown(operation, replayed, 'read_scope_declared_unknown');
       continue;
     }
     switch (semantics) {

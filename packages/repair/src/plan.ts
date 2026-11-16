@@ -3,6 +3,7 @@ import type {
   CompiledPlan,
   ConfirmationOf,
   Counterexample,
+  DeclarationRecord,
   DerivationStep,
   DomainRef,
   Evidence,
@@ -66,6 +67,12 @@ export interface UnresolvedDomain {
   readonly cause: Counterexample;
 }
 
+/** A human declaration the compilation took into account, and what it did with it. */
+export interface ConsideredDeclaration {
+  readonly record: DeclarationRecord;
+  readonly treatment: PlanContent['inputs']['declarations'][number]['treatment'];
+}
+
 export interface PlanInputs {
   readonly snapshot: SnapshotRecord;
   readonly certificate: Certificate;
@@ -76,6 +83,9 @@ export interface PlanInputs {
   readonly policy: RegisteredPolicyVersion;
   readonly policyConfirmation: ConfirmationOf<'replay_policy'>;
   readonly evidence: readonly Evidence[];
+  readonly declarations: readonly ConsideredDeclaration[];
+  /** Supported hypotheses the proposal rests on. */
+  readonly hypotheses: readonly { readonly hypothesisId: string; readonly digest: string }[];
   readonly parentPlan: CompiledPlan | null;
   readonly history: History;
   readonly replay: ReplayResult;
@@ -201,6 +211,13 @@ export function assemblePlan(inputs: PlanInputs): PlanContent {
     left.evidenceId < right.evidenceId ? -1 : 1,
   );
   const evidenceResults = new Map(evidence.map((entry) => [entry.resultDigest, entry.tool.name]));
+  // By content: two declarations with the same body are one statement.
+  const declarationStatements = new Map(
+    inputs.declarations.map(({ record, treatment }) => [
+      record.digest,
+      { digest: record.digest, kind: record.body.kind, treatment },
+    ]),
+  );
 
   return {
     planFormat: 1,
@@ -218,6 +235,8 @@ export function assemblePlan(inputs: PlanInputs): PlanContent {
       policyConfirmationId: inputs.policyConfirmation.confirmationId,
       certificateId: certificate.certificateId,
       evidence: evidence.map(({ evidenceId, resultDigest }) => ({ evidenceId, resultDigest })),
+      declarationIds: inputs.declarations.map(({ record }) => record.declarationId).sort(),
+      hypothesisIds: inputs.hypotheses.map((hypothesis) => hypothesis.hypothesisId).sort(),
       parentPlanId: inputs.parentPlan?.planId ?? null,
     },
     parentPlanDigest: inputs.parentPlan?.planDigest ?? null,
@@ -281,6 +300,12 @@ export function assemblePlan(inputs: PlanInputs): PlanContent {
       evidence: [...evidenceResults]
         .sort(([left], [right]) => (left < right ? -1 : 1))
         .map(([resultDigest, tool]) => ({ tool, resultDigest })),
+      declarations: [...declarationStatements.values()].sort((left, right) =>
+        left.digest < right.digest ? -1 : 1,
+      ),
+      hypotheses: [...new Set(inputs.hypotheses.map((hypothesis) => hypothesis.digest))]
+        .sort()
+        .map((digest) => ({ digest })),
       // The replay walks the whole recorded history, from the first commit to
       // the snapshot watermark, to bind the baseline before it replays.
       queryScopes: [

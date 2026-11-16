@@ -1,16 +1,18 @@
-import { accepted } from '@aftercare/evidence/testing';
 import { recreateTestDatabase, sabotage } from '@aftercare/storage/testing';
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   addDelta,
   batchSetPrice,
   candidatesOf,
+  certify,
   codesOf,
+  collect,
   confirmIncident,
   confirmPolicy,
   counterexamplesOf,
   createOrder,
   createProduct,
+  enterPlanning,
   freeze,
   obscureOperation,
   ok,
@@ -412,9 +414,7 @@ describe('unknown meaning and its reach', () => {
     await obscureOperation(h, wrong.operationId, 'a');
     const order = await createOrder(h, 'o-1', 'a');
     const frozen = await freeze(h, ['a']);
-    const pricing = accepted(
-      await h.evidence.collect({ ...frozen.ref, query: { tool: 'order.pricing', orderId: 'o-1' } }),
-    );
+    const pricing = await collect(h, frozen.ref, { tool: 'order.pricing', orderId: 'o-1' });
     const operationIds = [wrong.operationId, order.operationId];
     const { proposal } = await prepare(h, frozen, {
       incident: operationIds,
@@ -855,7 +855,8 @@ describe('confirmations at compile time', () => {
     // The same statements registered again under new identifiers, and a certificate issued
     // again with the same findings: another record, the same semantic digest.
     const sameSet = await registerSet(h, frozen, [wrong.operationId]);
-    const reissued = accepted(await h.evidence.issueCertificate(frozen.ref));
+    // Activating it invalidates nothing: it establishes exactly what the previous one did.
+    const reissued = await certify(h, frozen.ref);
     const again = planOf(
       await h.compiler.compile({ ...proposal, incidentOperationSetRef: { setId: sameSet.setId } }),
     );
@@ -864,7 +865,29 @@ describe('confirmations at compile time', () => {
     expect(again.content.references.certificateId).not.toBe(first.content.references.certificateId);
     expect(again.planDigest).toBe(first.planDigest);
 
+    // One more evidence record among the inputs: a different digest.
+    const more = await collect(h, frozen.ref, {
+      tool: 'operation.detail',
+      operationId: wrong.operationId,
+    });
+    const withMoreEvidence = planOf(
+      await h.compiler.compile({
+        ...proposal,
+        evidenceRefs: [...proposal.evidenceRefs, { evidenceId: more.evidenceId }],
+      }),
+    );
+    expect(withMoreEvidence.planDigest).not.toBe(first.planDigest);
+
+    // A plan that supersedes another names it, and is a different plan.
+    const successor = planOf(
+      await h.compiler.compile({ ...proposal, parentPlanRef: { planId: first.planId } }),
+    );
+    expect(successor.content.parentPlanDigest).toBe(first.planDigest);
+    expect(successor.content.references.parentPlanId).toBe(first.planId);
+    expect(successor.planDigest).not.toBe(first.planDigest);
+
     // A different policy version, although it leads to the same candidate: a different digest.
+    // Activating it supersedes the policy the plans above were compiled under.
     const otherPolicy = await registerPolicy(
       h,
       standardPolicy(h, {
@@ -888,29 +911,6 @@ describe('confirmations at compile time', () => {
     );
     expect(candidatesOf(underOtherPolicy)).toEqual(candidatesOf(first));
     expect(underOtherPolicy.planDigest).not.toBe(first.planDigest);
-
-    // One more evidence record among the inputs: a different digest.
-    const more = accepted(
-      await h.evidence.collect({
-        ...frozen.ref,
-        query: { tool: 'operation.detail', operationId: wrong.operationId },
-      }),
-    );
-    const withMoreEvidence = planOf(
-      await h.compiler.compile({
-        ...proposal,
-        evidenceRefs: [...proposal.evidenceRefs, { evidenceId: more.evidenceId }],
-      }),
-    );
-    expect(withMoreEvidence.planDigest).not.toBe(first.planDigest);
-
-    // A plan that supersedes another names it, and is a different plan.
-    const successor = planOf(
-      await h.compiler.compile({ ...proposal, parentPlanRef: { planId: first.planId } }),
-    );
-    expect(successor.content.parentPlanDigest).toBe(first.planDigest);
-    expect(successor.content.references.parentPlanId).toBe(first.planId);
-    expect(successor.planDigest).not.toBe(first.planDigest);
   });
 });
 
@@ -967,6 +967,7 @@ describe('references across cases and snapshots', () => {
     const later = await freeze(h, ['a'], earlier.ref.caseId);
 
     // Everything was confirmed looking at the earlier snapshot; none of it carries over silently.
+    await enterPlanning(h, earlier.ref.caseId);
     const outcome = await h.compiler.compile({ ...proposal, snapshotId: later.ref.snapshotId });
     expect(codesOf(outcome).sort()).toEqual([
       'preflight/input_not_applicable',
@@ -979,12 +980,10 @@ describe('references across cases and snapshots', () => {
     const watermark = await seed({ a: 10_000n, z: 10_000n });
     const incident = await setPrice(h, 'a', 8_000n);
     const frozen = await freeze(h, ['a']);
-    const unrelated = accepted(
-      await h.evidence.collect({
-        ...frozen.ref,
-        query: { tool: 'product.version_history', productId: 'z' },
-      }),
-    );
+    const unrelated = await collect(h, frozen.ref, {
+      tool: 'product.version_history',
+      productId: 'z',
+    });
     const { proposal } = await prepare(h, frozen, {
       incident: [incident.operationId],
       trustedWatermark: watermark,

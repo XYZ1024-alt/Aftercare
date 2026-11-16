@@ -16,6 +16,7 @@
     "db:seed": "pnpm --filter @aftercare/storage run db:seed",
     "demo": "pnpm --filter @aftercare/evidence run demo",
     "demo:repair": "pnpm --filter @aftercare/repair run demo",
+    "demo:case": "pnpm --filter @aftercare/casework run demo",
     "dev:web": "pnpm --filter @aftercare/web run dev",
     "dev:worker": "pnpm --filter @aftercare/worker run start",
     "typecheck": "tsc -p tsconfig.json && pnpm -r run typecheck",

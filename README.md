@@ -2,10 +2,11 @@
 
 业务数据事故修复 Agent。目标架构是「单 Agent + Runtime + 确定性引擎」，在隔离沙箱内修复事故并保留后续合法变化。
 
-**当前进度：第三阶段。** 已实现或验证的是：受控业务写入口与原子审计（第一阶段）；一致快照、受限只读取证、接入资格检查（第二阶段）；
-业务确认、策略版本与**确定性修复编译**（第三阶段）——从冻结快照、已确认的事故操作、基线与策略编译出不可变修复计划或结构化反例。
+**当前进度：第四阶段。** 已实现或验证的是：受控业务写入口与原子审计（第一阶段）；一致快照、受限只读取证、接入资格检查（第二阶段）；
+业务确认、策略版本与**确定性修复编译**（第三阶段）；**依赖追踪、确定性失效传播与持久化案例状态**（第四阶段）——
+两类依赖图、受限命令处理器（幂等、修订检查、同事务失效与事件）、run 阶段 / 计划生命周期 / 有效性三者分离。
 
-**尚未实现**：Agent 循环、事故判定、沙箱补丁应用、运行时验证、执行批准、依赖失效传播、修复 SQL 导出、生产接入。
+**尚未实现**：Agent 循环、事故判定、沙箱补丁应用、运行时验证、执行批准、worker 租约与 fencing、修复 SQL 导出、生产接入。
 编译出的计划只是"待执行绑定的编译产物"，其中的候选值未经任何运行时验证。本仓库不调用任何模型，不需要 API key，
 也不能据此声称 Agent 已能自主修复。
 
@@ -19,18 +20,20 @@
 
 ## 结构
 
-| 路径                        | 职责                                                                                               |
-| --------------------------- | -------------------------------------------------------------------------------------------------- |
-| `apps/web`                  | Next.js：首页与 `/api/health`                                                                      |
-| `apps/worker`               | Node.js：启动、数据库连通性检查、优雅退出                                                          |
-| `packages/domain`           | 金额（bigint 分）、操作模板及历史版本、锁键、规范 JSON 与快照摘要                                  |
-| `packages/contracts`        | Zod 契约：写入、快照、覆盖清单、凭证、证据、确认、策略、提案、计划与反例                           |
-| `packages/storage`          | 连接、迁移、受控写入口、快照管理协议、快照只读会话、控制面与修复受限存储入口、授权管理入口         |
-| `packages/evidence`         | 覆盖清单构造、资格检查器、取证工具与内部服务接口、演示脚本                                         |
-| `packages/repair`           | 确认服务（绑定身份上下文）、确定性语义引擎、策略解析、终态约束、计划装配与摘要、编译入口、演示脚本 |
-| `docs/write-protocol.md`    | 锁键、写事务协议、水位与依赖类别                                                                   |
-| `docs/snapshot-protocol.md` | 快照协议、摘要格式、资格检查、取证接口、依赖记录、信任前提                                         |
-| `docs/repair-protocol.md`   | 确认与权限、策略组合、提案契约、语义引擎、部分结果、计划与摘要、反例、限制                         |
+| 路径                          | 职责                                                                                                                    |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `apps/web`                    | Next.js：首页与 `/api/health`                                                                                           |
+| `apps/worker`                 | Node.js：启动、数据库连通性检查、优雅退出                                                                               |
+| `packages/domain`             | 金额（bigint 分）、操作模板及历史版本、锁键、规范 JSON 与快照摘要                                                       |
+| `packages/contracts`          | Zod 契约：写入、快照、覆盖清单、凭证、证据、确认、策略、提案、计划与反例                                                |
+| `packages/storage`            | 连接、迁移、受控写入口、快照管理协议、快照只读会话、控制面与修复受限存储入口、授权管理入口                              |
+| `packages/evidence`           | 覆盖清单构造、资格检查器、取证工具与内部服务接口、演示脚本                                                              |
+| `packages/repair`             | 登记服务（策略版本、事故集合）、确定性语义引擎、策略解析、终态约束、计划装配与摘要、计划依赖推导、编译入口、演示脚本    |
+| `packages/casework`           | 案例命令处理器（绑定身份上下文；确认、撤回、声明、假设、快照/证书/策略/语义版本激活、run 迁移）、只读检视接口、演示脚本 |
+| `docs/write-protocol.md`      | 锁键、写事务协议、水位与依赖类别                                                                                        |
+| `docs/snapshot-protocol.md`   | 快照协议、摘要格式、资格检查、取证接口、依赖记录、信任前提                                                              |
+| `docs/repair-protocol.md`     | 确认与权限、策略组合、提案契约、语义引擎、部分结果、计划与摘要、反例、限制                                              |
+| `docs/dependency-protocol.md` | 两类依赖图、依赖项契约、命令与幂等、失效传播与保守规则、状态迁移表、第五阶段接口                                        |
 
 ## 本地启动
 
@@ -47,8 +50,8 @@ pnpm dev:web                # http://127.0.0.1:3100 ，健康检查 /api/health
 pnpm dev:worker
 ```
 
-**从前一阶段升级**：把 `.env.example` 中新增的密码变量补进 `.env`（第三阶段新增 `AFTERCARE_AUTHORITY_ADMIN_PASSWORD`），
-然后重新运行 `pnpm db:bootstrap`（创建新角色）与 `pnpm db:migrate`（应用 0011、0012）。
+**从前一阶段升级**：`pnpm install`（新增 workspace 包 `@aftercare/casework`），然后 `pnpm db:migrate`（应用 0013–0015；没有新角色或密码）。
+已有案例会得到控制记录与第一个 run；此前存储的计划没有依赖记录，`planApplicability` 对它们报告 `plan_not_tracked`，不会被当作可用。
 
 ## 检查与测试
 
@@ -62,6 +65,8 @@ pnpm test                   # 需要数据库已启动并完成 db:bootstrap
 并发用例用显式屏障与 `pg_locks` / `pg_stat_activity` 观察来协调，不依赖 sleep。
 
 只跑第三阶段：`pnpm vitest run packages/repair`（`engine.test.ts` 是不连数据库的纯单元测试，其余为集成测试）。
+只跑第四阶段：`pnpm vitest run packages/casework packages/repair/test/invalidation`——
+`invalidation.test.ts` 在五商品场景上逐项验证失效集合（预期集合是手写字面量），`state.test.ts` 验证状态迁移、幂等、并发冲突、回滚与重启。
 
 其他命令：`pnpm db:migrate:test`、`pnpm db:reset:test`、`pnpm db:down`。
 
@@ -103,6 +108,24 @@ pnpm demo:repair
 
 事故是通过控制面的**业务确认**表达的，业务表与证据表里没有任何事故标签或期望答案。
 
+### 第四阶段演示：依赖 → 澄清 → 失效 → 重编译 → 撤回基线
+
+```bash
+pnpm db:up && pnpm db:bootstrap && pnpm db:migrate
+pnpm demo:case
+```
+
+在**开发库**上执行并打印真实记录：
+
+1. 三个商品、一次错误批量改价、一次增量、一次后续绝对写（策略不含覆写保留规则，因此 c 未决）；
+2. 建案例，经命令把快照设为当前、激活证书与证据，记录确认、激活策略、进入 planning，编译出 partial 计划及其适用性（`executable: false`）；
+3. 打印 a 的候选值节点依赖什么：确认、策略、锚点、组件版本、数据依赖项（含绑定了谓词/快照/区间/保证的负向查询）与业务图引用；
+4. 记录一条关于 c 的澄清：只有 `plan_unresolved:c`、`plan_isolation` 与计划整体变 stale，a/b 的候选保持有效；打印修订、依赖修订、失效原因与事件效果；
+5. 重新编译：新计划引用了该澄清，复用的部件以 `recomputed_identical` 指回旧部件，旧计划不复活；
+6. 撤回基线确认：两个计划全部 stale，再编译得到 `confirmation_revoked`。
+
+没有任何步骤应用补丁或批准执行。
+
 ## 测试库与开发库隔离
 
 - 两个独立数据库（默认 `aftercare_dev` / `aftercare_test`），配置里两者同名会被拒绝。
@@ -119,16 +142,16 @@ pnpm demo:repair
 
 ## 角色与权限
 
-| 角色                         | 用途                         | 权限                                                                                                                                                   |
-| ---------------------------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `postgres`（超级用户）       | 仅 `db:bootstrap`            | 运行时不使用                                                                                                                                           |
-| `aftercare_migrator`         | 仅迁移                       | 拥有全部对象                                                                                                                                           |
-| `aftercare_business_writer`  | 业务模拟器                   | 读商品/订单；执行五个入口函数。不能直接写任何表，不能读写审计、控制面或快照                                                                            |
-| `aftercare_investigator`     | 只读调查；web 与 worker 使用 | **只能读已发布的快照 schema**。不能读源库、控制面，不能执行任何函数                                                                                    |
-| `aftercare_snapshot_manager` | 创建与清理快照               | 只能执行 `create_snapshot` / `drop_snapshot`。没有任何表权限；服务器端设有超时上限                                                                     |
-| `aftercare_runtime`          | Runtime 侧控制面存储         | 读控制表；经固定函数追加案例、覆盖清单、凭证、证据、策略版本、事故集合、确认、撤回与编译计划。不能读源库或快照，不能管理快照，对确认授权表没有任何权限 |
-| `aftercare_authority_admin`  | 登记谁有权做业务确认         | 只能执行授予/撤销确认权限的两个函数。没有任何表权限；Runtime 不能使用它                                                                                |
-| `aftercare_test_admin`       | **仅测试**：构造被破坏的历史 | 可切换为 owner，但只能连接测试库                                                                                                                       |
+| 角色                         | 用途                           | 权限                                                                                                                                                                                                                   |
+| ---------------------------- | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `postgres`（超级用户）       | 仅 `db:bootstrap`              | 运行时不使用                                                                                                                                                                                                           |
+| `aftercare_migrator`         | 仅迁移                         | 拥有全部对象                                                                                                                                                                                                           |
+| `aftercare_business_writer`  | 业务模拟器                     | 读商品/订单；执行五个入口函数。不能直接写任何表，不能读写审计、控制面或快照                                                                                                                                            |
+| `aftercare_investigator`     | 只读调查；web 与 worker 使用   | **只能读已发布的快照 schema**。不能读源库、控制面，不能执行任何函数                                                                                                                                                    |
+| `aftercare_snapshot_manager` | 创建与清理快照                 | 只能执行 `create_snapshot` / `drop_snapshot`。没有任何表权限；服务器端设有超时上限                                                                                                                                     |
+| `aftercare_runtime`          | Runtime 侧控制面存储           | 读控制表；经固定函数追加案例、覆盖清单、凭证、证据、策略版本、事故集合与编译计划；**只能经 `execute_case_command()` 改变案例状态、确认、声明、假设与依赖图**。不能读源库或快照，不能管理快照，对确认授权表没有任何权限 |
+| `aftercare_authority_admin`  | 登记谁有权做业务确认与案例命令 | 只能执行授予/撤销能力的两个函数（能力：三项 confirm_* 与 investigate_case / manage_case / declare_business_fact）。没有任何表权限；Runtime 不能使用它                                                                  |
+| `aftercare_test_admin`       | **仅测试**：构造被破坏的历史   | 可切换为 owner，但只能连接测试库                                                                                                                                                                                       |
 
 所有 `SECURITY DEFINER` 函数固定 `search_path = pg_catalog, pg_temp`，对象全部带 schema 限定，`PUBLIC` 的执行权限已撤销，
 不接受 SQL 文本、schema 名或表名参数。快照 schema 名由数据库生成并校验。
@@ -144,7 +167,12 @@ pnpm demo:repair
 证据带来源、版本、凭证引用与依赖记录。详见 [docs/snapshot-protocol.md](docs/snapshot-protocol.md)。
 
 第三阶段：计划只由登记在案的引用编译而来；事故操作逐个经有权主体确认；未知语义、缺失历史与策略歧义保留为未决或反例，不靠差值猜测；
-相同语义输入得到相同 `planDigest`；计划不可变且只有一个状态。详见 [docs/repair-protocol.md](docs/repair-protocol.md)。
+相同语义输入得到相同 `planDigest`；计划内容不可变。详见 [docs/repair-protocol.md](docs/repair-protocol.md)。
+
+第四阶段：每个计划部件、假设与证据都带有由真实输入推导的依赖记录；变化激活、依赖闭包失效、状态更新与事件在一个持案例锁的事务内完成，
+失败整体回滚；闭包无法在界内计算时保守失效整个案例；stale 结论不复活，重算产生新节点并记录复用依据；命令按 requestId 幂等且先于修订检查；
+run 阶段、计划生命周期与有效性由数据库约束与触发器维护，预留状态没有迁移。详见 [docs/dependency-protocol.md](docs/dependency-protocol.md)。
+**本阶段没有**执行批准、沙箱应用或并发执行安全：`planApplicability` 的 `executable` 恒为 false，只说明计划此刻是否仍可依赖。
 额外前提：确认者身份由可信应用层的身份上下文提供——本仓库不实现认证，数据库只验证"该主体被授权管理角色登记过"。
 
 **这些保证依赖以下前提，凭证中也逐条列出：**

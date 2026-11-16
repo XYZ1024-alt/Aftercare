@@ -61,6 +61,14 @@ export const repairProposalSchema = z.strictObject({
     .max(200),
   /** The plan this compilation supersedes, if any. Must belong to the same case. */
   parentPlanRef: z.strictObject({ planId: z.uuid() }).optional(),
+  /**
+   * Supported hypotheses the proposal rests on. They decide nothing in the
+   * computation; the plan becomes stale when one of them is refuted.
+   */
+  hypothesisRefs: z
+    .array(z.strictObject({ hypothesisId: z.uuid() }))
+    .max(50)
+    .default([]),
 });
 export type RepairProposal = z.input<typeof repairProposalSchema>;
 
@@ -95,6 +103,12 @@ export const COUNTEREXAMPLE_CODES = [
   'negative_final_price',
   'terminal_constraint_violated',
   'unresolved_domain_not_isolable',
+  /** The run is not planning, or the snapshot is not the current one. */
+  'case_state_blocks_compilation',
+  /** An input is registered but is not an applicable part of the basis of the case. */
+  'input_not_active',
+  /** An input of the case changed between reading the inputs and storing the plan. */
+  'inputs_changed_during_compilation',
 ] as const;
 export type CounterexampleCode = (typeof COUNTEREXAMPLE_CODES)[number];
 
@@ -106,6 +120,7 @@ export const RULE_SOURCE_KINDS = [
   'baseline_confirmation',
   'policy_version',
   'operation_template',
+  'human_declaration',
 ] as const;
 
 export const OBSERVATION_SOURCE_KINDS = [
@@ -127,6 +142,9 @@ export const SUGGESTED_ACTIONS = [
   'restore_audit_coverage',
   'retake_snapshot',
   'narrow_incident_set',
+  'activate_input',
+  'advance_case',
+  'compile_again',
 ] as const;
 
 /**
@@ -207,8 +225,6 @@ export const derivationStepSchema = z.strictObject({
 });
 export type DerivationStep = z.output<typeof derivationStepSchema>;
 
-export const PLAN_STATUS = 'compiled_pending_execution_binding';
-
 export const planContentSchema = z.strictObject({
   planFormat: z.literal(1),
   proposalKind: z.literal('omit_operations_replay_supported'),
@@ -228,6 +244,10 @@ export const planContentSchema = z.strictObject({
     policyConfirmationId: z.uuid(),
     certificateId: z.uuid(),
     evidence: z.array(z.strictObject({ evidenceId: z.uuid(), resultDigest: sha256HexSchema })),
+    /** Human declarations the compilation took into account. */
+    declarationIds: z.array(z.uuid()),
+    /** Supported hypotheses the proposal rests on. */
+    hypothesisIds: z.array(z.uuid()),
     parentPlanId: z.uuid().nullable(),
   }),
   /** planDigest of the plan this compilation supersedes, if any. */
@@ -299,6 +319,23 @@ export const planContentSchema = z.strictObject({
       snapshotEligibility: z.enum(ELIGIBILITIES),
     }),
     evidence: z.array(z.strictObject({ tool: z.string(), resultDigest: sha256HexSchema })),
+    /**
+     * Human declarations taken into account, by content.
+     * - operations_treated_as_unknown: a read_scope_unknown declaration; the
+     *   operations it names were replayed as operations of unknown meaning.
+     * - recorded_not_interpreted: a clarification about a domain this plan
+     *   leaves unresolved. This compiler has no rule that turns a free-text
+     *   clarification into a value: it is cited, and the domain stays unresolved.
+     */
+    declarations: z.array(
+      z.strictObject({
+        digest: sha256HexSchema,
+        kind: z.enum(['clarification', 'read_scope_unknown']),
+        treatment: z.enum(['operations_treated_as_unknown', 'recorded_not_interpreted']),
+      }),
+    ),
+    /** Supported hypotheses the proposal rests on, by content. */
+    hypotheses: z.array(z.strictObject({ digest: sha256HexSchema })),
     /** What the compiler itself read from the snapshot. Always the whole range, never a page. */
     queryScopes: z.array(
       z.strictObject({
@@ -476,14 +513,24 @@ export function digestPlan(content: PlanContent): string {
 }
 
 /**
- * The stored plan. `planId` and `compiledAt` are assigned by the database
- * and are not part of planDigest. The status has exactly one value.
+ * The stored plan: an immutable compilation artefact. `planId`, `compiledAt`
+ * and `binding` are assigned by the database and are not part of planDigest.
+ * Its lifecycle and its validity are NOT part of it: they are state of the
+ * case (see planApplicabilitySchema) and change while the plan does not.
  */
 export const compiledPlanSchema = z.strictObject({
   planId: z.uuid(),
   compiledAt: instantSchema,
-  status: z.literal(PLAN_STATUS),
   planDigest: sha256HexSchema,
+  /** null: stored before dependencies were tracked. */
+  binding: z
+    .strictObject({
+      /** Dependency revision of the case the inputs were read at. */
+      dependencyRevision: int64TextSchema,
+      /** Revision of the plan_compiled event. */
+      compiledRevision: int64TextSchema,
+    })
+    .nullable(),
   content: planContentSchema,
 });
 export type CompiledPlan = z.output<typeof compiledPlanSchema>;

@@ -1,4 +1,3 @@
-import { PLAN_STATUS } from '@aftercare/contracts';
 import { accepted, failedChecks } from '@aftercare/evidence/testing';
 import { listSnapshotSchemas, recreateTestDatabase } from '@aftercare/storage/testing';
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -91,8 +90,14 @@ describe('five products at 100.00, all set to 80.00 by one incident batch', () =
     const plan = planOf(await h.compiler.compile(prepared.proposal));
     const { content } = plan;
 
-    expect(plan.status).toBe(PLAN_STATUS);
-    expect(plan.status).toBe('compiled_pending_execution_binding');
+    // A stored plan is compiled and nothing more: valid for now, never executable in this stage.
+    expect(
+      await h.inspection.planApplicability({ caseId: frozen.ref.caseId, planId: plan.planId }),
+    ).toMatchObject({
+      plan: { lifecycle: 'compiled', validity: 'valid', planDigest: plan.planDigest },
+      applicable: true,
+      executable: false,
+    });
     expect(content.result).toBe('partial');
 
     // Candidates, in cents.

@@ -6,6 +6,7 @@ export {
   type SnapshotModel,
   type SnapshotRows,
 } from './checker/model.ts';
+export * from './dependency-manifest.ts';
 export * from './manifest.ts';
 export * from './service.ts';
 export { EVIDENCE_TOOL_VERSION } from './tools.ts';

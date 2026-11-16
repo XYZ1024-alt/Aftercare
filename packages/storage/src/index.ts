@@ -1,5 +1,6 @@
 export * from './authority-admin.ts';
 export * from './business-entry.ts';
+export * from './case-store.ts';
 export * from './config.ts';
 export * from './control-store.ts';
 export * from './pool.ts';

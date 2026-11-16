@@ -217,15 +217,15 @@ describe('published snapshot: who can do what', () => {
       ['append_evidence', ['aftercare_runtime']],
       ['create_case', ['aftercare_runtime']],
       ['create_snapshot', ['aftercare_snapshot_manager']],
+      ['describe_plan_applicability', ['aftercare_runtime']],
       ['drop_snapshot', ['aftercare_snapshot_manager']],
+      ['execute_case_command', ['aftercare_runtime']],
       ['grant_confirmation_authority', ['aftercare_authority_admin']],
       ['record_certificate', ['aftercare_runtime']],
       ['record_compiled_plan', ['aftercare_runtime']],
-      ['record_confirmation', ['aftercare_runtime']],
       ['register_coverage_manifest', ['aftercare_runtime']],
       ['register_incident_operation_set', ['aftercare_runtime']],
       ['register_policy_version', ['aftercare_runtime']],
-      ['revoke_confirmation', ['aftercare_runtime']],
       ['revoke_confirmation_authority', ['aftercare_authority_admin']],
     ]);
     expect(
@@ -234,7 +234,10 @@ describe('published snapshot: who can do what', () => {
         .map((row) => [row.name, row.grantees]),
     ).toEqual([
       ['confirmation_json', ['aftercare_runtime']],
+      ['declaration_json', ['aftercare_runtime']],
       ['instant_text', ['aftercare_runtime']],
+      ['plan_json', ['aftercare_runtime']],
+      ['run_json', ['aftercare_runtime']],
       ['snapshot_json', ['aftercare_runtime']],
       ['source_environment', ['aftercare_authority_admin', 'aftercare_runtime']],
     ]);

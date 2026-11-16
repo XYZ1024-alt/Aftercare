@@ -1,79 +1,117 @@
 import {
+  BYSTANDER,
+  type CaseHarness,
+  certify,
+  collect,
+  enterPlanning,
+  makeCurrent,
+  OPERATOR,
+  openCaseHarness,
+} from '@aftercare/casework/testing';
+import {
   type Certificate,
+  type CommandOutcome,
   type CompiledPlan,
   type CompileOutcome,
-  type ConfirmationOutcome,
   type ConfirmationRecord,
-  type ConfirmationRejection,
   type Counterexample,
+  confirmationRecordSchema,
   type IdentityContext,
   type IncidentOperationSet,
   POLICY_COMPOSITION,
   type RegisteredPolicyVersion,
   type RepairProposal,
 } from '@aftercare/contracts';
-import { OPERATION_TYPES } from '@aftercare/domain';
-import { accepted, type EvidenceHarness, openEvidenceHarness } from '@aftercare/evidence/testing';
+import { type JsonObject, type JsonValue, OPERATION_TYPES } from '@aftercare/domain';
 import { PRINCIPAL, sabotage, written } from '@aftercare/storage/testing';
 import type { z } from 'zod';
 import {
-  type ConfirmationSession,
-  createConfirmationService,
+  createRegistrationService,
   createRepairCompiler,
   type RepairCompiler,
 } from '../src/index.ts';
 
-/** The operator of the tests: holds all three confirmation capabilities. */
-export const OPERATOR: IdentityContext = {
-  principal: 'ops:pricing-lead',
-  source: 'test-operator-session',
-};
-/** Authenticated, but holds no confirmation authority at all. */
-export const BYSTANDER: IdentityContext = {
-  principal: 'ops:intern',
-  source: 'test-operator-session',
-};
+export { BYSTANDER, certify, collect, enterPlanning, OPERATOR };
 
 const SOURCE = { kind: 'business_decision_record', reference: 'integration test' } as const;
 
-export interface RepairHarness extends EvidenceHarness {
-  readonly sourceEnvironment: string;
+export type Outcome<T> =
+  | { readonly ok: true; readonly value: T }
+  | { readonly ok: false; readonly rejection: { readonly code: string; readonly message: string } };
+
+/**
+ * What one identity submits in these tests. `confirm` and `revoke` are case
+ * commands; this wraps them so a test states the confirmation only — the
+ * request id is fresh and the expected revision is the current one.
+ */
+export interface OperatorSession {
+  readonly registerPolicyVersion: (body: JsonValue) => Promise<Outcome<RegisteredPolicyVersion>>;
+  readonly registerIncidentOperationSet: (
+    request: JsonValue,
+  ) => Promise<Outcome<IncidentOperationSet>>;
+  readonly confirm: (
+    request: JsonObject & { readonly caseId: string },
+  ) => Promise<Outcome<ConfirmationRecord>>;
+  readonly revoke: (request: {
+    readonly caseId: string;
+    readonly confirmationId: string;
+    readonly reason: string;
+  }) => Promise<Outcome<ConfirmationRecord>>;
+}
+
+export interface RepairHarness extends CaseHarness {
   readonly compiler: RepairCompiler;
-  /** A confirmation session of any identity. */
-  readonly as: (identity: IdentityContext) => ConfirmationSession;
+  /** A session of any identity. */
+  readonly as: (identity: IdentityContext) => OperatorSession;
   /** The session of OPERATOR. */
-  readonly operator: ConfirmationSession;
+  readonly operator: OperatorSession;
+}
+
+function recorded(outcome: CommandOutcome): Outcome<ConfirmationRecord> {
+  return outcome.ok
+    ? { ok: true, value: confirmationRecordSchema.parse(outcome.result) }
+    : { ok: false, rejection: outcome.rejection };
 }
 
 /** Opens the harness on a fresh database: coverage manifest registered, OPERATOR fully authorised. */
 export async function openRepairHarness(): Promise<RepairHarness> {
-  const evidence = openEvidenceHarness();
-  const { db } = evidence;
-  const sourceEnvironment = await db.authorities.readSourceEnvironment();
-  for (const capability of [
-    'confirm_incident',
-    'confirm_baseline',
-    'confirm_replay_policy',
-  ] as const) {
-    await db.authorities.grant({
-      principal: OPERATOR.principal,
-      capability,
-      sourceEnvironment,
-      basis: 'integration test: pricing lead role assignment',
-    });
-  }
-  await evidence.registerManifest();
-  const confirmations = createConfirmationService({ store: db.store, repairStore: db.repairStore });
+  const cases = await openCaseHarness();
+  const { db } = cases;
+  const registrations = createRegistrationService({ repairStore: db.repairStore });
+  const as = (identity: IdentityContext): OperatorSession => ({
+    ...registrations.forIdentity(identity),
+    confirm: async (request) =>
+      recorded(
+        await cases.run(identity, request.caseId, {
+          type: 'record_confirmation',
+          confirmation: request,
+        }),
+      ),
+    revoke: async ({ caseId, confirmationId, reason }) => {
+      const outcome = recorded(
+        await cases.run(identity, caseId, { type: 'revoke_confirmation', confirmationId, reason }),
+      );
+      if (!outcome.ok) {
+        return outcome;
+      }
+      // Read back: the stored record now carries the revocation that was appended.
+      const stored = await db.repairStore.findConfirmation({ caseId, confirmationId });
+      if (stored === null) {
+        throw new Error(`confirmation ${confirmationId} disappeared after its revocation`);
+      }
+      return { ok: true, value: stored };
+    },
+  });
   return {
-    ...evidence,
-    sourceEnvironment,
+    ...cases,
     compiler: createRepairCompiler({
       store: db.store,
       repairStore: db.repairStore,
+      caseStore: db.caseStore,
       snapshotPool: db.investigatorPool,
     }),
-    as: confirmations.forIdentity,
-    operator: confirmations.forIdentity(OPERATOR),
+    as,
+    operator: as(OPERATOR),
   };
 }
 
@@ -171,25 +209,26 @@ export interface Frozen {
   readonly evidenceIds: readonly string[];
 }
 
-/** Snapshot of the source as it is now, its certificate, and the version history of each product as evidence. */
+/**
+ * Snapshot of the source as it is now, made the current snapshot of the case
+ * (a new case unless one is given), with its certificate activated and the
+ * version history of each product collected and activated as evidence.
+ */
 export async function freeze(
   h: RepairHarness,
   productIds: readonly string[],
   caseId?: string,
 ): Promise<Frozen> {
-  const { ref } = await h.takeSnapshot(caseId);
-  const certificate = accepted(await h.evidence.issueCertificate(ref));
+  const { ref, certificate } = await makeCurrent(h, caseId);
   const evidenceIds: string[] = [];
   for (const productId of productIds) {
-    const history = accepted(
-      await h.evidence.collect({ ...ref, query: { tool: 'product.version_history', productId } }),
-    );
+    const history = await collect(h, ref, { tool: 'product.version_history', productId });
     evidenceIds.push(history.evidenceId);
   }
   return { ref, certificate, evidenceIds };
 }
 
-export function ok<T>(outcome: ConfirmationOutcome<T>): T {
+export function ok<T>(outcome: Outcome<T>): T {
   if (!outcome.ok) {
     throw new Error(
       `expected success, got ${outcome.rejection.code}: ${outcome.rejection.message}`,
@@ -198,7 +237,10 @@ export function ok<T>(outcome: ConfirmationOutcome<T>): T {
   return outcome.value;
 }
 
-export function refused<T>(outcome: ConfirmationOutcome<T>): ConfirmationRejection {
+export function refused<T>(outcome: Outcome<T>): {
+  readonly code: string;
+  readonly message: string;
+} {
   if (outcome.ok) {
     throw new Error('expected a rejection, but the request succeeded');
   }
@@ -307,12 +349,13 @@ export async function registerPolicy(
   return ok(await h.operator.registerPolicyVersion(policy));
 }
 
+/** Confirms the policy version for the snapshot and makes it the active policy of the case. */
 export async function confirmPolicy(
   h: RepairHarness,
   frozen: Frozen,
   policy: RegisteredPolicyVersion,
 ): Promise<ConfirmationRecord> {
-  return ok(
+  const confirmation = ok(
     await h.operator.confirm({
       kind: 'replay_policy',
       ...frozen.ref,
@@ -326,6 +369,14 @@ export async function confirmPolicy(
       source: SOURCE,
     }),
   );
+  const state = await h.db.caseStore.readCaseState(frozen.ref.caseId);
+  if (state?.activePolicyVersionId !== policy.policyVersionId) {
+    await h.operate(frozen.ref.caseId, {
+      type: 'activate_policy_version',
+      policyVersionId: policy.policyVersionId,
+    });
+  }
+  return confirmation;
 }
 
 export async function registerSet(
@@ -348,10 +399,13 @@ export interface Prepared {
   readonly policy: RegisteredPolicyVersion;
   readonly policyConfirmation: ConfirmationRecord;
   /** A complete proposal without a parent plan; tests spread their variations over it. */
-  readonly proposal: Omit<RepairProposal, 'parentPlanRef'>;
+  readonly proposal: Omit<RepairProposal, 'parentPlanRef' | 'hypothesisRefs'>;
 }
 
-/** Registers and confirms everything a proposal needs, and builds the proposal. Nothing is compiled. */
+/**
+ * Registers and confirms everything a proposal needs, activates the policy,
+ * takes the run into planning and builds the proposal. Nothing is compiled.
+ */
 export async function prepare(
   h: RepairHarness,
   frozen: Frozen,
@@ -367,6 +421,7 @@ export async function prepare(
   const baseline = await confirmBaseline(h, frozen, input.trustedWatermark, input.baseline);
   const policy = await registerPolicy(h, input.policy ?? standardPolicy(h));
   const policyConfirmation = await confirmPolicy(h, frozen, policy);
+  await enterPlanning(h, frozen.ref.caseId);
   return {
     set,
     incident,

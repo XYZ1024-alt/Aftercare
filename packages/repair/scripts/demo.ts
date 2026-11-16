@@ -1,16 +1,18 @@
 import { randomUUID } from 'node:crypto';
+import { createCaseCommandService } from '@aftercare/casework';
 import type {
+  CommandOutcome,
   CompileOutcome,
-  ConfirmationOutcome,
   EvidenceOutcome,
   WriteOutcome,
 } from '@aftercare/contracts';
-import { POLICY_COMPOSITION } from '@aftercare/contracts';
-import { OPERATION_TYPES } from '@aftercare/domain';
+import { CAPABILITIES, confirmationRecordSchema, POLICY_COMPOSITION } from '@aftercare/contracts';
+import { type JsonObject, OPERATION_TYPES } from '@aftercare/domain';
 import { buildCoverageManifest, createEvidenceService } from '@aftercare/evidence';
 import {
   createAuthorityAdmin,
   createBusinessEntry,
+  createCaseStore,
   createControlStore,
   createRepairStore,
   createRoleClient,
@@ -18,14 +20,15 @@ import {
   openRolePool,
 } from '@aftercare/storage';
 import { reviewedSchemaVersion } from '@aftercare/storage/admin';
-import { createConfirmationService, createRepairCompiler } from '../src/index.ts';
+import { createRegistrationService, createRepairCompiler } from '../src/index.ts';
 
 // Stage 3 demonstration on the DEVELOPMENT database:
 //   business activity -> snapshot, certificate, evidence
-//   -> business confirmations and a policy version
+//   -> business confirmations and a policy version (as case commands, stage 4)
 //   -> a closed proposal -> the compiled plan
 //   -> a second proposal that is refused, with its counterexample.
 // No model is called. Nothing is applied: the source is read back at the end.
+// The dependency and invalidation side of a case is shown by `pnpm demo:case`.
 
 const SIMULATOR = 'simulator:stage3-demo';
 const TARGET = 'development';
@@ -45,13 +48,31 @@ function written<T>(step: string, outcome: WriteOutcome<T>): T {
   return outcome.value;
 }
 
-function accepted<T>(step: string, outcome: EvidenceOutcome<T> | ConfirmationOutcome<T>): T {
+function accepted<T>(
+  step: string,
+  outcome:
+    | EvidenceOutcome<T>
+    | { readonly ok: true; readonly value: T }
+    | {
+        readonly ok: false;
+        readonly rejection: { readonly code: string; readonly message: string };
+      },
+): T {
   if (!outcome.ok) {
     throw new Error(
       `demo step "${step}" was rejected: ${outcome.rejection.code}: ${outcome.rejection.message}`,
     );
   }
   return outcome.value;
+}
+
+function appliedResult(step: string, outcome: CommandOutcome): JsonObject {
+  if (!outcome.ok) {
+    throw new Error(
+      `demo command "${step}" was refused: ${outcome.rejection.code}: ${outcome.rejection.message}`,
+    );
+  }
+  return outcome.result;
 }
 
 function show(title: string, value: object): void {
@@ -64,10 +85,10 @@ function showOutcome(title: string, outcome: CompileOutcome): void {
     show(`${title}: refused`, { counterexamples: outcome.counterexamples });
     return;
   }
-  const { planId, status, planDigest, content } = outcome.plan;
+  const { planId, binding, planDigest, content } = outcome.plan;
   show(`${title}: compiled plan`, {
     planId,
-    status,
+    binding,
     planDigest,
     result: content.result,
     candidates: content.candidates,
@@ -93,12 +114,34 @@ try {
   const entry = createBusinessEntry(writerPool);
   const store = createControlStore(runtimePool);
   const repairStore = createRepairStore(runtimePool);
+  const caseStore = createCaseStore(runtimePool);
   const snapshots = createSnapshotManager({
     connect: () => createRoleClient(process.env, 'snapshot_manager', TARGET),
   });
   const evidence = createEvidenceService({ store, snapshotPool: investigatorPool });
-  const compiler = createRepairCompiler({ store, repairStore, snapshotPool: investigatorPool });
-  const operator = createConfirmationService({ store, repairStore }).forIdentity(OPERATOR);
+  const compiler = createRepairCompiler({
+    store,
+    repairStore,
+    caseStore,
+    snapshotPool: investigatorPool,
+  });
+  const operator = createRegistrationService({ repairStore }).forIdentity(OPERATOR);
+  const commands = createCaseCommandService({ store, caseStore }).forIdentity(OPERATOR);
+  /** One case command at the case's current revision, under a fresh request id. */
+  const command = async (caseId: string, body: JsonObject & { type: string }) =>
+    appliedResult(
+      body.type,
+      await commands.execute({
+        caseId,
+        requestId: randomUUID(),
+        expectedRevision: (await caseStore.readCaseState(caseId))?.revision ?? '0',
+        command: body,
+      }),
+    );
+  const confirm = async (caseId: string, confirmation: JsonObject) =>
+    confirmationRecordSchema.parse(
+      await command(caseId, { type: 'record_confirmation', confirmation }),
+    );
 
   // 1. Business activity through the controlled entry. The script labels
   //    nothing in the business data: which writes were wrong is stated later,
@@ -174,26 +217,10 @@ try {
     );
   }
   const ref = { caseId, snapshotId: created.snapshot.snapshotId };
-  const certificate = accepted('issue certificate', await evidence.issueCertificate(ref));
-  const evidenceIds: string[] = [];
-  for (const productId of [mug, kettle, scale, promo]) {
-    const history = accepted(
-      `history of ${productId}`,
-      await evidence.collect({ ...ref, query: { tool: 'product.version_history', productId } }),
-    );
-    evidenceIds.push(history.evidenceId);
-  }
-  console.log(
-    `2. snapshot ${ref.snapshotId} at watermark ${created.snapshot.baseWatermark}: ${certificate.body.eligibility.snapshot}; ${evidenceIds.length} evidence records`,
-  );
 
-  // 3. Who may confirm: registered by the authority administrator, not by the Runtime.
+  // 3. Who may confirm and command: registered by the authority administrator, not by the Runtime.
   const authorities = createAuthorityAdmin(authorityPool);
-  for (const capability of [
-    'confirm_incident',
-    'confirm_baseline',
-    'confirm_replay_policy',
-  ] as const) {
+  for (const capability of CAPABILITIES) {
     await authorities.grant({
       principal: OPERATOR.principal,
       capability,
@@ -201,6 +228,25 @@ try {
       basis: 'stage 3 demo: local pricing lead',
     });
   }
+
+  // The snapshot becomes the current snapshot of the case; the certificate and
+  // every evidence record are activated as inputs of the case (stage 4).
+  await command(caseId, { type: 'switch_snapshot', snapshotId: ref.snapshotId });
+  await command(caseId, { type: 'begin_investigation' });
+  const certificate = accepted('issue certificate', await evidence.issueCertificate(ref));
+  await command(caseId, { type: 'activate_certificate', certificateId: certificate.certificateId });
+  const evidenceIds: string[] = [];
+  for (const productId of [mug, kettle, scale, promo]) {
+    const history = accepted(
+      `history of ${productId}`,
+      await evidence.collect({ ...ref, query: { tool: 'product.version_history', productId } }),
+    );
+    await command(caseId, { type: 'activate_evidence', evidenceId: history.evidenceId });
+    evidenceIds.push(history.evidenceId);
+  }
+  console.log(
+    `2. snapshot ${ref.snapshotId} at watermark ${created.snapshot.baseWatermark}: ${certificate.body.eligibility.snapshot}; ${evidenceIds.length} evidence records activated`,
+  );
 
   // 4. Business confirmations and the policy version. The incident is three
   //    of the four batch targets: the promotion in the same batch is not one.
@@ -216,35 +262,29 @@ try {
     'register incident set',
     await operator.registerIncidentOperationSet({ caseId, operationIds: incidentOperationIds }),
   );
-  const incident = accepted(
-    'confirm incident',
-    await operator.confirm({
-      kind: 'incident',
-      ...ref,
-      operationIds: incidentOperationIds,
-      statement: 'These three batch targets were repriced by mistake.',
-      evidenceRefs: evidenceIds,
-      source: SOURCE,
-    }),
-  );
-  const baseline = accepted(
-    'confirm baseline',
-    await operator.confirm({
-      kind: 'baseline',
-      ...ref,
-      trustedWatermark: trustedWatermark.toString(),
-      entries: [mug, kettle, scale].map((objectId) => ({
-        objectType: 'product',
-        objectId,
-        field: 'price_cents',
-        version: '1',
-        priceCents: '10000',
-      })),
-      statement: 'These prices were correct before the batch.',
-      evidenceRefs: evidenceIds,
-      source: SOURCE,
-    }),
-  );
+  const incident = await confirm(caseId, {
+    kind: 'incident',
+    ...ref,
+    operationIds: incidentOperationIds,
+    statement: 'These three batch targets were repriced by mistake.',
+    evidenceRefs: evidenceIds,
+    source: SOURCE,
+  });
+  const baseline = await confirm(caseId, {
+    kind: 'baseline',
+    ...ref,
+    trustedWatermark: trustedWatermark.toString(),
+    entries: [mug, kettle, scale].map((objectId) => ({
+      objectType: 'product',
+      objectId,
+      field: 'price_cents',
+      version: '1',
+      priceCents: '10000',
+    })),
+    statement: 'These prices were correct before the batch.',
+    evidenceRefs: evidenceIds,
+    source: SOURCE,
+  });
   const policy = accepted(
     'register policy version',
     await operator.registerPolicyVersion({
@@ -287,21 +327,24 @@ try {
       source: SOURCE,
     }),
   );
-  const policyConfirmation = accepted(
-    'confirm policy',
-    await operator.confirm({
-      kind: 'replay_policy',
-      ...ref,
-      policyVersion: {
-        policyVersionId: policy.policyVersionId,
-        revision: policy.revision,
-        digest: policy.digest,
-      },
-      statement: 'This policy applies to this incident.',
-      evidenceRefs: evidenceIds,
-      source: SOURCE,
-    }),
-  );
+  const policyConfirmation = await confirm(caseId, {
+    kind: 'replay_policy',
+    ...ref,
+    policyVersion: {
+      policyVersionId: policy.policyVersionId,
+      revision: policy.revision,
+      digest: policy.digest,
+    },
+    statement: 'This policy applies to this incident.',
+    evidenceRefs: evidenceIds,
+    source: SOURCE,
+  });
+  // Confirmed is not yet active: the case runs under one policy version at a time.
+  await command(caseId, {
+    type: 'activate_policy_version',
+    policyVersionId: policy.policyVersionId,
+  });
+  await command(caseId, { type: 'begin_planning' });
   show('4. confirmations and policy version', {
     incident: {
       confirmationId: incident.confirmationId,

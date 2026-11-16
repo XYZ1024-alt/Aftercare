@@ -6,6 +6,7 @@ import {
   type ConfirmationOf,
   type ConfirmationRecord,
   type Counterexample,
+  domainsOverlap,
   type Evidence,
   planRefSchema,
   repairProposalSchema,
@@ -13,7 +14,13 @@ import {
 } from '@aftercare/contracts';
 import type { JsonValue } from '@aftercare/domain';
 import { loadSnapshotModel } from '@aftercare/evidence';
-import { type ControlStore, type RepairStore, withSnapshotSession } from '@aftercare/storage';
+import {
+  type CaseStore,
+  type ControlStore,
+  type PlanRefusal,
+  type RepairStore,
+  withSnapshotSession,
+} from '@aftercare/storage';
 import type { Pool } from 'pg';
 import { z } from 'zod';
 import { checkTerminalConstraints } from './constraints.ts';
@@ -28,16 +35,21 @@ import { buildHistory, type History, type HistoryOperation } from './history.ts'
 import {
   assemblePlan,
   assertPlanInvariants,
+  type ConsideredDeclaration,
   certificateSemanticDigest,
+  REPAIR_COMPILER,
   type UnresolvedDomain,
 } from './plan.ts';
+import { planDependencyManifest } from './plan-dependencies.ts';
 import { unsupportedPolicyTemplates } from './policy-rules.ts';
-import { findSemantics } from './semantics.ts';
+import { findSemantics, REPAIR_SEMANTICS_VERSION } from './semantics.ts';
 
 export interface RepairCompilerOptions {
   /** Runtime-side control store (role `aftercare_runtime`). */
   readonly store: ControlStore;
   readonly repairStore: RepairStore;
+  /** Case state and the basis graph: what is currently an applicable input of the case. */
+  readonly caseStore: CaseStore;
   /** Pool of the investigation role: published snapshots only, read-only. */
   readonly snapshotPool: Pool;
 }
@@ -45,7 +57,15 @@ export interface RepairCompilerOptions {
 /**
  * The deterministic compile entry. It calls no model, reads business facts
  * from the one frozen snapshot only, and writes exactly one thing: the
- * compiled plan record. It never touches the source, a snapshot or a sandbox.
+ * compiled plan record together with its dependency record. It never touches
+ * the source, a snapshot or a sandbox.
+ *
+ * It compiles only from inputs that are an applicable part of the basis of
+ * the case right now — the current snapshot, its active certificate,
+ * activated evidence, standing confirmations, the active policy version — and
+ * only while the run is planning. The plan is stored against the dependency
+ * revision the inputs were read at: if any input of the case changes in
+ * between, nothing is stored.
  */
 export interface RepairCompiler {
   /** Compiles a closed proposal (untrusted JSON) into a stored plan, or says exactly why not. */
@@ -74,6 +94,26 @@ const preflight = (
 ): Counterexample => counterexample({ stage: 'preflight', code, obligationRef, ...parts });
 
 const PROPOSAL = { kind: 'proposal_contract', ref: 'omit_operations_replay_supported' } as const;
+const CASE_STATE = { kind: 'platform', ref: 'dependency-protocol:case-state' } as const;
+
+/** Why the database refused to store the plan, as a counterexample. */
+const REFUSALS: Readonly<
+  Record<PlanRefusal, { readonly code: Counterexample['code']; readonly obligationRef: string }>
+> = {
+  confirmation_revoked: {
+    code: 'confirmation_revoked',
+    obligationRef: COMPILE_OBLIGATIONS.confirmationsValid,
+  },
+  inputs_changed: {
+    code: 'inputs_changed_during_compilation',
+    obligationRef: COMPILE_OBLIGATIONS.inputsStable,
+  },
+  case_not_planning: {
+    code: 'case_state_blocks_compilation',
+    obligationRef: COMPILE_OBLIGATIONS.caseAllowsCompilation,
+  },
+  input_not_usable: { code: 'input_not_active', obligationRef: COMPILE_OBLIGATIONS.inputsActive },
+};
 
 /** Operation ids each evidence record observed. */
 function observedOperations({ observations }: Evidence): string[] {
@@ -127,7 +167,7 @@ function untrustedObjectsOf(certificate: Certificate): Map<string, readonly stri
 }
 
 export function createRepairCompiler(options: RepairCompilerOptions): RepairCompiler {
-  const { store, repairStore, snapshotPool } = options;
+  const { store, repairStore, caseStore, snapshotPool } = options;
 
   const compile = async (input: JsonValue): Promise<CompileOutcome> => {
     // ── 1. The proposal itself ──────────────────────────────────────────────
@@ -192,17 +232,30 @@ export function createRepairCompiler(options: RepairCompilerOptions): RepairComp
       ]);
     }
 
+    // The state of the case, read first: the plan is stored only if the
+    // dependency revision is still this one when everything else has been read.
+    const state = await caseStore.readCaseState(caseId);
+    if (state === null) {
+      throw new Error(`case ${caseId} has a snapshot but no control record`);
+    }
+
     // ── 2. Everything the proposal refers to, looked up within the case ─────
     const evidenceIds = [...new Set(proposal.evidenceRefs.map((ref) => ref.evidenceId))].sort();
+    const hypothesisIds = [
+      ...new Set(proposal.hypothesisRefs.map((ref) => ref.hypothesisId)),
+    ].sort();
     const [
       incidentSet,
       baselineConfirmation,
       policy,
       evidenceRecords,
       parentPlan,
-      certificates,
+      certificate,
       incidentConfirmations,
       policyConfirmations,
+      evidenceNodes,
+      hypothesisNodes,
+      activeDeclarations,
     ] = await Promise.all([
       repairStore.findIncidentOperationSet({
         caseId,
@@ -217,9 +270,13 @@ export function createRepairCompiler(options: RepairCompilerOptions): RepairComp
       proposal.parentPlanRef === undefined
         ? null
         : repairStore.findCompiledPlan({ caseId, planId: proposal.parentPlanRef.planId }),
-      store.listCertificates({ caseId, snapshotId }),
+      // The certificate that is the applicable one, not merely the latest issued.
+      caseStore.findActiveCertificate(caseId, snapshotId),
       repairStore.listConfirmations(caseId, 'incident'),
       repairStore.listConfirmations(caseId, 'replay_policy'),
+      Promise.all(evidenceIds.map((id) => caseStore.findNode(caseId, 'evidence', id))),
+      Promise.all(hypothesisIds.map((id) => caseStore.findNode(caseId, 'hypothesis', id))),
+      caseStore.listActiveDeclarations(caseId, snapshotId),
     ]);
 
     const findings: Counterexample[] = [];
@@ -277,15 +334,96 @@ export function createRepairCompiler(options: RepairCompilerOptions): RepairComp
         ],
       });
 
+    const notActive = (what: string, ref: string, content: Record<string, string | null>) =>
+      preflight('input_not_active', COMPILE_OBLIGATIONS.inputsActive, {
+        expected: {
+          condition: `the ${what} is an applicable part of the basis of the case`,
+          ruleSource: CASE_STATE,
+        },
+        observed: { sourceKind: 'control_registry', ref, content },
+        suggestions: [
+          {
+            action: 'activate_input',
+            detail: `activate the ${what} by a case command, or cite one that is still applicable`,
+          },
+        ],
+      });
+
+    // The case itself.
+    if (state.currentSnapshotId !== snapshotId || state.run.phase !== 'planning') {
+      findings.push(
+        preflight('case_state_blocks_compilation', COMPILE_OBLIGATIONS.caseAllowsCompilation, {
+          expected: {
+            condition:
+              'the proposal names the current snapshot of the case, and the current run is planning',
+            ruleSource: CASE_STATE,
+            value: { currentSnapshotId: snapshotId, runPhase: 'planning' },
+          },
+          observed: {
+            sourceKind: 'control_registry',
+            ref: `case:${caseId}`,
+            content: {
+              currentSnapshotId: state.currentSnapshotId,
+              runPhase: state.run.phase,
+              revision: state.revision,
+            },
+          },
+          suggestions: [
+            {
+              action: 'advance_case',
+              detail:
+                'a plan is compiled for the current snapshot while the run is planning; a paused, cancelled or ended run compiles nothing',
+            },
+          ],
+        }),
+      );
+    }
+    // Component versions the case pinned: this compiler implements exactly one of each.
+    const implemented = [
+      { kind: 'repair_compiler', id: REPAIR_COMPILER.id, version: REPAIR_COMPILER.version },
+      { kind: 'template_semantics', id: null, version: REPAIR_SEMANTICS_VERSION },
+    ];
+    const foreignPins = state.semanticPins.filter((pin) =>
+      implemented.some(
+        (component) =>
+          component.kind === pin.kind &&
+          (component.id === null || component.id === pin.id) &&
+          component.version.toString() !== pin.version,
+      ),
+    );
+    if (foreignPins.length > 0) {
+      findings.push(
+        preflight('unknown_semantics', COMPILE_OBLIGATIONS.semanticsKnown, {
+          expected: {
+            condition:
+              'the component versions the case has activated are the ones this compiler implements',
+            ruleSource: CASE_STATE,
+            value: { implemented },
+          },
+          observed: {
+            sourceKind: 'control_registry',
+            ref: `case:${caseId}`,
+            content: { activated: foreignPins },
+          },
+          suggestions: [
+            {
+              action: 'advance_case',
+              detail:
+                'compile with a Runtime that implements the activated versions; an existing plan is never re-read under another version',
+            },
+          ],
+        }),
+      );
+    }
+
     // Certificate.
-    const [certificate] = certificates;
-    if (certificate === undefined) {
+    if (certificate === null) {
       findings.push(
         preflight('snapshot_not_eligible', COMPILE_OBLIGATIONS.snapshotEligible, {
           missingInputs: [
             {
               kind: 'completeness_certificate',
-              description: `a certificate of snapshot ${snapshotId}`,
+              description: `an activated certificate of snapshot ${snapshotId}`,
             },
           ],
           expected: {
@@ -293,7 +431,10 @@ export function createRepairCompiler(options: RepairCompilerOptions): RepairComp
             ruleSource: { kind: 'platform', ref: 'snapshot-protocol:eligibility' },
           },
           suggestions: [
-            { action: 'restore_audit_coverage', detail: 'issue a completeness certificate first' },
+            {
+              action: 'activate_input',
+              detail: 'issue a completeness certificate and activate it for the case first',
+            },
           ],
         }),
       );
@@ -463,6 +604,17 @@ export function createRepairCompiler(options: RepairCompilerOptions): RepairComp
         );
       policyConfirmation = citing.find((confirmation) => confirmation.revocation === null);
       const [withdrawn] = citing;
+      if (
+        policyConfirmation !== undefined &&
+        state.activePolicyVersionId !== policy.policyVersionId
+      ) {
+        // Confirmed, but not the policy the case currently runs under.
+        findings.push(
+          notActive('policy version', `policy-version:${policy.policyVersionId}`, {
+            activePolicyVersionId: state.activePolicyVersionId,
+          }),
+        );
+      }
       if (policyConfirmation === undefined) {
         findings.push(
           withdrawn !== undefined
@@ -504,8 +656,40 @@ export function createRepairCompiler(options: RepairCompilerOptions): RepairComp
           ...otherSnapshot('evidence record', `evidence:${evidenceId}`, record.snapshotId),
           evidenceRefs: [evidenceId],
         });
+      } else if (evidenceNodes[index]?.applicability !== 'applicable') {
+        findings.push({
+          ...notActive('evidence record', `evidence:${evidenceId}`, {
+            applicability: evidenceNodes[index]?.applicability ?? null,
+            reason: evidenceNodes[index]?.statusReason ?? 'not activated',
+          }),
+          evidenceRefs: [evidenceId],
+        });
       } else {
         evidence.push(record);
+      }
+    });
+
+    // Hypotheses the proposal rests on: of this case and snapshot, supported, still valid.
+    const hypotheses: { hypothesisId: string; digest: string }[] = [];
+    hypothesisNodes.forEach((node, index) => {
+      const hypothesisId = hypothesisIds[index] ?? '';
+      if (node === null) {
+        findings.push(notInCase('hypothesis', hypothesisId));
+      } else if (
+        node.snapshotId !== snapshotId ||
+        node.validity !== 'valid' ||
+        node.standing !== 'supported' ||
+        node.recordDigest === null
+      ) {
+        findings.push(
+          notActive('hypothesis', `hypothesis:${hypothesisId}`, {
+            standing: node.standing,
+            validity: node.validity,
+            reason: node.statusReason,
+          }),
+        );
+      } else {
+        hypotheses.push({ hypothesisId, digest: node.recordDigest });
       }
     });
 
@@ -515,7 +699,7 @@ export function createRepairCompiler(options: RepairCompilerOptions): RepairComp
 
     if (
       findings.length > 0 ||
-      certificate === undefined ||
+      certificate === null ||
       incidentSet === null ||
       baseline === undefined ||
       policy === null ||
@@ -566,6 +750,16 @@ export function createRepairCompiler(options: RepairCompilerOptions): RepairComp
     // ── 5. Replay, constraints, isolation ───────────────────────────────────
     const policyRef = `policy-version:sha256:${policy.digest}`;
     const untrusted = untrustedObjectsOf(certificate);
+    // Operations a human declared the recorded reads of to be unreliable.
+    const distrustedOperations = new Map(
+      activeDeclarations.flatMap((declaration) =>
+        declaration.body.kind === 'read_scope_unknown'
+          ? declaration.body.scope.operationIds.map(
+              (operationId) => [operationId, `declaration:sha256:${declaration.digest}`] as const,
+            )
+          : [],
+      ),
+    );
     const replay = replayHistory({
       history,
       incidentOperationIds: new Set(incidentSet.body.operationIds),
@@ -579,6 +773,7 @@ export function createRepairCompiler(options: RepairCompilerOptions): RepairComp
       },
       policy: policy.body,
       untrustedObjects: untrusted,
+      distrustedOperations,
       refs: {
         policy: policyRef,
         certificate: `certificate:sha256:${certificateSemanticDigest(certificate)}`,
@@ -673,6 +868,22 @@ export function createRepairCompiler(options: RepairCompilerOptions): RepairComp
       return failed(unresolved.map((entry) => entry.cause));
     }
 
+    // Declarations the result took into account: every read-scope declaration
+    // (it changed how operations were replayed), and each clarification about
+    // a domain the plan leaves unresolved (cited; this compiler has no rule
+    // that turns a clarification into a value).
+    const declarations = activeDeclarations.flatMap((record): ConsideredDeclaration[] => {
+      if (record.body.kind === 'read_scope_unknown') {
+        return [{ record, treatment: 'operations_treated_as_unknown' }];
+      }
+      const { domains } = record.body.scope;
+      return unresolved.some((entry) =>
+        domains.some((domain) => domainsOverlap(domain, entry.domain)),
+      )
+        ? [{ record, treatment: 'recorded_not_interpreted' }]
+        : [];
+    });
+
     const content = assemblePlan({
       snapshot,
       certificate,
@@ -682,6 +893,8 @@ export function createRepairCompiler(options: RepairCompilerOptions): RepairComp
       policy,
       policyConfirmation,
       evidence,
+      declarations,
+      hypotheses,
       parentPlan,
       history,
       replay,
@@ -691,25 +904,38 @@ export function createRepairCompiler(options: RepairCompilerOptions): RepairComp
     assertPlanInvariants(content);
 
     // ── 6. The one write of a compilation ───────────────────────────────────
-    const plan = await repairStore.recordCompiledPlan(content);
-    if (plan === null) {
+    // The plan and its dependency record are stored in one transaction under
+    // the case lock, and only if no input of the case changed since `state`.
+    const recorded = await repairStore.recordCompiledPlan(content, {
+      dependencyRevision: state.dependencyRevision,
+      manifest: planDependencyManifest(content, history, declarations),
+    });
+    if (!recorded.stored) {
+      const refusal = REFUSALS[recorded.refusal];
       return failed([
-        preflight('confirmation_revoked', COMPILE_OBLIGATIONS.confirmationsValid, {
+        preflight(refusal.code, refusal.obligationRef, {
           expected: {
             condition:
-              'every confirmation the compilation relies on is unrevoked when the plan is stored',
-            ruleSource: { kind: 'platform', ref: 'repair-protocol:confirmations' },
+              'every input the compilation read is still an applicable input of the case, at the same dependency revision, when the plan is stored',
+            ruleSource: CASE_STATE,
+            value: { dependencyRevision: state.dependencyRevision },
+          },
+          observed: {
+            sourceKind: 'control_registry',
+            ref: `case:${caseId}`,
+            content: { refusal: recorded.refusal, detail: recorded.message },
           },
           suggestions: [
             {
-              action: 'correct_proposal',
+              action: 'compile_again',
               detail:
-                'a confirmation was withdrawn while compiling; submit the proposal again to see which',
+                'the case changed while compiling; submit the proposal again to compile against its current inputs',
             },
           ],
         }),
       ]);
     }
+    const { plan } = recorded;
     return { ok: true, plan };
   };
 
