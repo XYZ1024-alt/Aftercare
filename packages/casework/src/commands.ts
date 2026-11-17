@@ -11,6 +11,7 @@ import { evidenceDependencyManifest } from '@aftercare/evidence';
 import type { CaseStore, ControlStore, RepairStore } from '@aftercare/storage';
 import { z } from 'zod';
 import { buildExecutionContract } from './execution-contract.ts';
+import { deriveUndoContract } from './undo-contract.ts';
 
 export interface CaseCommandServiceOptions {
   /** Runtime-side control store (role `aftercare_runtime`). */
@@ -40,8 +41,15 @@ export interface CaseCommandService {
   readonly forIdentity: (identity: IdentityContext) => CaseCommandSession;
 }
 
-function rejected(code: CommandRejectionCode, message: string): CommandOutcome {
-  return { ok: false, rejection: { code, message } };
+function rejected(
+  code: CommandRejectionCode,
+  message: string,
+  conflict?: JsonObject,
+): CommandOutcome {
+  return {
+    ok: false,
+    rejection: conflict === undefined ? { code, message } : { code, message, conflict },
+  };
 }
 
 interface Prepared {
@@ -146,6 +154,84 @@ export function createCaseCommandService(options: CaseCommandServiceOptions): Ca
         return {
           effects: { body: contract.body as unknown as JsonObject, digest: contract.digest },
         };
+      }
+      case 'bind_undo_contract': {
+        const [state, application, target, lineage] = await Promise.all([
+          caseStore.readCaseState(caseId),
+          caseStore.findApplication(caseId, command.applicationId),
+          caseStore.findBranch(caseId, command.targetBranchId),
+          caseStore.findLineage(caseId, command.targetBranchId),
+        ]);
+        if (state === null) {
+          return rejected('reference_rejected', `case ${caseId} does not exist`);
+        }
+        if (application === null) {
+          return rejected(
+            'reference_rejected',
+            `case ${caseId} has no application ${command.applicationId}`,
+          );
+        }
+        if (target === null) {
+          return rejected(
+            'reference_rejected',
+            `case ${caseId} has no branch ${command.targetBranchId}`,
+          );
+        }
+        if (lineage === null) {
+          return rejected(
+            'undo_conflict',
+            `branch ${command.targetBranchId} is not a successor branch`,
+            { reason: 'target_not_successor', objects: [], expected: null, observed: null },
+          );
+        }
+        if (state.activePolicyVersionId === null) {
+          return rejected('dependency_not_usable', `case ${caseId} has no active policy version`);
+        }
+        const verification = await caseStore.describeVerification(caseId);
+        const report =
+          verification.reports
+            .filter((entry) => entry.applicationId === application.applicationId)
+            .sort((left, right) =>
+              Number(BigInt(right.publishedRevision) - BigInt(left.publishedRevision)),
+            )[0] ?? null;
+        if (report === null) {
+          return rejected(
+            'undo_conflict',
+            `application ${application.applicationId} has no published verification report`,
+            { reason: 'application_not_verified', objects: [], expected: null, observed: null },
+          );
+        }
+        const [plan, policy, products, orders] = await Promise.all([
+          repairStore.findCompiledPlan({ caseId, planId: application.planId }),
+          repairStore.findPolicyVersion(state.activePolicyVersionId),
+          caseStore.readBranchProducts(caseId, target.branchId),
+          caseStore.readBranchOrders(caseId, target.branchId),
+        ]);
+        if (plan === null || policy === null) {
+          return rejected(
+            'reference_rejected',
+            'the reversed plan or the active policy is not registered',
+          );
+        }
+        const derived = deriveUndoContract({
+          runId: state.run.runId,
+          dependencyRevision: state.dependencyRevision,
+          application,
+          report,
+          plan,
+          target,
+          lineage,
+          targetProducts: products,
+          targetOrders: orders,
+          policy,
+        });
+        if (!derived.ok) {
+          return rejected('undo_conflict', `UNDO_CONFLICT: ${derived.conflict.detail}`, {
+            ...derived.conflict,
+            objects: [...derived.conflict.objects],
+          });
+        }
+        return { effects: { body: derived.body as unknown as JsonObject, digest: derived.digest } };
       }
       default:
         return { effects: null };

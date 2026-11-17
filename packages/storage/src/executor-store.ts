@@ -24,6 +24,7 @@ import { z } from 'zod';
 const EXECUTOR_STATEMENTS = {
   claim: 'SELECT aftercare_execution.claim_lease($1, $2, $3::integer) AS document',
   renew: 'SELECT aftercare_execution.renew_lease($1, $2, $3::bigint, $4::integer) AS document',
+  release: 'SELECT aftercare_execution.release_lease($1, $2, $3::bigint) AS document',
   begin: 'SELECT aftercare_execution.begin_attempt($1, $2, $3, $4, $5::bigint) AS document',
   apply: 'SELECT aftercare_execution.apply_repair($1, $2, $3, $4::bigint) AS document',
   failure:
@@ -129,6 +130,11 @@ export interface ExecutorStore {
     identity: ExecutorIdentity,
     ttlSeconds: number,
   ) => Promise<ExecutorOutcome<ExecutionLease>>;
+  /** Ends the held lease now (token unchanged); the next claimant takes over with the next token. */
+  readonly releaseLease: (
+    caseId: string,
+    identity: ExecutorIdentity,
+  ) => Promise<ExecutorOutcome<ExecutionLease>>;
   /** Persists the intent to apply one contract under one repair id; its own transaction. */
   readonly beginAttempt: (
     caseId: string,
@@ -216,6 +222,14 @@ export function createExecutorStore(pool: Pool, faults: ExecutionFaults = {}): E
           'renew',
           [caseId, identity.executorId, identity.fencingToken, ttlSeconds],
           executionLeaseSchema.extend({ outcome: z.literal('renewed') }),
+        ),
+      ),
+    releaseLease: (caseId, identity) =>
+      outcome(() =>
+        one(
+          'release',
+          [caseId, identity.executorId, identity.fencingToken],
+          executionLeaseSchema.extend({ outcome: z.literal('released') }),
         ),
       ),
     beginAttempt: (caseId, contractId, repairId, identity) =>

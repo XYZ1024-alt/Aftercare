@@ -197,6 +197,61 @@ export const caseCommandBodySchema = z.discriminatedUnion('type', [
     approvalId: z.uuid(),
     reason: reasonSchema,
   }),
+  // ── Verification, successors, undo and artefacts (stage six) ──
+  /** Copies a sealed branch into a fresh successor branch that keeps its repaired versions and records the lineage. */
+  z.strictObject({ type: z.literal('create_successor_branch'), predecessorBranchId: z.uuid() }),
+  /**
+   * Binds an undo contract that reverses exactly the fields one recorded
+   * application wrote, on a successor branch. The request names the
+   * application and the target; the contract is derived from the ledger and
+   * the target branch, and refused on any conflict.
+   */
+  z.strictObject({
+    type: z.literal('bind_undo_contract'),
+    applicationId: z.uuid(),
+    targetBranchId: z.uuid(),
+  }),
+  /** Registers an artefact of a published report as pending; the file is produced afterwards and then completed. */
+  z.strictObject({
+    type: z.literal('register_artefact'),
+    reportId: z.uuid(),
+    kind: z.enum(['verification_report', 'sql_export', 'diff_report']),
+    validForSeconds: z.number().int().min(60).max(2_592_000),
+    /** For SQL exports: the rehearsal target the export is bound to; without it only a diff report can be produced. */
+    target: z
+      .strictObject({
+        schema: z.string().regex(/^[a-z][a-z0-9_]{0,62}$/),
+        targetId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,199}$/),
+      })
+      .nullable()
+      .default(null),
+  }),
+  z.strictObject({
+    type: z.literal('complete_artefact'),
+    artefactId: z.uuid(),
+    outcome: z.discriminatedUnion('status', [
+      z.strictObject({
+        status: z.literal('ready'),
+        contentDigest: sha256HexSchema,
+        byteLength: int64TextSchema,
+        fileName: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,120}$/),
+        executable: z.boolean(),
+      }),
+      z.strictObject({ status: z.literal('failed'), reason: reasonSchema }),
+    ]),
+  }),
+  /** Asks for access to one artefact. The grant is an audited event; the bytes are served by the artefact service afterwards. */
+  z.strictObject({
+    type: z.literal('grant_artefact_access'),
+    artefactId: z.uuid(),
+    /** Explicit: stale (historical) material may be read only when asked for as such, under read_historical_artefact. */
+    historical: z.boolean().default(false),
+  }),
+  z.strictObject({
+    type: z.literal('revoke_artefact'),
+    artefactId: z.uuid(),
+    reason: reasonSchema,
+  }),
 ]);
 export type CaseCommandBody = z.output<typeof caseCommandBodySchema>;
 export type CaseCommandType = CaseCommandBody['type'];
@@ -239,6 +294,10 @@ export const COMMAND_REJECTION_CODES = [
   'execution_scope_rejected',
   /** The supported scale of this stage was exceeded; nothing was split or applied. */
   'limit_exceeded',
+  /** The undo cannot be shown to be safe on the target branch; a structured conflict is attached. */
+  'undo_conflict',
+  /** An artefact request was refused: not ready, expired, revoked, historical without explicit access, or another case's. */
+  'artefact_refused',
 ] as const;
 export type CommandRejectionCode = (typeof COMMAND_REJECTION_CODES)[number];
 
@@ -248,6 +307,10 @@ export interface CommandRejection {
   /** Present on revision_conflict. */
   readonly expectedRevision?: string;
   readonly actualRevision?: string;
+  /** Present on undo_conflict: the structured conflict, never a guess at a safe value. */
+  readonly conflict?: JsonObject;
+  /** Present on artefact_refused: why (not_ready, expired, revoked, historical_requires_explicit_access, ...). */
+  readonly reason?: string;
 }
 
 /** What the invalidation of one command did. */
@@ -262,8 +325,9 @@ export const invalidationSummarySchema = z.strictObject({
     .strictObject({
       contractsInvalidated: z.number().int(),
       applicationsMadeStale: z.number().int(),
+      reportsMadeStale: z.number().int().default(0),
     })
-    .default({ contractsInvalidated: 0, applicationsMadeStale: 0 }),
+    .default({ contractsInvalidated: 0, applicationsMadeStale: 0, reportsMadeStale: 0 }),
 });
 export type InvalidationSummary = z.output<typeof invalidationSummarySchema>;
 

@@ -225,6 +225,7 @@ describe('input changes block an old contract', () => {
     expect(changed.invalidation.execution).toEqual({
       contractsInvalidated: 1,
       applicationsMadeStale: 0,
+      reportsMadeStale: 0,
     });
     expect((await h.db.caseStore.findContract(h.caseId, contract.contractId))?.status).toBe(
       'invalidated',

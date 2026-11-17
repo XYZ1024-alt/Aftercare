@@ -315,7 +315,7 @@ describe('a clarification about C', () => {
       changed: 3,
       conclusionsInvalidated: 3,
       closureExceeded: false,
-      execution: { contractsInvalidated: 0, applicationsMadeStale: 0 },
+      execution: { contractsInvalidated: 0, applicationsMadeStale: 0, reportsMadeStale: 0 },
     });
     expect(await staleParts()).toEqual([UNRESOLVED('c'), ISOLATION(), PLAN()].sort());
     expect(await conclusions()).toMatchObject({

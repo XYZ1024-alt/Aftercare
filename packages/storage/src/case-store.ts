@@ -1,7 +1,11 @@
 import {
+  type Artefact,
+  artefactSchema,
   type BasisNode,
   type BasisNodeType,
+  type BranchLineage,
   basisNodeSchema,
+  branchLineageSchema,
   type CaseCommandType,
   type CaseEvent,
   type CaseState,
@@ -26,8 +30,13 @@ import {
   type PlanApplicability,
   type PlanRef,
   planApplicabilitySchema,
+  type RepairApplication,
   type Run,
+  repairApplicationSchema,
   runSchema,
+  type VerificationReport,
+  verificationReportSchema,
+  verificationRunSchema,
 } from '@aftercare/contracts';
 import { digestJson, type JsonObject } from '@aftercare/domain';
 import { DatabaseError, type Pool, type QueryResultRow } from 'pg';
@@ -157,6 +166,33 @@ const CASE_STATEMENTS = {
       CROSS JOIN LATERAL aftercare_control.branch_products(b) AS p
      WHERE b.case_id = $1 AND b.branch_id = $2
      ORDER BY p.product_id`,
+  branchOrders: `
+    SELECT jsonb_build_object('orderId', o.order_id, 'productId', o.product_id, 'priceVersion', o.price_version::text,
+                              'unitPriceCents', o.unit_price_cents::text) AS document
+      FROM aftercare_control.execution_branches AS b
+      CROSS JOIN LATERAL aftercare_control.branch_orders(b) AS o
+     WHERE b.case_id = $1 AND b.branch_id = $2
+     ORDER BY o.order_id`,
+  application: `
+    SELECT aftercare_control.application_json(a) AS document
+      FROM aftercare_control.repair_applications AS a
+     WHERE a.case_id = $1 AND a.application_id = $2`,
+  verification: 'SELECT aftercare_control.describe_verification($1) AS document',
+  report: `
+    SELECT aftercare_control.report_json(r) AS document
+      FROM aftercare_control.verification_reports AS r
+     WHERE r.case_id = $1 AND r.report_id = $2`,
+  artefact: `
+    SELECT aftercare_control.artefact_json(a) AS document
+      FROM aftercare_control.artefacts AS a
+     WHERE a.case_id = $1 AND a.artefact_id = $2`,
+  artefactTarget: `
+    SELECT a.target AS document FROM aftercare_control.artefacts AS a
+     WHERE a.case_id = $1 AND a.artefact_id = $2 AND a.target IS NOT NULL`,
+  lineage: `
+    SELECT aftercare_control.lineage_json(l) AS document
+      FROM aftercare_control.branch_lineage AS l
+     WHERE l.case_id = $1 AND l.branch_id = $2`,
   activeCertificate: `
     SELECT jsonb_build_object(
              'certificateId', c.certificate_id,
@@ -201,6 +237,11 @@ const REJECTION_BY_SQLSTATE: Readonly<Record<string, CommandRejectionCode>> = {
   AC508: 'execution_scope_rejected',
   AC512: 'limit_exceeded',
   AC513: 'execution_scope_rejected',
+  AC520: 'undo_conflict',
+  AC521: 'execution_not_possible',
+  AC524: 'execution_not_possible',
+  AC525: 'artefact_refused',
+  AC526: 'artefact_refused',
 };
 
 const appliedSchema = z.strictObject({
@@ -223,6 +264,21 @@ const commandResponseSchema = z.discriminatedUnion('outcome', [
     recordedRevision: z.string(),
   }),
 ]);
+
+/** The database puts the machine-readable reason of a refusal in DETAIL: a JSON conflict for undo, a word for artefacts. */
+function rejectionWithDetail(code: CommandRejectionCode, cause: DatabaseError) {
+  if (code === 'undo_conflict' && cause.detail !== undefined) {
+    return {
+      code,
+      message: cause.message,
+      conflict: z.record(z.string(), z.json()).parse(JSON.parse(cause.detail)),
+    };
+  }
+  if (code === 'artefact_refused' && cause.detail !== undefined) {
+    return { code, message: cause.message, reason: cause.detail };
+  }
+  return { code, message: cause.message };
+}
 
 export interface CommandEnvelope {
   readonly caseId: string;
@@ -280,7 +336,36 @@ export interface CaseStore {
     caseId: string,
     branchId: string,
   ) => Promise<{ objectId: string; version: string; cents: string }[]>;
+  readonly readBranchOrders: (
+    caseId: string,
+    branchId: string,
+  ) => Promise<
+    { orderId: string; productId: string; priceVersion: string; unitPriceCents: string }[]
+  >;
+  readonly findApplication: (
+    caseId: string,
+    applicationId: string,
+  ) => Promise<RepairApplication | null>;
+  /** Verification runs, reports, lineage and artefacts of a case. Read-only. */
+  readonly describeVerification: (caseId: string) => Promise<VerificationState>;
+  readonly findReport: (caseId: string, reportId: string) => Promise<VerificationReport | null>;
+  readonly findArtefact: (caseId: string, artefactId: string) => Promise<Artefact | null>;
+  readonly findLineage: (caseId: string, branchId: string) => Promise<BranchLineage | null>;
+  /** The rehearsal target an SQL export artefact was registered for. */
+  readonly findArtefactTarget: (
+    caseId: string,
+    artefactId: string,
+  ) => Promise<{ schema: string; targetId: string } | null>;
 }
+
+export const verificationStateSchema = z.strictObject({
+  caseId: z.uuid(),
+  runs: z.array(verificationRunSchema),
+  reports: z.array(verificationReportSchema),
+  lineage: z.array(branchLineageSchema),
+  artefacts: z.array(artefactSchema),
+});
+export type VerificationState = z.output<typeof verificationStateSchema>;
 
 const branchProductSchema = z.strictObject({
   objectId: z.string(),
@@ -340,7 +425,7 @@ export function createCaseStore(pool: Pool): CaseStore {
         if (cause instanceof DatabaseError && cause.code !== undefined) {
           const code = REJECTION_BY_SQLSTATE[cause.code];
           if (code !== undefined) {
-            return { ok: false, rejection: { code, message: cause.message } };
+            return { ok: false, rejection: rejectionWithDetail(code, cause) };
           }
         }
         throw error;
@@ -437,5 +522,40 @@ export function createCaseStore(pool: Pool): CaseStore {
       first('contract', [caseId, contractId], executionContractSchema),
     readBranchProducts: (caseId, branchId) =>
       documents('branchProducts', [caseId, branchId], branchProductSchema),
+    readBranchOrders: (caseId, branchId) =>
+      documents(
+        'branchOrders',
+        [caseId, branchId],
+        z.strictObject({
+          orderId: z.string(),
+          productId: z.string(),
+          priceVersion: z.string(),
+          unitPriceCents: z.string(),
+        }),
+      ),
+    findApplication: (caseId, applicationId) =>
+      first('application', [caseId, applicationId], repairApplicationSchema),
+    describeVerification: async (caseId) => {
+      const state = await first('verification', [caseId], verificationStateSchema);
+      if (state === null) {
+        throw new Error(`describe_verification returned no row for case ${caseId}`);
+      }
+      return state;
+    },
+    findReport: async (caseId, reportId) => {
+      const report = await first('report', [caseId, reportId], verificationReportSchema);
+      if (report !== null && digestJson(report.body as unknown as JsonObject) !== report.digest) {
+        throw new Error(`stored report ${reportId} does not match its recorded digest`);
+      }
+      return report;
+    },
+    findArtefact: (caseId, artefactId) => first('artefact', [caseId, artefactId], artefactSchema),
+    findLineage: (caseId, branchId) => first('lineage', [caseId, branchId], branchLineageSchema),
+    findArtefactTarget: (caseId, artefactId) =>
+      first(
+        'artefactTarget',
+        [caseId, artefactId],
+        z.strictObject({ schema: z.string(), targetId: z.string() }),
+      ),
   };
 }

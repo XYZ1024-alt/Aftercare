@@ -457,7 +457,7 @@ describe('what the sandbox refuses', () => {
     expect(await applications(h)).toEqual([]);
   });
 
-  it('applying succeeds into validating only: there is no way to verified, completed or sealed', async () => {
+  it('applying succeeds into validating only: completed, partially_resolved and verified are reachable through the seal alone', async () => {
     const { plan, contract } = await readyToExecute(h);
     const executor = h.executor('worker-1');
     await executor.claim();
@@ -479,10 +479,16 @@ describe('what the sandbox refuses', () => {
         [plan.planId],
       ),
     ).rejects.toMatchObject({ code: 'AC401' });
-    const { rows } = await h.db.runtimePool.query<{ to_phase: string }>(
-      'SELECT DISTINCT to_phase FROM aftercare_control.run_phase_transitions ORDER BY to_phase',
+    // The transitions exist for the seal; the gate refuses them to every direct write,
+    // including from a fresh session that never set the gate (a stage-five defect fixed in 0020).
+    const { rows } = await h.db.runtimePool.query<{ from_phase: string; to_phase: string }>(
+      `SELECT from_phase, to_phase FROM aftercare_control.run_phase_transitions
+        WHERE to_phase IN ('completed', 'partially_resolved') ORDER BY to_phase`,
     );
-    expect(rows.map((r) => r.to_phase)).not.toContain('completed');
-    expect(rows.map((r) => r.to_phase)).not.toContain('partially_resolved');
+    expect(rows).toEqual([
+      { from_phase: 'validating', to_phase: 'completed' },
+      { from_phase: 'validating', to_phase: 'partially_resolved' },
+    ]);
+    expect((await h.db.caseStore.describeExecution(h.caseId)).branches[0]?.status).toBe('applied');
   });
 });

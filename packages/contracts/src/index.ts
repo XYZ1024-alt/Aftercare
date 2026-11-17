@@ -12,4 +12,5 @@ export * from './primitives.ts';
 export * from './repair.ts';
 export * from './results.ts';
 export * from './snapshot.ts';
+export * from './verification.ts';
 export * from './wire.ts';

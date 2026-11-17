@@ -10,3 +10,9 @@ export const CONTROLLED_WRITE_LOCK = { namespace: ADVISORY_LOCK_NAMESPACE, key: 
 
 /** Taken (session-level) by the migration runner so two runners never interleave. */
 export const MIGRATION_LOCK = { namespace: ADVISORY_LOCK_NAMESPACE, key: 2 } as const;
+
+/**
+ * Taken (transaction-level, exclusive) by a controlled export script on a rehearsal target, and by
+ * any writer of such a target that adopts the rehearsal adapter contract. Not the source write lock.
+ */
+export const REHEARSAL_WRITE_LOCK = { namespace: ADVISORY_LOCK_NAMESPACE, key: 3 } as const;

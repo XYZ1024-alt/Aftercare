@@ -140,7 +140,13 @@ clarification 是人工声明而非业务确认：本编译器没有把自由文
 - `execute_case_command()` 在 `propagate_invalidation` 之后、`close_event` 之前调用 `freeze_execution()`：输入或有效性变化即冻结全部 bound 契约。
 - `run_phase_transitions` 增加 executing / validating 的迁移；`plan_lifecycle` 增加 compiled → approved → applied；进入这些状态由执行入口与批准命令的事务局部 gate 保护。
 
-## 9. 错误码
+## 9. 第六阶段接入（已实现，见 [verification-protocol.md](verification-protocol.md)）
+
+- `run_phase_transitions` 增加 validating → completed / partially_resolved，只能经封存事务的 gate 进入；`plan_lifecycle` 增加 applied → verified。
+- `freeze_execution()` 在依赖变化时同时把当前报告置 `stale`、未结束的验证运行置 `superseded`。
+- 修正第五阶段缺陷：`gate_is_open()` 在从未设置 gate 的会话里返回 NULL，触发器的 `NOT …` 因此不拒绝；现返回 false。
+
+## 10. 错误码
 
 | SQLSTATE | 契约层 code                                | 含义                                                                          |
 | -------- | ------------------------------------------ | ----------------------------------------------------------------------------- |

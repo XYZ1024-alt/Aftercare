@@ -15,12 +15,18 @@ export const BRANCH_STATUSES = [
   'ready',
   'applying',
   'applied',
+  /** Verified and published: immutable from here on, at the database level. */
+  'sealed',
   'quarantined',
   'failed',
 ] as const;
 export type BranchStatus = (typeof BRANCH_STATUSES)[number];
 
 export const CONTRACT_STATUSES = ['bound', 'invalidated', 'applied', 'applied_stale'] as const;
+
+/** What a contract does: apply a compiled plan, or reverse one recorded application on a successor branch. */
+export const CONTRACT_KINDS = ['repair', 'undo'] as const;
+export type ContractKind = (typeof CONTRACT_KINDS)[number];
 export type ContractStatus = (typeof CONTRACT_STATUSES)[number];
 
 export const ATTEMPT_STATUSES = [
@@ -67,6 +73,8 @@ export const executionBranchSchema = z.strictObject({
   createdAt: instantSchema,
   statusRevision: int64TextSchema,
   statusReason: z.string().nullable(),
+  /** The sealed branch this one was copied from, if it is a successor. */
+  predecessorBranchId: z.uuid().nullable(),
 });
 export type ExecutionBranch = z.output<typeof executionBranchSchema>;
 
@@ -86,7 +94,7 @@ const patchEntrySchema = planContentSchema.shape.patch.element;
  * plan, the branch and the case state; checked field by field by the database
  * against those records when it is bound. Nothing in it is a new value.
  */
-export const executionContractBodySchema = z.strictObject({
+export const repairContractBodySchema = z.strictObject({
   contractFormat: z.literal(1),
   caseId: z.uuid(),
   runId: z.uuid(),
@@ -140,7 +148,84 @@ export const executionContractBodySchema = z.strictObject({
   planObligations: planContentSchema.shape.obligations,
   limits: z.strictObject({ maxPatchEntries: z.number().int().min(1) }),
 });
+export type RepairContractBody = z.output<typeof repairContractBodySchema>;
+
+/** One deterministic check the undo derivation made against the successor branch; all must hold or the contract is not built. */
+const undoConflictCheckSchema = z.strictObject({
+  check: z.enum([
+    'target_is_successor_of_sealed_branch',
+    'repaired_versions_unchanged_on_target',
+    'no_order_read_repaired_version',
+    'unrelated_changes_preserved',
+  ]),
+  holds: z.literal(true),
+  basis: z.string().min(1),
+});
+
+/**
+ * The undo contract: reverses exactly the fields one recorded application
+ * wrote, on a successor branch of the sealed branch it was applied to. Every
+ * value comes from the application ledger and the successor branch; the
+ * request names the application and the target only.
+ */
+export const undoContractBodySchema = z.strictObject({
+  contractFormat: z.literal(1),
+  kind: z.literal('undo'),
+  caseId: z.uuid(),
+  runId: z.uuid(),
+  /** The plan whose application is reversed; carried for lineage, it authorises nothing here. */
+  planId: z.uuid(),
+  planDigest: sha256HexSchema,
+  applicationId: z.uuid(),
+  /** The repair id of the application being reversed; the undo gets a repair id of its own when executed. */
+  reversesRepairId: z.uuid(),
+  reversesExecutionDigest: sha256HexSchema,
+  reportId: z.uuid(),
+  predecessorBranchId: z.uuid(),
+  branchId: z.uuid(),
+  snapshotId: z.uuid(),
+  dependencyRevision: int64TextSchema,
+  inputVersions: z.array(inputVersionSchema),
+  scopeGuard: z.strictObject({
+    branchContentDigest: sha256HexSchema,
+    products: z.strictObject({ rowCount: int64TextSchema, digest: sha256HexSchema }),
+    orders: z.strictObject({ rowCount: int64TextSchema, digest: sha256HexSchema }),
+  }),
+  allowedFootprint: z.array(repairFieldRefSchema),
+  patch: z.array(patchEntrySchema),
+  patchDigest: sha256HexSchema,
+  /** Nothing is resolved by an undo; the list is empty and the approval acknowledges exactly that. */
+  unresolvedDomains: z.array(z.string()).max(0),
+  /** An undo restores recorded values; no policy constraint is evaluated on them. */
+  terminalConstraints: z.array(terminalConstraintSchema).max(0),
+  conflictChecks: z.array(undoConflictCheckSchema).min(4),
+  versions: z.strictObject({
+    policy: z.strictObject({
+      policyVersionId: z.uuid(),
+      revision: z.number().int(),
+      digest: sha256HexSchema,
+    }),
+    plan: planContentSchema.shape.versions,
+    executor: z.strictObject({ id: z.string(), version: z.number().int() }),
+    branchFormat: z.literal(1),
+  }),
+  inTransactionChecks: z.array(z.string().min(1)),
+  postVerificationObligations: z.array(z.string().min(1)),
+  planObligations: planContentSchema.shape.obligations.max(0),
+  limits: z.strictObject({ maxPatchEntries: z.number().int().min(1) }),
+});
+export type UndoContractBody = z.output<typeof undoContractBodySchema>;
+
+/** A repair body carries no kind field; an undo body says so. */
+export const executionContractBodySchema = z.union([
+  repairContractBodySchema,
+  undoContractBodySchema,
+]);
 export type ExecutionContractBody = z.output<typeof executionContractBodySchema>;
+
+export function contractKindOf(body: ExecutionContractBody): ContractKind {
+  return 'kind' in body ? body.kind : 'repair';
+}
 
 /** The one definition of executionDigest: sha256 over the canonical JSON of the contract body. */
 export function digestExecutionContract(body: ExecutionContractBody): string {
@@ -186,6 +271,7 @@ export const executionContractSchema = z.strictObject({
   snapshotId: z.uuid(),
   dependencyRevision: int64TextSchema,
   executionDigest: sha256HexSchema,
+  kind: z.enum(CONTRACT_KINDS),
   status: z.enum(CONTRACT_STATUSES),
   boundRevision: int64TextSchema,
   boundBy: z.string(),
@@ -270,6 +356,9 @@ export const repairApplicationSchema = z.strictObject({
   writtenFootprint: z.array(writtenFieldSchema),
   checks: z.array(jsonObjectSchema),
   diffDigest: sha256HexSchema,
+  kind: z.enum(CONTRACT_KINDS),
+  /** For an undo: the repair application it reversed. */
+  reversesApplicationId: z.uuid().nullable(),
   /** The status of the contract now: a later invalidation makes it applied_stale without rewriting this record. */
   contractStatus: z.enum(CONTRACT_STATUSES),
   /** True while the application may still be taken into verification. Never a new licence to execute. */

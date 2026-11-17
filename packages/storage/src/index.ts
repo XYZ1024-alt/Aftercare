@@ -9,3 +9,4 @@ export * from './repair-store.ts';
 export * from './snapshot-manager.ts';
 export * from './snapshot-reader.ts';
 export * from './transaction.ts';
+export * from './verifier-store.ts';

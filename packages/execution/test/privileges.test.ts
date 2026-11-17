@@ -92,6 +92,7 @@ describe('the executor role', () => {
       'open_attempts',
       'reconcile_attempt',
       'record_failure',
+      'release_lease',
       'renew_lease',
     ]);
     for (const row of rows) {
@@ -116,7 +117,7 @@ describe('the executor role', () => {
          FROM pg_proc AS p JOIN pg_roles AS r ON r.oid = p.proowner
         WHERE p.pronamespace = 'aftercare_execution'::regnamespace ORDER BY p.proname`,
     );
-    expect(rows.length).toBe(8);
+    expect(rows.length).toBe(9);
     for (const row of rows) {
       expect(row, row.name).toMatchObject({
         definer: true,
@@ -157,7 +158,7 @@ describe('the executor role', () => {
          FROM pg_proc AS p JOIN pg_roles AS r ON r.oid = p.proowner
         WHERE p.pronamespace = 'aftercare_control'::regnamespace AND p.proname LIKE 'exec\\_%' ORDER BY p.proname`,
     );
-    expect(exec.length).toBe(9);
+    expect(exec.length).toBe(10);
     for (const row of exec) {
       expect(row, row.name).toMatchObject({
         owner: 'aftercare_migrator',

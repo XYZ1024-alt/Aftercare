@@ -505,7 +505,8 @@ describe('evidence is read from the immutable snapshot only', () => {
     expect(again.observations).toEqual(historyBeforeSourceChanged.observations);
     expect(again.dependencies).toEqual(historyBeforeSourceChanged.dependencies);
     expect(again.resultDigest).toBe(historyBeforeSourceChanged.resultDigest);
-    expect(JSON.stringify(again)).not.toContain('9999');
+    // The new price as a JSON value; random ids and digests may contain the digits 9999.
+    expect(JSON.stringify(again)).not.toContain('"9999"');
 
     // The stored record is exactly what was returned when it was collected.
     expect(

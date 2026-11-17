@@ -9,6 +9,7 @@
 执行器 [packages/execution](../packages/execution/src)。前四阶段协议见 [dependency-protocol.md](dependency-protocol.md)。
 
 本阶段**不**包含：模型调用、任意 SQL、生产连接、独立验证、分支封存、导出、撤销、自动预授权。
+第六阶段的扩展（verified/sealed、执行入口按分支基线与同事务前像比较、撤销契约、租约释放）见 [verification-protocol.md](verification-protocol.md)。
 
 ## 1. 流程与停止点
 

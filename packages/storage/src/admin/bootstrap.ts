@@ -34,8 +34,9 @@ const SNAPSHOT_MANAGER_SESSION_DEFAULTS: Readonly<Record<string, string>> = {
 };
 
 /**
- * Server-side ceilings for every executor session: an execution transaction
- * can never wait, run or sit idle without bound, whatever the client does.
+ * Server-side ceilings for every executor and verifier session: an execution
+ * or seal transaction can never wait, run or sit idle without bound, whatever
+ * the client does.
  */
 const EXECUTOR_SESSION_DEFAULTS: Readonly<Record<string, string>> = {
   lock_timeout: '15s',
@@ -89,11 +90,13 @@ async function ensureRoles(client: Client, env: NodeJS.ProcessEnv): Promise<void
     );
   }
 
-  const executor = escapeIdentifier(DATABASE_ROLES.executor.user);
-  for (const [setting, value] of Object.entries(EXECUTOR_SESSION_DEFAULTS)) {
-    await client.query(
-      `ALTER ROLE ${executor} SET ${escapeIdentifier(setting)} = ${escapeLiteral(value)}`,
-    );
+  for (const login of [DATABASE_ROLES.executor, DATABASE_ROLES.verifier]) {
+    const role = escapeIdentifier(login.user);
+    for (const [setting, value] of Object.entries(EXECUTOR_SESSION_DEFAULTS)) {
+      await client.query(
+        `ALTER ROLE ${role} SET ${escapeIdentifier(setting)} = ${escapeLiteral(value)}`,
+      );
+    }
   }
 
   // The sandbox owner cannot log in. The migrator may SET ROLE to it (to
@@ -111,6 +114,14 @@ async function ensureRoles(client: Client, env: NodeJS.ProcessEnv): Promise<void
   await client.query(
     `GRANT ${escapeIdentifier(SANDBOX_OWNER_ROLE)} TO ${escapeIdentifier(DATABASE_ROLES.migrator.user)}
        WITH INHERIT FALSE, SET TRUE`,
+  );
+
+  // The verifier reads snapshot and branch schemas exactly as the
+  // investigation role does (per-schema grants are made to that role), and
+  // nothing more: membership with inheritance, no SET.
+  await client.query(
+    `GRANT ${escapeIdentifier(DATABASE_ROLES.investigator.user)} TO ${escapeIdentifier(DATABASE_ROLES.verifier.user)}
+       WITH INHERIT TRUE, SET FALSE`,
   );
 
   // The test administrator may SET ROLE to the schema owner, but does not
@@ -140,9 +151,10 @@ async function ensureDatabase(client: Client, target: DatabaseTarget, database: 
       ? `GRANT CONNECT ON DATABASE ${name} TO ${testAdmin}`
       : `REVOKE ALL ON DATABASE ${name} FROM ${testAdmin}`,
   );
-  // The migrator may create schemas; the database itself stays owned by the superuser.
+  // The migrator may create schemas (and, inside its SECURITY DEFINER execution entries, the
+  // transaction-local pre-image temp table); the database itself stays owned by the superuser.
   await client.query(
-    `GRANT CREATE ON DATABASE ${name} TO ${escapeIdentifier(DATABASE_ROLES.migrator.user)}`,
+    `GRANT CREATE, TEMPORARY ON DATABASE ${name} TO ${escapeIdentifier(DATABASE_ROLES.migrator.user)}`,
   );
   await client.query(`COMMENT ON DATABASE ${name} IS ${escapeLiteral(DATABASE_MARKERS[target])}`);
 }

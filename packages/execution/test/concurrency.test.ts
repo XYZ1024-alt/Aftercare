@@ -320,6 +320,7 @@ describe('invalidation and revocation interleaved with execution', () => {
     expect(changed.invalidation.execution).toEqual({
       contractsInvalidated: 0,
       applicationsMadeStale: 1,
+      reportsMadeStale: 0,
     });
     expect(await phaseOf(h)).toBe('investigating');
     const [application] = await applications(h);

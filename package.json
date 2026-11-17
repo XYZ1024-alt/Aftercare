@@ -23,7 +23,8 @@
     "typecheck": "tsc -p tsconfig.json && pnpm -r run typecheck",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
-    "test": "vitest run"
+    "test": "vitest run",
+    "demo:verify": "pnpm --filter @aftercare/verify run demo"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.6.7",

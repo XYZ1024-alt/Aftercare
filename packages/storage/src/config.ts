@@ -49,6 +49,15 @@ export const DATABASE_ROLES = {
     user: 'aftercare_executor',
     passwordVariable: 'AFTERCARE_EXECUTOR_PASSWORD',
   },
+  /**
+   * The independent verifier's login: reads the control records, snapshot
+   * and branch schemas, and calls the aftercare_verification.* entries only.
+   * It can write no branch, no source, no snapshot, no approval, no validity.
+   */
+  verifier: {
+    user: 'aftercare_verifier',
+    passwordVariable: 'AFTERCARE_VERIFIER_PASSWORD',
+  },
 } as const satisfies Record<string, LoginRole>;
 
 /**

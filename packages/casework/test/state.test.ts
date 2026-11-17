@@ -82,9 +82,10 @@ describe('run phases', () => {
     });
   });
 
-  it('has no command that reaches completed, partially_resolved or verified; executing and validating need the executor', async () => {
-    // completed and partially_resolved stay reserved; executing/validating are
-    // reached only through the execution entries (stage five), never by hand.
+  it('has no command that reaches executing, validating, completed, partially_resolved or verified: they need the executor or the seal', async () => {
+    // executing/validating are reached only through the execution entries
+    // (stage five), completed/partially_resolved through the seal (stage six),
+    // never by hand — not even from a session that never set the gate.
     for (const target of ['executing', 'validating', 'completed', 'partially_resolved']) {
       await expect(
         h.db.migratorPool.query(
@@ -99,10 +100,12 @@ describe('run phases', () => {
     expect(rows.map((row) => row.to_phase)).toEqual([
       'awaiting_input',
       'cancelled',
+      'completed',
       'created',
       'executing',
       'failed',
       'investigating',
+      'partially_resolved',
       'paused',
       'planning',
       'validating',

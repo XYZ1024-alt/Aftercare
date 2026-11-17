@@ -71,6 +71,7 @@ describe('role separation', () => {
       'runtime',
       'authority_admin',
       'executor',
+      'verifier',
     ]);
     for (const role of roles) {
       const pool = openRolePool(process.env, role, 'test');

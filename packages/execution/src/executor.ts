@@ -52,6 +52,10 @@ export interface CaseExecutor {
     | { readonly ok: true; readonly expiresAt: string }
     | { readonly ok: false; readonly rejection: ExecutionRejection }
   >;
+  /** Hands the case back: the lease ends now and this executor holds nothing afterwards. */
+  readonly release: () => Promise<
+    { readonly ok: true } | { readonly ok: false; readonly rejection: ExecutionRejection }
+  >;
   /**
    * Reconciles every open attempt of the case under the current token. A
    * worker that starts or takes over runs this before anything else.
@@ -113,6 +117,15 @@ export function createCaseExecutor(caseId: string, options: ExecutorOptions): Ca
       }
       held = { ...identity(), expiresAt: outcome.value.expiresAt };
       return { ok: true, expiresAt: outcome.value.expiresAt };
+    },
+
+    release: async () => {
+      const outcome = await store.releaseLease(caseId, identity());
+      if (!outcome.ok) {
+        return outcome;
+      }
+      held = null;
+      return { ok: true };
     },
 
     recover: async () => {

@@ -60,7 +60,7 @@ export async function resetDisposableTestDatabase(pool: Pool): Promise<void> {
     const { rows: schemas } = await client.query<SchemaRow>(
       `SELECT n.nspname AS name, n.nspowner::regrole::text AS owner
          FROM pg_namespace AS n
-        WHERE n.nspname IN ('aftercare', 'aftercare_control', 'aftercare_meta', 'aftercare_execution')
+        WHERE n.nspname IN ('aftercare', 'aftercare_control', 'aftercare_meta', 'aftercare_execution', 'aftercare_verification')
            OR n.nspname ~ '^aftercare_(snap|branch)_[0-9a-f]{32}$'
         ORDER BY n.nspname`,
     );

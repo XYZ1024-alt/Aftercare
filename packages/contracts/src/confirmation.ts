@@ -39,6 +39,12 @@ export const CASE_CAPABILITIES = [
   'declare_business_fact',
   /** May approve or revoke the execution of ONE execution contract. Distinct from every confirm_* capability. */
   'approve_execution',
+  /** May obtain the artefacts (report files) of a case whose report is current. */
+  'download_artefact',
+  /** May read artefacts of a report that is no longer current, explicitly as historical material. */
+  'read_historical_artefact',
+  /** May register and obtain controlled SQL exports; separate from download_artefact and approve_execution. */
+  'export_repair',
 ] as const;
 export type CaseCapability = (typeof CASE_CAPABILITIES)[number];
 
