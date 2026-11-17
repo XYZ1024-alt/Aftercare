@@ -1,0 +1,31 @@
+{
+  "name": "@aftercare/agent",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./testing": "./test/support.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "cli": "tsx --env-file-if-exists=../../.env scripts/cli.ts",
+    "demo": "tsx --env-file-if-exists=../../.env scripts/demo.ts"
+  },
+  "dependencies": {
+    "@aftercare/casework": "workspace:*",
+    "@aftercare/contracts": "workspace:*",
+    "@aftercare/domain": "workspace:*",
+    "@aftercare/evidence": "workspace:*",
+    "@aftercare/execution": "workspace:*",
+    "@aftercare/repair": "workspace:*",
+    "@aftercare/storage": "workspace:*",
+    "@aftercare/verify": "workspace:*",
+    "pg": "^8.23.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.23.1",
+    "tsx": "^4.23.15"
+  }
+}

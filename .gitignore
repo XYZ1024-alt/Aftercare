@@ -4,6 +4,8 @@ next-env.d.ts
 coverage/
 *.tsbuildinfo
 *.log
+# Live model evaluation records (may name a model; never a credential).
+.eval/
 .DS_Store
 
 # Secrets: only the example file is tracked.

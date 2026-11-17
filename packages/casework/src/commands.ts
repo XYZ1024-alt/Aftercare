@@ -8,7 +8,7 @@ import {
 } from '@aftercare/contracts';
 import { digestJson, type JsonObject, type JsonValue } from '@aftercare/domain';
 import { evidenceDependencyManifest } from '@aftercare/evidence';
-import type { CaseStore, ControlStore, RepairStore } from '@aftercare/storage';
+import type { CaseStore, CommandEnvelope, ControlStore, RepairStore } from '@aftercare/storage';
 import { z } from 'zod';
 import { buildExecutionContract } from './execution-contract.ts';
 import { deriveUndoContract } from './undo-contract.ts';
@@ -30,6 +30,18 @@ export interface CaseCommandSession {
   readonly execute: (request: JsonValue) => Promise<CommandOutcome>;
 }
 
+/**
+ * Hands one validated command, with what the Runtime derived for it, to a
+ * database entry. The operator entry submits it as the session's identity;
+ * the Agent Runtime submits it through its fenced entry, where the database
+ * fixes the principal itself.
+ */
+export type CommandSubmitter = (
+  envelope: CommandEnvelope,
+  command: CaseCommandBody,
+  effects: JsonObject | null,
+) => Promise<CommandOutcome>;
+
 export interface CaseCommandService {
   /**
    * Binds the service to the identity the trusted application layer
@@ -39,6 +51,12 @@ export interface CaseCommandService {
    * principal holds the capability the command needs.
    */
   readonly forIdentity: (identity: IdentityContext) => CaseCommandSession;
+  /**
+   * The same validation and derivation in front of another database entry.
+   * Used by the Agent Runtime only: its submitter ends in
+   * aftercare_control.agent_execute_command(), which takes no principal.
+   */
+  readonly through: (submit: CommandSubmitter) => CaseCommandSession;
 }
 
 function rejected(
@@ -238,28 +256,28 @@ export function createCaseCommandService(options: CaseCommandServiceOptions): Ca
     }
   }
 
+  const sessionOf = (submit: CommandSubmitter): CaseCommandSession => ({
+    execute: async (input) => {
+      const parsed = caseCommandSchema.safeParse(input);
+      if (!parsed.success) {
+        return rejected('invalid_request', z.prettifyError(parsed.error));
+      }
+      const { caseId, requestId, expectedRevision, command } = parsed.data;
+      const prepared = await prepare(caseId, command);
+      if ('ok' in prepared) {
+        return prepared;
+      }
+      return submit({ caseId, requestId, expectedRevision }, command, prepared.effects);
+    },
+  });
+
   return {
     forIdentity: (context) => {
       const identity = identityContextSchema.parse(context);
-      return {
-        execute: async (input) => {
-          const parsed = caseCommandSchema.safeParse(input);
-          if (!parsed.success) {
-            return rejected('invalid_request', z.prettifyError(parsed.error));
-          }
-          const { caseId, requestId, expectedRevision, command } = parsed.data;
-          const prepared = await prepare(caseId, command);
-          if ('ok' in prepared) {
-            return prepared;
-          }
-          return caseStore.executeCommand(
-            identity,
-            { caseId, requestId, expectedRevision },
-            command,
-            prepared.effects,
-          );
-        },
-      };
+      return sessionOf((envelope, command, effects) =>
+        caseStore.executeCommand(identity, envelope, command, effects),
+      );
     },
+    through: sessionOf,
   };
 }

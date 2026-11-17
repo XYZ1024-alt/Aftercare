@@ -2,14 +2,16 @@
 
 业务数据事故修复 Agent。目标架构是「单 Agent + Runtime + 确定性引擎」，在隔离沙箱内修复事故并保留后续合法变化。
 
-**当前进度：第六阶段。** 已实现或验证的是：受控业务写入口与原子审计（第一阶段）；一致快照、受限只读取证、接入资格检查（第二阶段）；
+**当前进度：第七阶段。** 已实现或验证的是：受控业务写入口与原子审计（第一阶段）；一致快照、受限只读取证、接入资格检查（第二阶段）；
 业务确认、策略版本与**确定性修复编译**（第三阶段）；依赖追踪、确定性失效传播与持久化案例状态（第四阶段）；
 执行批准、案例专属沙箱分支、不可变执行契约、租约与 fencing、单事务补丁应用、应用账本与崩溃对账（第五阶段）；
-**独立验证、不可变验证报告、原子封存、受控产物获取、受控 SQL 导出、后继分支与受保护撤销**（第六阶段）。
+独立验证、不可变验证报告、原子封存、受控产物获取、受控 SQL 导出、后继分支与受保护撤销（第六阶段）；
+**单 Agent 自主调查循环**：服务端 OpenAI 兼容模型适配器、类型化工具注册表、持久化 Agent 运行（租约与 fencing、预算、重复检测、恢复）、问题与回答、反例驱动的重新规划（第七阶段）。
 
-**尚未实现**：Agent 循环、事故判定、生产连接与生产写回、通用补偿引擎、完整前端、自动预授权。
+**尚未实现**：生产连接与生产写回、任意 SQL 修复、任意数据库恢复、通用补偿引擎、完整操作台、自动预授权、认证/登录。
 `verified` / `sealed` 只表示**确定性修复在沙箱分支上的执行符合契约与强制不变量**，并由独立验证器在封存事务内重核；业务适当性只依赖有权人的批准确认，验证器不替人判断。
-本仓库不调用任何模型，不需要 API key，不能据此声称 Agent 已能自主修复、支持任意事故，或生产安全。
+模型只**选择下一步工具动作**、提出假设、问题与结束建议；权限、依赖失效、批准、金额、事务执行与验证结论仍由确定性程序负责，运行能否以 completed / partially_resolved 结束由数据库依据封存报告判定。
+仓库内的自动化测试使用**脚本化模型**（由测试作者编写的答案）检验 Runtime 协议；真实模型测试显式 opt-in，本仓库提交时**未**以真实模型运行过（见下文）。不能据此声称 Agent 已能稳定自主修复、支持任意事故，或生产安全。
 
 ## 范围
 
@@ -20,7 +22,8 @@
 - 执行器只写案例专属的 `aftercare_branch_*` schema，且只能改 `products.price_cents/version`；源业务表、快照、审计、批准表对它都不可达。补丁只来自已存储的执行契约，请求不能携带价格或 SQL。
 - 验证器（`aftercare_verifier`）只读它验证的记录、快照与分支，经 `aftercare_verification.*` 发布报告与封存；它不能写任何分支、源库、快照、批准或有效性。
 - 封存分支在数据库层不可写（撤销写权限 + 拒绝触发器）；SQL 导出只针对本地演练目标，拒绝指向本系统任何 schema。
-- 模型未来只接触受限取证工具，不获得任何数据库凭证或管理入口。
+- 模型只经类型化工具行动（[docs/agent-protocol.md](docs/agent-protocol.md) §3），不获得任何数据库凭证或管理入口；工具参数中没有案例、主体、金额、补丁、SQL 或 repairId。
+- 模型服务只在服务端调用；API key 只出现在请求的 `Authorization` 头中，不进数据库、日志、提示词、工具结果或页面。
 
 ## 结构
 
@@ -35,12 +38,14 @@
 | `packages/repair`               | 登记服务（策略版本、事故集合）、确定性语义引擎、策略解析、终态约束、计划装配与摘要、计划依赖推导、编译入口、演示脚本                                           |
 | `packages/casework`             | 案例命令处理器（绑定身份上下文；确认、撤回、声明、假设、快照/证书/策略/语义版本激活、run 迁移、分支创建、契约绑定、执行批准/撤销）、执行契约构造、只读检视接口 |
 | `packages/execution`            | 案例执行器（租约、意图、单事务应用、失败登记、结果不明对账、租约释放）、契约评审视图、演示脚本                                                                 |
+| `packages/agent`                | 模型适配器（OpenAI 兼容、脚本化测试替身）、工具注册表、反馈分类、上下文构造、Agent Runtime、可信操作入口（启动/回答/控制/查看）、CLI 与演示                    |
 | `packages/verify`               | 独立验证器（读取、义务检查、报告装配、原子封存）、报告渲染、受控 SQL 导出与演练目标契约、产物服务（待生成/就绪/恢复/获取）、演示脚本                           |
 | `docs/write-protocol.md`        | 锁键、写事务协议、水位与依赖类别                                                                                                                               |
 | `docs/snapshot-protocol.md`     | 快照协议、摘要格式、资格检查、取证接口、依赖记录、信任前提                                                                                                     |
 | `docs/repair-protocol.md`       | 确认与权限、策略组合、提案契约、语义引擎、部分结果、计划与摘要、反例、限制                                                                                     |
 | `docs/dependency-protocol.md`   | 两类依赖图、依赖项契约、命令与幂等、失效传播与保守规则、状态迁移表                                                                                             |
 | `docs/execution-protocol.md`    | 分支、执行契约与摘要、执行批准、租约与 fencing、锁顺序与执行事务、幂等与对账、竞态、权限、第六阶段只读接口                                                     |
+| `docs/agent-protocol.md`        | 职责划分、模型适配器与最低能力、工具、身份与幂等层次、每步流程、至少一次语义、问题与授权、过期检测、上下文、反馈分类、预算与结束、恢复、注入、权限、测试分层   |
 | `docs/verification-protocol.md` | 四层结论、强制义务与独立检查路径、验证运行与原子封存、提交顺序、产物与导出、后继分支与撤销、失败恢复、Agent 接口建议                                           |
 
 ## 本地启动
@@ -57,6 +62,9 @@ pnpm db:seed                # 可选：经受控入口写入演示数据
 pnpm dev:web                # http://127.0.0.1:3100 ，健康检查 /api/health
 pnpm dev:worker
 ```
+
+**从第六阶段升级**：`pnpm install`（新增 workspace 包 `@aftercare/agent`），`pnpm db:migrate`（应用 0021）。在 `.env` 中补上 `AFTERCARE_AGENT_PRINCIPAL` 与可选的 `AFTERCARE_MODEL_*`（见 `.env.example`），
+并由授权管理角色给 agent 主体授予 `investigate_case` 与 `manage_case`（**只**这两项；演示脚本会自动授予）。
 
 **从第五阶段升级**：在 `.env` 中补上 `AFTERCARE_VERIFIER_PASSWORD`（见 `.env.example`），`pnpm install`（新增 workspace 包 `@aftercare/verify`），
 `pnpm db:bootstrap`（新增登录角色 `aftercare_verifier`，它继承调查角色的读权限；迁移角色新增 TEMPORARY 权限，用于执行事务内的前像临时表），然后 `pnpm db:migrate`（应用 0020）。
@@ -88,6 +96,25 @@ pnpm test                   # 需要数据库已启动并完成 db:bootstrap
 `undo.test.ts`（后继分支与谱系；无冲突撤销保留无关后续变更；同值新版本、相关后写、读取依赖导致 UNDO_CONFLICT；数据库独立拒绝；结果不明按原键对账）、
 `privileges.test.ts`（验证器角色边界、入口签名、验证器不依赖编译器）。
 破坏性用例只通过测试管理入口（`corruptBranch`、`rehearseOnSuccessor`，仅测试库）构造；本阶段没有任何生产入口能在后继分支上产生后续演练活动。
+
+只跑第七阶段：`pnpm vitest run packages/agent`——除 `adapter.test.ts`（适配器单元测试，注入传输层，不联网）外均为真实 PostgreSQL 集成测试，模型是**脚本化测试替身**：
+`standard.test.ts`（五商品：模糊描述 → 三个业务问题 → 编译 → 显式批准 → 沙箱执行 → 独立验证 → partial 报告）、
+`scenarios.test.ts`（混合批次只确认错误目标、相同描述不同记录走不同路径、缺失意图只能澄清不能猜 +10、新证据推翻假设使计划失效并重新规划、工具参数中没有金额/补丁/主体）、
+`races.test.ts`（等待模型期间撤销批准或确认、批准问题随契约失效而失效、租约接管后旧响应只作历史、等待/暂停/取消不调用模型）、
+`protocol.test.ts`（未知工具、非 JSON 与非法参数、跨案例引用、模型自称完成被拒、经真实适配器的提示注入与密钥不落库）、
+`recovery.test.ts`（事务提交后 worker 死亡按原 repairId 对账不重复应用、外呼后死亡的请求按至少一次重试、重启后继续）、
+`limits.test.ts`（预算耗尽、usage 未知不估算、重复读与重复失败提案、模型故障有限重试、上下文压缩与超预算暂停）、
+`isolation.test.ts`（验证失败隔离分支并停止运行，再启动需显式确认）、`answers.test.ts`（回答与授权分离）、`privileges.test.ts`（表与入口权限、owner 也受守卫、agent 主体与命令名单）、
+`oracle.test.ts`（评测案例与显式测试驱动的自检）。
+
+真实模型（第 C 层，显式 opt-in，会产生费用）：
+
+```bash
+AFTERCARE_LIVE_MODEL_TESTS=1 pnpm vitest run packages/agent/test/live-model.test.ts   # 需要 .env 中的 AFTERCARE_MODEL_*
+```
+
+它在测试库上逐个运行四个独立案例（描述相同，隐藏预期只在测试中），人类一方由显式测试驱动依据隐藏真相作答；只断言安全不变量，是否达到预期写入 `packages/agent/.eval/live-*.json`（已 git-ignore）。
+单次运行是样本，不代表稳定性；脚本化测试的通过**不**说明任何模型的能力。
 
 其他命令：`pnpm db:migrate:test`、`pnpm db:reset:test`、`pnpm db:down`。
 
@@ -179,6 +206,31 @@ pnpm demo:verify
 4. 开新 run、创建后继分支；对封存分支本身的撤销得到 `undo_conflict`（`target_not_successor`），对后继分支的撤销经独立批准、执行与验证后封存，原封存分支不变；
 5. 激活一条新证据：两份报告都转为 `stale`（原因 `activate_evidence`），封存与账本保留；产物不能再作为当前产物获取，只能显式作为历史材料读取。
 
+### 第七阶段演示：模糊事故 → 自主取证 → 业务澄清 → 确定性编译 → 等待明确批准 → 沙箱执行 → 独立验证 → 封存报告或明确未决
+
+```bash
+pnpm db:up && pnpm db:bootstrap && pnpm db:migrate
+pnpm demo:agent                              # 用 .env 中配置的真实模型；停在第一个问题，打印如何用 CLI 作答
+pnpm demo:agent --auto-answer                # 由显式测试驱动（两个具名身份）依据场景真相作答，每个回答都标明
+pnpm demo:agent --scripted --auto-answer     # 没有模型时：脚本化测试替身驱动，只展示 Runtime 协议，输出中明确标注“不是自主运行”
+```
+
+在**开发库**上写入普通业务活动（五个商品、一次导入批次、一次增量、一次后续绝对写、一笔订单；策略不含覆写保留规则，因此后续绝对写的商品会未决），
+以“导入后商品价格异常”启动运行，逐条打印真实事件（工具请求、带证据引用的结果、问题、回答、停止原因），最后打印封存报告或未决说明，以及 usage 与费用（无价格配置时为“未知”）。
+
+最小交互入口（开发库；`--as` 声明当前操作者，见“保证与前提”）：
+
+```bash
+pnpm agent start --as ops:pricing-lead "导入后商品价格异常"
+pnpm agent work <runId>                      # 用配置的模型驱动，直到等待输入/暂停/结束
+pnpm agent questions <runId>
+pnpm agent answer <questionId> --as ops:pricing-lead --decision confirm_operations --operations <id,...> --statement "..."
+pnpm agent answer <questionId> --as ops:release-approver --decision approve --digest <executionDigest> --ack <未决域,...> --statement "..."
+pnpm agent events <runId> [--after <seq>]
+pnpm agent pause|resume|cancel <runId> --as <principal> --reason "..."
+pnpm agent report <runId>
+```
+
 ## 测试库与开发库隔离
 
 - 两个独立数据库（默认 `aftercare_dev` / `aftercare_test`），配置里两者同名会被拒绝。
@@ -241,6 +293,12 @@ run 阶段、计划生命周期与有效性由数据库约束与触发器维护�
 发布在案例锁内重核全部绑定，报告、计划 verified、分支 sealed、run 结束与事件同事务提交；封存分支在数据库层不可写；失效使报告 stale 而不改写报告、封存或账本；
 产物经审计授权获取并核对摘要，文件与登记之间的崩溃窗口由待生成状态与恢复协议覆盖；可执行导出带完整前状态/行/后状态 guard、单事务与按 repairId 的幂等，无法表达时只给不可执行差异报告；
 撤销只在后继分支上逆转账本记录的差异，遇同值新版本、相关后写或读取依赖即 `undo_conflict`，仍需独立批准、执行与验证。详见 [docs/verification-protocol.md](docs/verification-protocol.md)。
+
+第七阶段：模型所选动作只能经工具注册表与 `agent_execute_command` 的封闭命令名单进入案例状态机，主体取自运行行；每个 worker 入口在案例锁内检查租约与 fencing token（与执行器、验证器同一租约）、运行状态、暂停/取消请求、预算；
+模型请求先持久化意图与预留再外呼（至少一次，超时记为结果不明与可能计费），旧代迟到响应只存为历史；写工具在案例于模型决策后被他人改变时以 `stale_context` 拒绝；沙箱应用的 repairId 在执行前分配并持久化，结果不明只按它对账；
+回答映射到回答人自己的命令与能力，remark 与“可以，继续”不产生任何授权；确定性不变量失败（编译器不变量、执行实现缺陷、验证失败）由 Runtime 停止案例 run 并隔离；
+`completed` / `partially_resolved` 只能来自本运行自身工作的当前封存报告（守卫对 owner 也生效）。详见 [docs/agent-protocol.md](docs/agent-protocol.md)。
+**不能证明**：模型判断的正确性或稳定性；脚本化测试只证明 Runtime 协议。agent 主体只是能力登记中的名字，它的权限范围由授权管理员保证只含两项能力（启动与每条命令时检查）。
 **不能证明**：超级用户或 schema owner 的操作、检查瞬间之外的权限历史、业务意图本身；报告不代表当前源库状态。
 
 **这些保证依赖以下前提，凭证中也逐条列出：**
@@ -249,7 +307,7 @@ run 阶段、计划生命周期与有效性由数据库约束与触发器维护�
 - 入口函数确实遵守锁与原子审计协议。检查器只比对已部署函数体与评审版本的摘要，不做静态证明。
 - 覆盖起点之前没有业务数据（部署声明）。
 - 数据库管理员可信。表 owner 或超级用户可以禁用触发器、替换函数、修改任何行或快照；本项目不声称能防止或发现 DBA 篡改。
-- `principal` 由应用声明，数据库不验证其真实性。
+- `principal` 由应用声明，数据库不验证其真实性。CLI 的 `--as` 即这样的声明：它只能在可信的本地 shell 中使用，不得暴露给模型或不可信方。
 
 资格（`eligible` / `investigation_only` / `quarantined`）只说明快照在上述前提下是否满足后续步骤的输入条件。
 它不代表某个操作是事故，不代表基线或正确值已被业务确认，更不代表执行批准。

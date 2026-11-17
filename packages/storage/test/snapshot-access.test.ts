@@ -216,7 +216,24 @@ describe('published snapshot: who can do what', () => {
     // The exec_* coordination entries are reachable by the non-login sandbox
     // owner only; everything else by the runtime, the snapshot manager or the
     // authority administrator. The executor login can execute none of them.
+    // The agent_* entries are the runtime's; their internal helpers (agent_stop,
+    // agent_conclude, ...) are not definers and are granted to nobody.
     expect(rows.filter((row) => row.definer).map((row) => [row.name, row.grantees])).toEqual([
+      ['agent_answer_question', ['aftercare_runtime']],
+      ['agent_begin_model_request', ['aftercare_runtime']],
+      ['agent_begin_tool_call', ['aftercare_runtime']],
+      ['agent_claim_run', ['aftercare_runtime']],
+      ['agent_complete_model_request', ['aftercare_runtime']],
+      ['agent_control', ['aftercare_runtime']],
+      ['agent_execute_command', ['aftercare_runtime']],
+      ['agent_fail_model_request', ['aftercare_runtime']],
+      ['agent_finish_run', ['aftercare_runtime']],
+      ['agent_finish_tool_call', ['aftercare_runtime']],
+      ['agent_open_question', ['aftercare_runtime']],
+      ['agent_record_late_response', ['aftercare_runtime']],
+      ['agent_refresh_questions', ['aftercare_runtime']],
+      ['agent_start_run', ['aftercare_runtime']],
+      ['agent_suspend', ['aftercare_runtime']],
       ['append_evidence', ['aftercare_runtime']],
       ['approval_state', ['aftercare_runtime', 'aftercare_verifier']],
       ['branch_orders', ['aftercare_runtime']],
@@ -251,6 +268,10 @@ describe('published snapshot: who can do what', () => {
         .filter((row) => !row.definer && row.grantees.length > 0)
         .map((row) => [row.name, row.grantees]),
     ).toEqual([
+      ['agent_model_request_json', ['aftercare_runtime']],
+      ['agent_question_json', ['aftercare_runtime']],
+      ['agent_run_json', ['aftercare_runtime']],
+      ['agent_tool_call_json', ['aftercare_runtime']],
       ['application_json', ['aftercare_runtime', 'aftercare_verifier']],
       ['approval_json', ['aftercare_runtime', 'aftercare_verifier']],
       ['artefact_json', ['aftercare_runtime']],

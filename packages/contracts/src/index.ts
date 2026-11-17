@@ -1,3 +1,4 @@
+export * from './agent.ts';
 export * from './audit.ts';
 export * from './case-state.ts';
 export * from './commands.ts';

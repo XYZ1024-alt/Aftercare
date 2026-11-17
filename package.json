@@ -24,7 +24,9 @@
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
     "test": "vitest run",
-    "demo:verify": "pnpm --filter @aftercare/verify run demo"
+    "demo:verify": "pnpm --filter @aftercare/verify run demo",
+    "agent": "pnpm --filter @aftercare/agent run cli",
+    "demo:agent": "pnpm --filter @aftercare/agent run demo"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.6.7",
