@@ -9,13 +9,9 @@ import { sendJson } from '../../lib/api.ts';
 import { SessionGate, useCan, useSession } from '../../lib/session.tsx';
 
 const LINKS = [
+  { href: '/agent', label: 'Agent 对话', current: (path: string) => path.startsWith('/agent') },
   { href: '/', label: '概览', current: (path: string) => path === '/' },
-  {
-    href: '/cases',
-    label: '案例',
-    current: (path: string) => path.startsWith('/cases') && path !== '/cases/new',
-  },
-  { href: '/cases/new', label: '提交事故', current: (path: string) => path === '/cases/new' },
+  { href: '/cases', label: '案例', current: (path: string) => path.startsWith('/cases') },
 ] as const;
 const ADMIN_LINK = {
   href: '/admin',

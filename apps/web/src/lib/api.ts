@@ -20,13 +20,13 @@ const UNREACHABLE = refusal(
   '请求没有得到响应。操作可能已生效，也可能没有；重试会使用同一请求键，不会重复执行。',
 );
 
-function toSignIn(): void {
+export function toSignIn(): void {
   if (window.location.pathname !== '/login') {
     window.location.assign('/login');
   }
 }
 
-async function refusalOf(response: Response): Promise<Refusal> {
+export async function refusalOf(response: Response): Promise<Refusal> {
   const body: { refusal?: Refusal } = await response.json().catch(() => ({}));
   return body.refusal ?? refusal(`http_${response.status}`, `请求失败（HTTP ${response.status}）`);
 }

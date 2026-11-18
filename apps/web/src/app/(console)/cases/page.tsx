@@ -2,10 +2,10 @@
 
 import {
   Archive,
+  Bot,
   Hourglass,
   type LucideIcon,
   MessageCircleQuestion,
-  Plus,
   ScanSearch,
   Search,
   ShieldCheck,
@@ -125,9 +125,9 @@ export default function CaseListPage() {
       <PageHead
         title="案例"
         actions={
-          <ButtonLink href="/cases/new" tone="primary">
-            <Plus aria-hidden className="size-4" />
-            提交事故
+          <ButtonLink href="/agent" tone="primary">
+            <Bot aria-hidden className="size-4" />
+            Agent 对话
           </ButtonLink>
         }
       />
@@ -144,8 +144,9 @@ export default function CaseListPage() {
         <Card className="py-14 text-center">
           <p className="text-[17px] font-medium">还没有案例</p>
           <div className="mt-5 flex justify-center">
-            <ButtonLink href="/cases/new" tone="primary">
-              提交事故
+            <ButtonLink href="/agent" tone="primary">
+              <Bot aria-hidden className="size-4" />
+              Agent 对话
             </ButtonLink>
           </div>
         </Card>

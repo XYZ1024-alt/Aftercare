@@ -117,16 +117,19 @@ test('from a vague report to a sealed partial result: real events, business answ
   await expect(page.getByTestId('case-row')).toContainText('当前有效');
 });
 
-test('a double click submits once, and an answer whose response is lost is not recorded twice', async ({
+test('a double click on send opens one case, and an answer whose response is lost is not recorded twice', async ({
   page,
   harness,
 }) => {
   await signIn(page, OPERATOR.principal);
   harness.startWorker();
-  await page.goto('/cases/new');
-  await page.locator('textarea[name=description]').fill('导入后商品价格异常');
-  await page.locator('select[name=environment]').selectOption({ index: 1 });
-  await page.getByRole('button', { name: '创建案例并启动调查' }).dblclick();
+  await page.goto('/agent');
+  await page.locator('textarea[name=message]').fill('导入后商品价格异常');
+  await page.getByRole('button', { name: '发送' }).dblclick();
+  // The conversation is kept in the browser: the newest case link is the one this report opened.
+  const opened = page.locator('[data-testid=opened-case]').last();
+  await expect(opened).toBeVisible();
+  await opened.click();
   await page.waitForURL(/\/cases\/[0-9a-f-]{36}$/);
   const caseId = page.url().split('/').at(-1) ?? '';
   expect(await harness.context.environment.operations.listCases(10)).toHaveLength(1);

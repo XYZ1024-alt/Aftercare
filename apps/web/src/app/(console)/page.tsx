@@ -2,13 +2,13 @@
 
 import {
   ArrowRight,
+  Bot,
   History,
   Hourglass,
   type LucideIcon,
   MessageCircleQuestion,
   OctagonAlert,
   Pause,
-  Plus,
   ScanSearch,
   ShieldCheck,
   TriangleAlert,
@@ -297,9 +297,9 @@ export default function OverviewPage() {
       <PageHead
         title="概览"
         actions={
-          <ButtonLink href="/cases/new" tone="primary">
-            <Plus aria-hidden className="size-4" />
-            提交事故
+          <ButtonLink href="/agent" tone="primary">
+            <Bot aria-hidden className="size-4" />
+            Agent 对话
           </ButtonLink>
         }
       />

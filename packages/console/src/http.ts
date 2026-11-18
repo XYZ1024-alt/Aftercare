@@ -1,9 +1,16 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { charterSummary, type OperatorSession } from '@aftercare/contracts';
 import type { JsonObject, JsonValue } from '@aftercare/domain';
 import { z } from 'zod';
 import { type ConsoleActions, createActions, refuse } from './actions.ts';
 import { adminView, readiness } from './admin.ts';
+import {
+  type AssistantScope,
+  assistantModelOf,
+  assistantRequestSchema,
+  runAssistantTurn,
+  transcriptProblem,
+} from './assistant/index.ts';
 import { SIGNATURE_HEADER, signatureMatches } from './autonomy/signature.ts';
 import { startAutonomousRun } from './autonomy/start.ts';
 import { type ConsoleContext, identityOf } from './context.ts';
@@ -24,7 +31,13 @@ import {
 import { planRetention } from './retention.ts';
 import { RETENTION_SETTING_KINDS } from './settings.ts';
 import { verificationDocument, verifyRecords } from './verification.ts';
-import type { ActionResult, FeedCursor, Refusal, SessionView } from './view-model.ts';
+import type {
+  ActionResult,
+  AssistantStreamEvent,
+  FeedCursor,
+  Refusal,
+  SessionView,
+} from './view-model.ts';
 
 // The HTTP surface of the console: one function from a Request to a Response.
 // The Next.js application mounts it under /api; tests call it directly.
@@ -167,6 +180,8 @@ export function createHttpApi(
   );
   const cookieName = settings.secureCookies ? '__Host-aftercare_session' : 'aftercare_session';
   const pollMs = options.streamPollMs ?? 1_000;
+  // The model of this deployment is chosen once; null means the assistant cannot answer.
+  const assistantModel = assistantModelOf(context, env);
   let streams = 0;
 
   const cookie = (token: string, maxAge: number): string =>
@@ -219,6 +234,14 @@ export function createHttpApi(
       throw error;
     }
   }
+
+  /** The console actions of one session. The takeover option is the one the case routes of this process use. */
+  const actionsOf = (session: OperatorSession): ConsoleActions =>
+    createActions(context, session, {
+      ...(options.takeoverSeconds === undefined
+        ? {}
+        : { takeoverSeconds: options.takeoverSeconds }),
+    });
 
   const sessionView = ({ token, session }: Authenticated): SessionView => ({
     session: {
@@ -453,6 +476,106 @@ export function createHttpApi(
   }
 
   /**
+   * One turn of the console assistant. Everything decided before the stream is
+   * a normal refusal; after it, every event is one NDJSON line and the last
+   * line is always `done`. The browser stopping the stream aborts the turn, so
+   * no further model request is made.
+   */
+  async function assistant(auth: Authenticated, request: Request): Promise<Response> {
+    // Narrowed once: the stream continues after this function returned.
+    const model = assistantModel;
+    if (model === null) {
+      return refused(
+        'model_unavailable',
+        'no model is configured for this deployment; the assistant cannot answer',
+      );
+    }
+    const body = await readBody(request);
+    if (body === null) {
+      return refused('invalid_request', 'the request body is not a JSON object');
+    }
+    const parsed = assistantRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      return refused('invalid_request', z.prettifyError(parsed.error));
+    }
+    const problem = transcriptProblem(parsed.data.messages);
+    if (problem !== null) {
+      return refused('invalid_request', problem);
+    }
+    if (settings.modelMode === 'live' && !parsed.data.acknowledgeDataEgress) {
+      return refused(
+        'egress_not_acknowledged',
+        'case content will be sent to the configured model service; this has to be acknowledged before the assistant sees it',
+      );
+    }
+    const abort = new AbortController();
+    const turnId = randomUUID();
+    if (request.signal.aborted) {
+      abort.abort();
+    } else {
+      request.signal.addEventListener('abort', () => abort.abort(), { once: true });
+    }
+    const scope: AssistantScope = {
+      context,
+      env,
+      session: auth.session,
+      actions: actionsOf(auth.session),
+      acknowledgeDataEgress: parsed.data.acknowledgeDataEgress,
+      turnId,
+      signal: abort.signal,
+    };
+    const encoder = new TextEncoder();
+    let closed = false;
+    const stream = new ReadableStream<Uint8Array>({
+      start: async (controller) => {
+        const send = (event: AssistantStreamEvent) => {
+          if (!closed) controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+        };
+        try {
+          for await (const event of runAssistantTurn({
+            scope,
+            model,
+            messages: parsed.data.messages,
+          })) {
+            send(event);
+          }
+        } catch (error) {
+          const failure = error instanceof Error ? error : new Error(String(error));
+          // What failed is in the server log; the stream says only that it did.
+          logger.error(
+            'console.assistant_failed',
+            { principal: auth.session.principal, turnId },
+            failure,
+          );
+          metrics.count('console.assistant.failed');
+          send({
+            type: 'refusal',
+            refusal: refuse('internal_error', 'the assistant failed; see the server log'),
+          });
+          send({ type: 'done' });
+        } finally {
+          if (!closed) {
+            closed = true;
+            controller.close();
+          }
+        }
+      },
+      cancel() {
+        closed = true;
+        abort.abort();
+      },
+    });
+    return new Response(stream, {
+      headers: {
+        ...BASE_HEADERS,
+        'content-type': 'application/x-ndjson; charset=utf-8',
+        'cache-control': 'no-store, no-transform',
+        'x-accel-buffering': 'no',
+      },
+    });
+  }
+
+  /**
    * A signed request from an alerting system to open a case under the
    * charter. It has no session: the HMAC over the raw body with the intake
    * secret is its authentication, and the sender's dedupe key makes a repeat
@@ -632,6 +755,9 @@ export function createHttpApi(
     if (area === 'admin') {
       return admin(auth, method, first, request);
     }
+    if (area === 'assistant' && first === undefined && method === 'POST') {
+      return assistant(auth, request);
+    }
     if (area === 'autonomy' && first === undefined && method === 'GET') {
       const [autonomySwitch, charters] = await Promise.all([
         context.autonomy.readSwitch(),
@@ -645,11 +771,7 @@ export function createHttpApi(
     if (area !== 'cases') {
       return refused('not_found', 'no such resource');
     }
-    const actions = createActions(context, auth.session, {
-      ...(options.takeoverSeconds === undefined
-        ? {}
-        : { takeoverSeconds: options.takeoverSeconds }),
-    });
+    const actions = actionsOf(auth.session);
     if (first === undefined) {
       if (method === 'GET') {
         return json(

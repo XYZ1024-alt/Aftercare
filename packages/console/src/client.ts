@@ -21,5 +21,6 @@ export type {
   RetentionReport,
   VerificationReport,
 } from '@aftercare/contracts';
+export { overviewStage } from './overview.ts';
 export type * from './view-model.ts';
 export { STAGES } from './view-model.ts';

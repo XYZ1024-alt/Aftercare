@@ -15,8 +15,8 @@ Next.js 页面在 [apps/web](../apps/web/src)，worker 进程在 [apps/worker](.
 
 | 页面                   | 内容                                                                                                                                                     |
 | ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/agent` Agent 对话    | 与操作台助手对话：描述事故即开案并启动调查，询问进展，暂停/恢复/取消，重新调查；列出对话中跟进的案例。live 模式下先确认对话与案例内容外发（见 §5）       |
 | `/` 案例列表           | 事故描述、当前阶段（文字 + 图标）、是否等待人、最近事件、最新报告是否仍为当前结果                                                                        |
-| `/cases/new` 提交事故  | 自然语言描述、已登记业务环境、调查授权范围、数据外发提示与确认、资源预算                                                                                 |
 | `/cases/<id>` 案例详情 | 头部：阶段、原因、等待谁、事件流连接状态、最近动作、暂停/恢复/取消、预算与资源。页签：调查过程、业务问题、证据与调查、计划与批准、执行与验证、报告与产物 |
 | `/admin` 本地管理      | 健康（存活/就绪各项）、模型连接、worker、备份恢复与放行、资源、保留与清理、指标。需要 `administer_local`                                                 |
 
@@ -64,6 +64,25 @@ Next.js 页面在 [apps/web](../apps/web/src)，worker 进程在 [apps/worker](.
 
 拒绝以 `{ ok: false, refusal: { code, message, recovery, detail } }` 返回。`recovery: reload_and_review` 表示页面所依据的记录已经变化（如 `revision_conflict`、`execution_not_possible`、`question_not_answerable`）：页面重新读取并要求重新审核。
 HTTP 状态：`invalid_request` 400，`unauthenticated` 401，`not_authorized` / `forbidden_origin` / `csrf_rejected` 403，`not_found` / `reference_rejected` 404，`too_many_streams` 429，`database_unavailable` 503，`internal_error` 500，其余拒绝 409。
+
+### 操作台助手（`POST /api/assistant`）
+
+与其他状态修改请求一样需要会话、同源 `Origin` 与 CSRF 头。请求体为 `{ messages, acknowledgeDataEgress }`：对话记录保存在浏览器（`localStorage`，按主体分开），每轮整段发送；
+服务端检查 schema 与工具调用的配对，只把最近至多 40 条交给模型。对话记录只决定模型读到什么，不带来任何授权。live 模式下没有确认外发即拒绝（`egress_not_acknowledged`），未配置模型为 `model_unavailable`。
+应答是 NDJSON 流（`application/x-ndjson`）：每产生一条消息发一行，出错发 `refusal`（`model_<kind>`、`assistant_step_limit`、`internal_error`），最后一行 `done`。每轮最多 8 次模型请求；浏览器停止后服务端在下一步之前结束。
+
+助手以会话主体的身份、只经本节的动作与只读视图行事，最终检查与人直接操作时相同：
+
+| 工具                                       | 经由                 | 说明                                                                                                          |
+| ------------------------------------------ | -------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `list_cases`、`read_case`、`wait_for_case` | 案例列表与案例视图   | 只读；`wait_for_case` 最多等 60 秒，阶段或待答问题数变化即返回                                                |
+| `open_case`                                | `POST /`             | 环境取本部署登记的环境；外发确认来自人在页面上的勾选，不是模型参数；`autonomous` 仍需章程生效与 `manage_case` |
+| `rerun_case`                               | `POST /<id>/runs`    | 不代为确认隔离                                                                                                |
+| `control_run`                              | `POST /<id>/control` | 针对案例的最新运行                                                                                            |
+
+写操作的请求键由（主体、回合 id、工具调用 id）推导。助手**没有**回答业务问题、批准或拒绝执行、调整预算、获取产物、撤回确认的工具：这些只能由人在案例页完成。
+工具结果中的标题、描述与问题陈述对模型而言是数据。助手自己的模型请求不写入数据库、不计入任何运行的用量；它引起的每个动作照常以操作员身份记录。
+测试模式下由脚本化测试替身回复：消息作为事故描述开案，以“列出”开头则列出案例。
 
 ## 6. 阶段：由记录确立，不由模型说法确立
 

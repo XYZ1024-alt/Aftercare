@@ -40,12 +40,15 @@ export async function signIn(page: Page, principal: string): Promise<void> {
   await expect(page.getByTestId('principal')).toContainText(principal);
 }
 
-/** Submits an incident in the browser and returns the id of the case it lands on. */
+/** Reports an incident to the assistant in the browser and returns the id of the case it opens. */
 export async function submitIncident(page: Page, description: string): Promise<string> {
-  await page.goto('/cases/new');
-  await page.locator('textarea[name=description]').fill(description);
-  await page.locator('select[name=environment]').selectOption({ index: 1 });
-  await page.getByRole('button', { name: '创建案例并启动调查' }).click();
+  await page.goto('/agent');
+  await page.locator('textarea[name=message]').fill(description);
+  await page.getByRole('button', { name: '发送' }).click();
+  // The conversation is kept in the browser: a later report leaves the earlier case links there.
+  const opened = page.locator('[data-testid=opened-case]').last();
+  await expect(opened).toBeVisible();
+  await opened.click();
   await page.waitForURL(/\/cases\/[0-9a-f-]{36}$/);
   return page.url().split('/').at(-1) ?? '';
 }

@@ -409,3 +409,42 @@ export interface Refusal {
 export type ActionResult<T> =
   | { readonly ok: true; readonly value: T; readonly replayed: boolean }
   | { readonly ok: false; readonly refusal: Refusal };
+
+/** One tool request of the console assistant. */
+export interface AssistantToolCall {
+  readonly id: string;
+  readonly name: string;
+  /** Untrusted JSON text of the model: parsed and validated by the tool. */
+  readonly argumentsText: string;
+}
+
+/**
+ * One message of a conversation with the console assistant. The browser
+ * keeps the transcript and sends it with every turn; the server checks its
+ * shape, never trusts it for authority: every tool acts as the session's
+ * principal through the console actions.
+ */
+export type AssistantMessage =
+  | { readonly role: 'user'; readonly content: string }
+  | {
+      readonly role: 'assistant';
+      readonly content: string | null;
+      readonly toolCalls: readonly AssistantToolCall[];
+    }
+  | {
+      readonly role: 'tool';
+      readonly toolCallId: string;
+      readonly name: string;
+      /** False: the arguments were invalid or the action was refused. The result says why. */
+      readonly ok: boolean;
+      /** What the tool returned, as the model reads it. */
+      readonly result: JsonObject;
+      /** The cases this call opened, read or acted on: what the conversation follows. */
+      readonly caseIds: readonly string[];
+    };
+
+/** One line of the NDJSON answer of `POST /api/assistant`. */
+export type AssistantStreamEvent =
+  | { readonly type: 'message'; readonly message: AssistantMessage }
+  | { readonly type: 'refusal'; readonly refusal: Refusal }
+  | { readonly type: 'done' };
