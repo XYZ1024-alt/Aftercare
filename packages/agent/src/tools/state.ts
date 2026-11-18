@@ -68,6 +68,7 @@ export async function caseStateDocument(
     execution,
     verification,
     questions,
+    autonomy,
   ] = await Promise.all([
     snapshotId === null ? null : store.findSnapshot({ caseId, snapshotId }),
     snapshotId === null ? null : caseStore.findActiveCertificate(caseId, snapshotId),
@@ -78,6 +79,7 @@ export async function caseStateDocument(
     caseStore.describeExecution(caseId),
     caseStore.describeVerification(caseId),
     agentStore.listQuestions(agentRunId),
+    agentStore.findAutonomy(agentRunId),
   ]);
   const { limits, usage } = run;
   return {
@@ -113,6 +115,19 @@ export async function caseStateDocument(
               .filter((check) => check.status === 'failed')
               .map((check) => check.checkId),
             gaps: certificate.body.gaps.length,
+          },
+    // Stage nine: the business owner's standing rules, when an autopilot answers for this run.
+    // They are the owner's policy, not a hidden answer: what is true is still read from the snapshot.
+    autonomy:
+      autonomy === null
+        ? null
+        : {
+            charter: autonomy.charter.body.name,
+            note: 'an autopilot answers your questions and approval requests for the business owner, by exactly these rules; anything they do not decide waits for a person',
+            incidentRule: autonomy.charter.body.incidentRule,
+            baselineRule: autonomy.charter.body.baselineRule,
+            replayPolicyVersionId: autonomy.charter.body.replayPolicy.policyVersionId,
+            approvalEnvelope: autonomy.charter.body.approval,
           },
     activePolicyVersionId: state.activePolicyVersionId,
     confirmations: confirmations.flat().map(confirmationView),

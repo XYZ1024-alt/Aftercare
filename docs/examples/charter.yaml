@@ -1,0 +1,83 @@
+# Autonomy charter (stage 9): a business owner's standing instructions.
+#
+# Register it with
+#   pnpm ops charter:register docs/examples/charter.yaml --as <owner>
+# <owner> must hold delegate_autonomy and every capability listed under
+# "delegated". sourceEnvironment is replaced by the environment of the target
+# database; replayPolicy.policyVersionId must name a registered policy version
+# of that environment. The demonstration database registers its own charter
+# in "pnpm ops demo:init" (packages/console/src/demo.ts).
+#
+# Within this envelope the autopilot answers the questions of an agent run and
+# approves what it asks for; anything else is handed to a person. The database
+# checks every autopilot record against the charter again (0023_autonomy.sql).
+
+charterFormat: 1
+name: 定价事故自主处置
+sourceEnvironment: replaced-by-ops
+autopilotPrincipal: autopilot:pricing
+delegated:
+  - investigate_case
+  - manage_case
+  - confirm_incident
+  - confirm_baseline
+  - confirm_replay_policy
+  - declare_business_fact
+  - approve_execution
+  - manage_budget
+  - download_artefact
+  - promote_repair
+
+intake:
+  # Starting a run sends snapshot data to the configured model service.
+  acknowledgeDataEgress: true
+  limits: {}
+
+# A candidate operation is an incident when every price it wrote moved in this
+# direction by at least this much (basis points: 1500 = 15 %).
+incidentRule:
+  operationTypes: [batch_set_price, set_price]
+  direction: decrease
+  minRelativeChangeBps: 1500
+  onNoMatch: decline # or: escalate
+
+baselineRule:
+  kind: version_before_first_incident
+
+replayPolicy:
+  policyVersionId: 00000000-0000-4000-8000-000000000000 # replace
+
+clarification:
+  kind: record_unknown_intent
+  statement: 业务方无法说明这次改动的意图；该对象按未决处理，不做猜测。
+
+# The approval of a sandbox execution, checked against the contract's patch.
+approval:
+  maxChangedObjects: 50
+  maxAbsoluteChangeCents: "20000"
+  maxRelativeChangeBps: 20000
+  maxUnresolvedDomains: 50
+  validForSeconds: 1800
+
+recovery:
+  resumableReasons: [budget_exhausted, model_unavailable, repetition_limit]
+  maxResumesPerRun: 3
+  budgetTopUp:
+    modelRequests: 20
+    toolCalls: 60
+    maxTotalModelRequests: 120
+    maxTotalToolCalls: 400
+
+# Writing a sealed repair back to the source business data.
+promotion:
+  enabled: true
+  allowPartial: true
+  maxChangedObjects: 50
+  maxAbsoluteChangeCents: "20000"
+  maxRelativeChangeBps: 20000
+  maxDriftReopens: 1
+
+delivery:
+  produceReport: true
+  # Signed with AFTERCARE_DELIVERY_SECRET; null sends nothing.
+  webhookUrl: null
