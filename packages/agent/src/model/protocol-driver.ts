@@ -8,7 +8,7 @@ import { SCRIPTED_USAGE, type ScriptedCall, scriptView } from './scripted.ts';
 //
 // It is not a model and shows no ability to investigate: every "decision" is
 // a fixed rule its author wrote — list the recorded operations, read the
-// histories of the products they touched, ask about every batch operation,
+// histories of the products they touched, ask about the operations of the most recent batch,
 // take the version before the first confirmed operation as the baseline, ask
 // for the newest registered policy, compile, branch, bind, ask for approval,
 // apply, verify, finish. It exists so that the Runtime protocol, the console
@@ -210,7 +210,15 @@ function decide(request: ModelRequest): Step {
     };
   }
   const operations = operationPages.flatMap((page) => page.data.observations.operations ?? []);
-  const batchOperations = operations.filter((operation) => operation.batchId !== null);
+  // The most recent batch is the suspect: a report of trouble follows the import it is about,
+  // and one trusted watermark cannot precede two batches written at different times.
+  const batched = operations.filter((operation) => operation.batchId !== null);
+  const latest = batched.reduce<(typeof batched)[number] | undefined>(
+    (last, operation) =>
+      last === undefined || BigInt(operation.commitSeq) > BigInt(last.commitSeq) ? operation : last,
+    undefined,
+  );
+  const batchOperations = batched.filter((operation) => operation.batchId === latest?.batchId);
   const productsOf = (operationIds: readonly string[]): string[] =>
     [
       ...new Set(
