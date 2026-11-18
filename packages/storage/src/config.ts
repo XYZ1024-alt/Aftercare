@@ -58,6 +58,16 @@ export const DATABASE_ROLES = {
     user: 'aftercare_verifier',
     passwordVariable: 'AFTERCARE_VERIFIER_PASSWORD',
   },
+  /**
+   * The promoter's login: it can call aftercare_promotion.promote and nothing
+   * else. That entry writes source business data only as the difference a
+   * sealed, current, approved report records, only where the source still
+   * holds the snapshot version, through the guarded entry of the source schema.
+   */
+  promoter: {
+    user: 'aftercare_promoter',
+    passwordVariable: 'AFTERCARE_PROMOTER_PASSWORD',
+  },
 } as const satisfies Record<string, LoginRole>;
 
 /**

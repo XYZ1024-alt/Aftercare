@@ -78,7 +78,9 @@ export interface ToolSource {
     | 'case_command'
     | 'application_ledger'
     | 'independent_verifier'
-    | 'agent_runtime';
+    | 'agent_runtime'
+    /** A program of the model, run in the sandbox over evidence queries (run_analysis). */
+    | 'code_analysis';
   /** Identifiers and versions of what was read or produced. */
   readonly refs: ToolDocument;
 }

@@ -13,8 +13,10 @@ import { DATABASE_ROLES } from '@aftercare/storage';
 /**
  * The reviewed write entry points of the product/pricing adapter, pinned by
  * the sha256 of their function body (pg_proc.prosrc) as created by
- * packages/storage/migrations/0003_entry.sql. A deployed body that differs
- * from the pin is not the reviewed one.
+ * packages/storage/migrations/0003_entry.sql and 0024_promotion.sql. A
+ * deployed body that differs from the pin is not the reviewed one. One
+ * operation type may have more than one entry: the guarded batch entry
+ * records batch_set_price v1 like the plain one.
  */
 const WRITE_ENTRY_POINTS: readonly {
   readonly operationType: OperationType;
@@ -46,6 +48,13 @@ const WRITE_ENTRY_POINTS: readonly {
     functionName: 'batch_set_price',
     identityArguments: 'p_principal text, p_product_ids text[], p_prices_cents bigint[]',
     sourceDigest: 'd2b1ccfd6baaea4c464939debb9da23b354f7e49cf0ad9afbff9dea3c58abeb9',
+  },
+  {
+    operationType: 'batch_set_price',
+    functionName: 'guarded_batch_set_price',
+    identityArguments:
+      'p_principal text, p_product_ids text[], p_expected_versions bigint[], p_prices_cents bigint[]',
+    sourceDigest: '270fda0f2c7ede7013f9438eaaf1585a3c7406cfef8cad22329de96d290bae3e',
   },
   {
     operationType: 'create_order',

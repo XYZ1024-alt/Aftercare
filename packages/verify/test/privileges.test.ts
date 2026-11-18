@@ -76,6 +76,7 @@ describe('the verifier role', () => {
          FROM pg_proc AS p WHERE p.pronamespace = 'aftercare_verification'::regnamespace ORDER BY p.proname`);
     expect(rows.map((r) => r.name)).toEqual([
       'begin_verification',
+      'check_promotion',
       'claim_lease',
       'describe',
       'publish_verification',
