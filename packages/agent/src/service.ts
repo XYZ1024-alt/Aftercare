@@ -163,7 +163,10 @@ export function createAgentService(options: AgentServiceOptions): AgentService {
     }
 
     /** Snapshot, investigation phase and certificate: what a run needs before a model sees anything. */
-    async function prepareCase(caseId: string): Promise<AgentOutcome<null>> {
+    async function prepareCase(
+      caseId: string,
+      freshSnapshot: boolean,
+    ): Promise<AgentOutcome<null>> {
       // Preparation is not retried under a key: every start is a new request.
       const key = null;
       let state = await caseStore.readCaseState(caseId);
@@ -177,7 +180,7 @@ export function createAgentService(options: AgentServiceOptions): AgentService {
         });
         if (!opened.ok) return commandRefused('opening a new case run', opened);
       }
-      if (state.currentSnapshotId === null) {
+      if (state.currentSnapshotId === null || freshSnapshot) {
         const created = await snapshots.createSnapshot({
           caseId,
           ...(options.snapshotLimits === undefined ? {} : { limits: options.snapshotLimits }),
@@ -427,7 +430,7 @@ export function createAgentService(options: AgentServiceOptions): AgentService {
             `case ${caseId} is on hold: agent run ${last.agentRunId} was stopped by a deterministic invariant failure; a new run needs an explicit acknowledgement`,
           );
         }
-        const prepared = await prepareCase(caseId);
+        const prepared = await prepareCase(caseId, request.freshSnapshot);
         if (!prepared.ok) {
           return prepared;
         }

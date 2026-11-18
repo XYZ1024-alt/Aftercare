@@ -14,13 +14,22 @@ import {
   OPERATOR,
   openAgentHarness,
 } from '@aftercare/agent/testing';
-import type { AgentRun, CaseCapability, OperatorSession } from '@aftercare/contracts';
+import {
+  type AgentRun,
+  type AutonomyCharter,
+  type AutonomyCharterRecord,
+  type CaseCapability,
+  DELEGABLE_CAPABILITIES,
+  type OperatorSession,
+} from '@aftercare/contracts';
 import type { JsonObject, JsonValue } from '@aftercare/domain';
+import { demoCharter } from '../src/demo.ts';
 import {
   type ActionResult,
   type CaseView,
   type ConsoleContext,
   CSRF_HEADER,
+  charterDigest,
   createHttpApi,
   type Daemon,
   deriveCredential,
@@ -559,4 +568,35 @@ export async function runToEnd(
     }
   }
   throw new Error('the run did not settle within 12 rounds');
+}
+
+/** Holds delegate_autonomy and everything a charter can delegate: the business owner behind test charters. */
+export const CHARTER_OWNER = 'ops:charter-owner';
+
+/**
+ * Registers the demonstration charter (packages/console/src/demo.ts) for the
+ * test database, standing behind the given policy version, as CHARTER_OWNER.
+ * `adjust` changes it before registration (a tighter envelope, a webhook).
+ */
+export async function registerCharter(
+  harness: ConsoleHarness,
+  policyVersionId: string,
+  adjust: (charter: AutonomyCharter) => AutonomyCharter = (charter) => charter,
+): Promise<AutonomyCharterRecord> {
+  const { h } = harness;
+  for (const capability of ['delegate_autonomy', ...DELEGABLE_CAPABILITIES] as const) {
+    await h.db.authorities.grant({
+      principal: CHARTER_OWNER,
+      capability,
+      sourceEnvironment: h.sourceEnvironment,
+      basis: 'integration test: charter owner',
+    });
+  }
+  const body = adjust(demoCharter(h.sourceEnvironment, policyVersionId));
+  return h.db.authorities.registerCharter({
+    registeredBy: { principal: CHARTER_OWNER, source: 'integration-test' },
+    charterId: crypto.randomUUID(),
+    body,
+    digest: charterDigest(body),
+  });
 }

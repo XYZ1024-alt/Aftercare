@@ -69,8 +69,9 @@ const AUTONOMY_STATEMENTS = {
       FROM aftercare_control.autonomy_enrollments AS e WHERE e.intake_id = $1
      ORDER BY e.enrolled_at, e.enrollment_id`,
   // What a round of the autopilot looks at: runs that have not ended, ended
-  // runs with a sealed report whose delivery is not settled, and anything with
-  // an intent that was never settled.
+  // runs with a sealed report whose delivery is not settled, runs that ended
+  // without one and were not yet handed to a person, and anything with an
+  // intent that was never settled.
   workable: `
     SELECT aftercare_control.autonomy_enrollment_json(e) AS document
       FROM aftercare_control.autonomy_enrollments AS e
@@ -80,6 +81,9 @@ const AUTONOMY_STATEMENTS = {
               SELECT 1 FROM aftercare_control.autonomy_decisions AS d
                WHERE d.enrollment_id = e.enrollment_id AND d.subject = 'report:' || a.report_id
                  AND d.status <> 'intent'))
+        OR (a.status IN ('unresolved', 'failed', 'cancelled') AND NOT EXISTS (
+              SELECT 1 FROM aftercare_control.autonomy_decisions AS d
+               WHERE d.enrollment_id = e.enrollment_id AND d.subject = 'run:' || a.agent_run_id))
         OR EXISTS (SELECT 1 FROM aftercare_control.autonomy_decisions AS d
                     WHERE d.enrollment_id = e.enrollment_id AND d.status = 'intent')
      ORDER BY e.enrolled_at, e.enrollment_id

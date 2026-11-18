@@ -1,8 +1,11 @@
-import type { OperatorSession } from '@aftercare/contracts';
+import { createHash } from 'node:crypto';
+import { charterSummary, type OperatorSession } from '@aftercare/contracts';
 import type { JsonObject, JsonValue } from '@aftercare/domain';
 import { z } from 'zod';
 import { type ConsoleActions, createActions, refuse } from './actions.ts';
 import { adminView, readiness } from './admin.ts';
+import { SIGNATURE_HEADER, signatureMatches } from './autonomy/signature.ts';
+import { startAutonomousRun } from './autonomy/start.ts';
 import { type ConsoleContext, identityOf } from './context.ts';
 import {
   createIdentityService,
@@ -42,6 +45,16 @@ const STREAM_LIMIT = 64;
 
 const uuid = z.uuid();
 const bodySchema = z.record(z.string(), z.json());
+const intakeSchema = z.strictObject({
+  dedupeKey: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,199}$/),
+  description: z.string().trim().min(1).max(4000),
+  source: z
+    .string()
+    .regex(/^[a-z][a-z0-9_.:-]{0,62}$/)
+    .default('webhook'),
+});
+/** How long a first intake request is given to open its case before a repeat takes over. */
+const INTAKE_TAKEOVER_MS = 60_000;
 const cursorSchema = z.strictObject({
   caseRevision: z.string().regex(/^\d{1,19}$/),
   agentRunId: z.uuid().nullable(),
@@ -390,6 +403,8 @@ export function createHttpApi(
       return refused('invalid_request', 'the request body is not a JSON object');
     }
     switch (action) {
+      case 'autonomy':
+        return result(await createActions(context, auth.session).setAutonomy(body));
       case 'verify':
         return json(200, {
           ok: true,
@@ -437,6 +452,101 @@ export function createHttpApi(
     }
   }
 
+  /**
+   * A signed request from an alerting system to open a case under the
+   * charter. It has no session: the HMAC over the raw body with the intake
+   * secret is its authentication, and the sender's dedupe key makes a repeat
+   * find the case the first one opened.
+   */
+  async function intake(request: Request): Promise<Response> {
+    const secret = context.settings.autonomy.intakeSecret;
+    if (secret === null) {
+      return refused('not_found', 'no such resource');
+    }
+    const raw = await request.text();
+    if (raw.length > MAX_BODY_BYTES) {
+      return refused('invalid_request', 'the request body is too large');
+    }
+    if (!signatureMatches(secret, raw, request.headers.get(SIGNATURE_HEADER))) {
+      metrics.count('console.intake.unsigned');
+      logger.warn('console.intake_refused', { reason: 'signature' });
+      return refused('unauthenticated', 'the intake request is not signed with the intake secret');
+    }
+    let document: JsonValue;
+    try {
+      document = z.json().parse(JSON.parse(raw));
+    } catch (error) {
+      return refused(
+        'invalid_request',
+        `the body is not JSON: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    const parsed = intakeSchema.safeParse(document);
+    if (!parsed.success) {
+      return refused('invalid_request', z.prettifyError(parsed.error));
+    }
+    const { dedupeKey, description, source } = parsed.data;
+    const admitted = await context.autonomy.admitIntake({
+      dedupeKey,
+      source,
+      description,
+      payloadDigest: createHash('sha256').update(raw).digest('hex'),
+    });
+    if (!admitted.ok) {
+      return refused(admitted.rejection.code, admitted.rejection.message);
+    }
+    const { outcome, intake: record } = admitted.value;
+    if (outcome === 'key_reused') {
+      return refused('request_key_reused', 'this dedupe key was used for another request');
+    }
+    const [enrolled] = await context.autonomy.enrollmentsOfIntake(record.intakeId);
+    if (enrolled !== undefined) {
+      return json(202, {
+        ok: true,
+        value: {
+          outcome: 'duplicate',
+          intakeId: record.intakeId,
+          caseId: enrolled.caseId,
+          agentRunId: enrolled.agentRunId,
+        },
+        replayed: true,
+      });
+    }
+    if (
+      outcome === 'duplicate' &&
+      Date.now() - Date.parse(record.receivedAt) < INTAKE_TAKEOVER_MS
+    ) {
+      return refused(
+        'request_in_progress',
+        'the first request with this key is still opening its case',
+      );
+    }
+    const started = await startAutonomousRun(context, {
+      trigger: 'intake',
+      requestedBy: `intake:${source}`,
+      description,
+      intakeId: record.intakeId,
+    });
+    if (!started.ok) {
+      return refusal(started.refusal);
+    }
+    logger.info('console.intake_started', {
+      intakeId: record.intakeId,
+      caseId: started.value.caseId,
+      source,
+    });
+    return json(202, {
+      ok: true,
+      value: {
+        outcome: 'started',
+        intakeId: record.intakeId,
+        caseId: started.value.caseId,
+        agentRunId: started.value.agentRunId,
+      },
+      replayed: false,
+    });
+  }
+
   async function route(request: Request): Promise<Response> {
     const url = new URL(request.url);
     const segments = url.pathname.split('/').filter((segment) => segment !== '');
@@ -455,6 +565,10 @@ export function createHttpApi(
         const health = await readiness(context);
         return json(health.status === 'not_ready' ? 503 : 200, { ...health });
       }
+    }
+
+    if (area === 'intake' && first === undefined && method === 'POST') {
+      return intake(request);
     }
 
     if (area === 'session' && first === undefined) {
@@ -517,6 +631,13 @@ export function createHttpApi(
 
     if (area === 'admin') {
       return admin(auth, method, first, request);
+    }
+    if (area === 'autonomy' && first === undefined && method === 'GET') {
+      const [autonomySwitch, charters] = await Promise.all([
+        context.autonomy.readSwitch(),
+        context.autonomy.chartersInForce(),
+      ]);
+      return json(200, { switch: autonomySwitch, charters: charters.map(charterSummary) });
     }
     if (area === 'environment' && method === 'GET') {
       return json(200, (await environmentView(context, env)) as unknown as JsonValue);
