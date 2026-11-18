@@ -88,6 +88,10 @@ const AUTONOMY_STATEMENTS = {
                     WHERE d.enrollment_id = e.enrollment_id AND d.status = 'intent')
      ORDER BY e.enrolled_at, e.enrollment_id
      LIMIT $1`,
+  // The event that paused a run: a stable name for one pause, whatever is recorded on the run after it.
+  pauseOf: `
+    SELECT max(g.seq)::text AS document FROM aftercare_control.agent_events AS g
+     WHERE g.agent_run_id = $1 AND g.event_type = 'run_paused'`,
   recordDecision:
     'SELECT aftercare_control.autonomy_record_decision($1, $2, $3, $4, $5::jsonb) AS document',
   settleDecision:
@@ -191,6 +195,8 @@ export interface AutonomyStore {
   readonly enrollmentsOfIntake: (intakeId: string) => Promise<AutonomyEnrollment[]>;
   /** What one round of the autopilot has to look at, oldest first. */
   readonly workable: (limit: number) => Promise<AutonomyEnrollment[]>;
+  /** The sequence number of the event that last paused the run, or null. */
+  readonly pauseOf: (agentRunId: string) => Promise<string | null>;
   /** Writes the intent of a decision before acting; a subject decided before returns that decision. */
   readonly recordDecision: (request: DecisionRequest) => Promise<AgentOutcome<RecordedDecision>>;
   readonly settleDecision: (
@@ -312,6 +318,7 @@ export function createAutonomyStore(pool: Pool): AutonomyStore {
     enrollmentsOfIntake: (intakeId) =>
       documents('enrollmentsOfIntake', [intakeId], autonomyEnrollmentSchema),
     workable: (limit) => documents('workable', [limit], autonomyEnrollmentSchema),
+    pauseOf: async (agentRunId) => one('pauseOf', [agentRunId], z.string().nullable()),
     recordDecision: (request) =>
       entry(async () => {
         const recorded = await one(

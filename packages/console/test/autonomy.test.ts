@@ -319,6 +319,8 @@ const runEnds = (agentRunId: string, what: string) =>
 
 describe('signed intake', () => {
   it('opens one case per dedupe key, refuses unsigned requests, and does not exist without a secret', async () => {
+    await c.close();
+    c = await openConsoleHarness({ AFTERCARE_INTAKE_SECRET: undefined });
     const unconfigured = await c.api.handle(
       new Request(`${ORIGIN}/api/intake`, { method: 'POST', body: '{}' }),
     );
@@ -394,6 +396,10 @@ describe('recovery and delivery', () => {
       ['escalate', 'recovery'],
     ]);
     expect(view.escalations[0]?.reason).toContain('the charter allows 2');
+    // The same pause is handed over once, however many rounds look at it.
+    await createAutopilot(c.context).round();
+    await createAutopilot(c.context).round();
+    expect((await c.context.autonomy.caseView(caseId)).decisions).toHaveLength(3);
 
     // A person resumes once the service is back; the autopilot carries the rest.
     c.gate.failWith(null);
@@ -677,3 +683,22 @@ async function sourcePrices(): Promise<Record<string, string>> {
   );
   return Object.fromEntries(rows.map((row) => [row.id, row.cents]));
 }
+
+describe('the approval window of the charter', () => {
+  it('is measured in whole seconds: two clock readings microseconds apart are not outside the envelope', async () => {
+    const within = async (effective: string, expires: string, seconds: number) =>
+      (
+        await c.h.db.migratorPool.query<{ ok: boolean }>(
+          'SELECT aftercare_control.autonomy_window_within($1::timestamptz, $2::timestamptz, $3) AS ok',
+          [effective, expires, seconds],
+        )
+      ).rows[0]?.ok;
+    const start = '2026-11-18T08:00:00.123456Z';
+    expect(await within(start, '2026-11-18T08:30:00.123456Z', 1800)).toBe(true);
+    // The second clock reading of cmd_approve_execution, a few microseconds later.
+    expect(await within(start, '2026-11-18T08:30:00.123499Z', 1800)).toBe(true);
+    expect(await within(start, '2026-11-18T08:30:00.999999Z', 1800)).toBe(true);
+    expect(await within(start, '2026-11-18T08:30:01.123457Z', 1800)).toBe(false);
+    expect(await within(start, '2026-11-18T08:30:02.000000Z', 1800)).toBe(false);
+  });
+});
