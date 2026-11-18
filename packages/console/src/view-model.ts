@@ -18,6 +18,7 @@ import type {
   NodeDependencies,
   OperatorSession,
   PlanContent,
+  PromotionView,
   QuestionBody,
   ResourceUsage,
   RetentionReport,
@@ -270,6 +271,8 @@ export interface CaseView {
   readonly artefacts: readonly Artefact[];
   /** Whether the case runs under an autonomy charter, and every autopilot decision taken on it. */
   readonly autonomy: AutonomyCaseView;
+  /** Approvals, promotions of sealed repairs to the source and their checks. */
+  readonly promotion: PromotionView;
   /** Conclusions and inputs that may no longer be relied on, with the recorded reason. */
   readonly invalidated: readonly Pick<
     BasisNode,
