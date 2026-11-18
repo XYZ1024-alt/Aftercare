@@ -49,6 +49,13 @@ export const CASE_CAPABILITIES = [
   'administer_local',
   /** May change the limits of an agent run that has not ended. Never held by an agent principal. */
   'manage_budget',
+  /**
+   * May register or retire an autonomy charter that delegates capabilities this
+   * principal holds itself to an autopilot principal. Never delegable.
+   */
+  'delegate_autonomy',
+  /** May approve writing a sealed, current repair back to the source business data. */
+  'promote_repair',
 ] as const;
 export type CaseCapability = (typeof CASE_CAPABILITIES)[number];
 

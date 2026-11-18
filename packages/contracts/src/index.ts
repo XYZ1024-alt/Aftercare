@@ -1,5 +1,6 @@
 export * from './agent.ts';
 export * from './audit.ts';
+export * from './autonomy.ts';
 export * from './case-state.ts';
 export * from './commands.ts';
 export * from './confirmation.ts';
