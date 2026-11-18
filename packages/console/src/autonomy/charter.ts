@@ -14,8 +14,14 @@ export function parseCharter(input: JsonValue): AutonomyCharter {
   return parsed.data;
 }
 
-/** Reads a charter from a .yaml / .yml file, or from JSON. */
-export async function readCharterFile(path: string): Promise<AutonomyCharter> {
+/**
+ * Reads a charter from a .yaml / .yml file, or from JSON. `sourceEnvironment`,
+ * when given, replaces the file's: a charter file can serve any environment.
+ */
+export async function readCharterFile(
+  path: string,
+  overrides: { readonly sourceEnvironment?: string } = {},
+): Promise<AutonomyCharter> {
   let text: string;
   try {
     text = await readFile(path, 'utf8');
@@ -31,7 +37,13 @@ export async function readCharterFile(path: string): Promise<AutonomyCharter> {
       cause: error,
     });
   }
-  return parseCharter(document);
+  if (overrides.sourceEnvironment === undefined) {
+    return parseCharter(document);
+  }
+  if (document === null || typeof document !== 'object' || Array.isArray(document)) {
+    throw new Error(`the charter file ${path} does not hold one charter document`);
+  }
+  return parseCharter({ ...document, sourceEnvironment: overrides.sourceEnvironment });
 }
 
 export function charterDigest(charter: AutonomyCharter): string {
