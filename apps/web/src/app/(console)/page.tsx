@@ -319,7 +319,7 @@ export default function OverviewPage() {
             style={stagger(4)}
             className="t-enter mb-5 grid grid-cols-[1.35fr_1fr] gap-5 max-lg:grid-cols-1"
           >
-            <Card title={`近 ${DAYS} 天新开案例`} description="颜色表示案例当前所处的阶段">
+            <Card title={`近 ${DAYS} 天新开案例`}>
               <StackedBars
                 slots={openedPerDay(rows)}
                 label={`近 ${DAYS} 天新开案例的柱状图`}

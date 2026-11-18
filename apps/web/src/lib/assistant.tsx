@@ -38,7 +38,7 @@ export interface AssistantState {
   readonly draft: string;
   readonly setDraft: (draft: string) => void;
   /** Sends one turn; ignored while another runs. The last message of the turn is this text. */
-  readonly send: (text: string, acknowledgeDataEgress: boolean) => Promise<void>;
+  readonly send: (text: string) => Promise<void>;
   readonly stop: () => void;
   readonly reset: () => void;
 }
@@ -136,7 +136,7 @@ export function AssistantProvider({ children }: { readonly children: ReactNode }
   }, [key, readKey, messages]);
 
   const send = useCallback(
-    async (text: string, acknowledgeDataEgress: boolean): Promise<void> => {
+    async (text: string): Promise<void> => {
       const content = text.trim();
       if (inFlight.current || content === '' || readKey !== key) return;
       const conversation: readonly AssistantMessage[] = [
@@ -167,7 +167,8 @@ export function AssistantProvider({ children }: { readonly children: ReactNode }
           method: 'POST',
           credentials: 'same-origin',
           headers: { 'content-type': 'application/json', [CSRF_HEADER]: csrfToken },
-          body: JSON.stringify({ messages: turn, acknowledgeDataEgress }),
+          // Sending the turn is the consent: the server still requires it in live mode.
+          body: JSON.stringify({ messages: turn, acknowledgeDataEgress: true }),
           signal: controller.signal,
         });
         const contentType = response.headers.get('content-type') ?? '';

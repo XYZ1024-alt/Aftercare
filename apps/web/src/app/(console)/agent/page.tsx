@@ -119,7 +119,7 @@ function FollowedCases() {
 function AgentConsole() {
   return (
     <>
-      <PageHead title="Agent 对话" description="描述事故或询问进展，Agent 会创建并跟进案例。" />
+      <PageHead title="Agent 对话" />
       <div className="grid grid-cols-[minmax(0,1fr)_320px] gap-5 max-lg:grid-cols-1">
         <ConversationCard />
         <FollowedCases />

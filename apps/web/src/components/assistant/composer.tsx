@@ -1,28 +1,21 @@
 'use client';
 
-import type { EnvironmentView } from '@aftercare/console/client';
 import { Send, Square } from 'lucide-react';
-import { useState } from 'react';
-import useSWR from 'swr';
-import { getJson } from '../../lib/api.ts';
 import { useAssistant } from '../../lib/assistant.tsx';
 import { useSession } from '../../lib/session.tsx';
-import { Button, CHECK_CLASS, INPUT_CLASS, Notice } from '../ui.tsx';
+import { Button, INPUT_CLASS, Notice } from '../ui.tsx';
 
-/** The text of one turn, the confirmation to send it, and the send or stop control. */
+/** The text of one turn and the send or stop control. */
 export function Composer() {
   const { pending, send, stop, draft, setDraft } = useAssistant();
-  const { data: environment } = useSWR<EnvironmentView>('/api/environment', getJson);
   const { modelMode } = useSession();
-  const [acknowledged, setAcknowledged] = useState(false);
   const unconfigured = modelMode === 'unconfigured';
-  const egress = environment?.dataEgress.kind === 'model_service' ? environment.dataEgress : null;
-  const ready = draft.trim() !== '' && !unconfigured && (egress === null || acknowledged);
+  const ready = draft.trim() !== '' && !unconfigured;
   const submit = (): void => {
     if (!ready || pending) return;
     const text = draft.trim();
     setDraft('');
-    void send(text, acknowledged).catch((error: Error) => {
+    void send(text).catch((error: Error) => {
       // send rethrows only what it cannot read or what is a bug; it must not disappear unseen.
       console.error('assistant turn failed', error);
     });
@@ -35,21 +28,6 @@ export function Composer() {
         submit();
       }}
     >
-      {egress !== null && (
-        <label className="mb-3 flex items-start gap-2.5 text-sm">
-          <input
-            type="checkbox"
-            name="egress"
-            className={CHECK_CLASS}
-            checked={acknowledged}
-            onChange={(event) => setAcknowledged(event.target.checked)}
-          />
-          <span>
-            我知道对话内容与案例内容会发送到模型服务{' '}
-            <code className="font-mono text-meta">{egress.endpointHost}</code>（{egress.model}）。
-          </span>
-        </label>
-      )}
       {unconfigured && (
         <div className="mb-3">
           <Notice tone="neutral">未配置模型，不能对话。</Notice>
