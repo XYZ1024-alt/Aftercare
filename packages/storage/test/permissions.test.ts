@@ -72,6 +72,7 @@ describe('role separation', () => {
       'authority_admin',
       'executor',
       'verifier',
+      'promoter',
     ]);
     for (const role of roles) {
       const pool = openRolePool(process.env, role, 'test');
@@ -115,7 +116,7 @@ describe('role separation', () => {
     expect(rows.filter((row) => row.everyone)).toEqual([]);
   });
 
-  it('pins a safe search_path on every function and limits SECURITY DEFINER to the entry functions', async () => {
+  it('pins a safe search_path on every function and limits SECURITY DEFINER to the entry functions, the guarded one executable by nobody', async () => {
     const { rows } = await db.migratorPool.query<{
       name: string;
       definer: boolean;
@@ -132,7 +133,18 @@ describe('role separation', () => {
       expect(row.config, row.name).toEqual(['search_path=pg_catalog, pg_temp']);
       expect(row.owner, row.name).toBe('aftercare_migrator');
     }
-    expect(rows.filter((row) => row.definer).map((row) => row.name)).toEqual(ENTRY_FUNCTIONS);
+    // The guarded promotion entry (0024) is an entry too, but no login may execute it:
+    // only aftercare_promotion.promote, running as the owner, calls it.
+    expect(rows.filter((row) => row.definer).map((row) => row.name)).toEqual(
+      [...ENTRY_FUNCTIONS, 'guarded_batch_set_price'].sort(),
+    );
+    const { rows: guarded } = await db.migratorPool.query<{ role: string }>(
+      `SELECT g.rolname AS role FROM pg_roles AS g
+        WHERE g.rolname LIKE 'aftercare\\_%' AND g.rolname NOT IN ('aftercare_migrator', 'aftercare_test_admin')
+          AND has_function_privilege(g.oid,
+                'aftercare.guarded_batch_set_price(text, text[], bigint[], bigint[])', 'EXECUTE')`,
+    );
+    expect(guarded).toEqual([]);
   });
 });
 

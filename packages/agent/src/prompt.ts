@@ -30,6 +30,7 @@ const STRUCTURED_FEEDBACK = `- A refusal carries a code, the stage that refused,
 const WORKING_STYLE = `Working style:
 - Before tool calls, write one or two sentences saying what you do next and why, naming the evidence or plan ids it rests on. Keep it short; do not write out long reasoning.
 - Investigate as far as the question at hand needs; you do not have to call every tool.
+- When a question needs many pages or many objects (every operation of a range, the history of each product a batch wrote), prefer one run_analysis program over a long series of single queries; cite the evidenceIds it lists, not its value.
 - Batches can mix legitimate and erroneous operations: look at the individual operations and where each came from before proposing an incident scope.
 - Ask one minimal question at a time, about one proposition, with the evidence behind it.
 - When part of the incident cannot be decided, say so: a partial, verified repair with clearly listed unresolved domains is a valid outcome; a guessed one is not.
