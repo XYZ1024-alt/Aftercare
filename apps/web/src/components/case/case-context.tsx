@@ -13,7 +13,7 @@ import {
 import useSWR from 'swr';
 import { getJson, refusalOfError } from '../../lib/api.ts';
 import { type ActionState, useAction } from '../../lib/session.tsx';
-import { Notice } from '../ui.tsx';
+import { Card, Loading, Notice } from '../ui.tsx';
 
 export type FeedConnection = 'connecting' | 'live' | 'reconnecting' | 'polling';
 
@@ -204,9 +204,11 @@ export function CaseProvider({
   if (data === undefined) {
     const refusal = refusalOfError(error);
     return refusal === null ? (
-      <p className="text-sm text-stone-600">加载中…</p>
+      <Card>
+        <Loading label="读取案例…" />
+      </Card>
     ) : (
-      <Notice tone="bad" testId="case-unavailable">
+      <Notice tone="rose" testId="case-unavailable">
         无法读取这个案例（{refusal.code}）：{refusal.message}
       </Notice>
     );
@@ -214,7 +216,9 @@ export function CaseProvider({
   return (
     <CaseContext value={{ caseId, view: data, reload, feed }}>
       {error !== undefined && (
-        <Notice tone="warning">最近一次刷新失败，以下内容可能不是最新：{error.message}</Notice>
+        <div className="mb-4">
+          <Notice tone="apricot">最近一次刷新失败，以下内容可能不是最新：{error.message}</Notice>
+        </div>
       )}
       {children}
     </CaseContext>

@@ -7,9 +7,13 @@ import useSWR from 'swr';
 import {
   Button,
   Card,
+  CHECK_CLASS,
+  Dot,
   Field,
   INPUT_CLASS,
+  Loading,
   Notice,
+  PageHead,
   RefusalNote,
   Technical,
 } from '../../../../components/ui.tsx';
@@ -21,6 +25,12 @@ const LIMIT_FIELDS = [
   ['maxToolCalls', '工具调用上限'],
   ['maxInputTokens', '输入 token 上限'],
   ['maxOutputTokens', '输出 token 上限'],
+] as const;
+
+const SCOPE = [
+  ['sky', '只读取为本案例创建的冻结快照，不读取也不修改源业务库。'],
+  ['mint', '修复只应用到案例专属沙箱，且需要另一次明确的执行批准。'],
+  ['violet', '业务确认只能由有权限的人作出；模型只能提问。'],
 ] as const;
 
 export default function SubmitIncidentPage() {
@@ -35,8 +45,21 @@ export default function SubmitIncidentPage() {
     if (result.ok) router.push(`/cases/${result.value.caseId}`);
   });
 
+  const head = (
+    <PageHead
+      title="提交事故"
+      description="描述看到的现象即可，调查会在冻结快照上进行，有问题时会向你提问。"
+    />
+  );
   if (environment === undefined) {
-    return <p className="text-sm text-stone-600">加载中…</p>;
+    return (
+      <>
+        {head}
+        <Card>
+          <Loading />
+        </Card>
+      </>
+    );
   }
   const sendsData = environment.dataEgress.kind === 'model_service';
   const ready =
@@ -47,9 +70,10 @@ export default function SubmitIncidentPage() {
     (!sendsData || egress);
 
   return (
-    <Card title="提交事故">
+    <>
+      {head}
       <form
-        className="space-y-4"
+        className="grid grid-cols-[minmax(0,1fr)_360px] items-start gap-4 max-lg:grid-cols-1"
         onSubmit={(event) => {
           event.preventDefault();
           void submit.run({
@@ -64,99 +88,116 @@ export default function SubmitIncidentPage() {
           });
         }}
       >
-        <Field label="事故描述">
-          <textarea
-            name="description"
-            rows={4}
-            maxLength={4000}
-            className={INPUT_CLASS}
-            placeholder="例如：导入后商品价格异常"
-            value={description}
-            onChange={(event) => setDescription(event.target.value)}
-          />
-        </Field>
-
-        <Field label="业务环境">
-          <select
-            name="environment"
-            className={INPUT_CLASS}
-            value={chosen}
-            onChange={(event) => setChosen(event.target.value)}
-          >
-            <option value="">选择已登记的环境</option>
-            <option value={environment.sourceEnvironment}>本地数据库 {environment.database}</option>
-          </select>
-        </Field>
-        {!environment.coverageRegistered && (
-          <Notice tone="bad">
-            该环境未通过接入资格检查，不能启动调查：{environment.coverageNote}
-          </Notice>
-        )}
-
-        <div className="space-y-2 rounded border border-stone-200 bg-stone-50 p-3 text-sm">
-          <p className="font-medium">调查授权范围</p>
-          <ul className="list-disc space-y-1 pl-5 text-stone-700">
-            <li>只读取为本案例创建的冻结快照，不读取也不修改源业务库。</li>
-            <li>修复只应用到案例专属沙箱，且需要另一次明确的执行批准。</li>
-            <li>业务确认只能由有权限的人作出；模型只能提问。</li>
-          </ul>
-          <p className="font-medium">数据外发</p>
-          {environment.dataEgress.kind === 'model_service' ? (
-            <label className="flex items-start gap-2">
-              <input
-                type="checkbox"
-                name="egress"
-                className="mt-1"
-                checked={egress}
-                onChange={(event) => setEgress(event.target.checked)}
+        <Card title="事故">
+          <div className="space-y-4">
+            <Field label="事故描述">
+              <textarea
+                name="description"
+                rows={5}
+                maxLength={4000}
+                className={INPUT_CLASS}
+                placeholder="例如：导入后商品价格异常"
+                value={description}
+                onChange={(event) => setDescription(event.target.value)}
               />
-              <span>
-                我知道案例内容（快照中的记录、事故描述）会发送到模型服务{' '}
-                <code>{environment.dataEgress.endpointHost}</code>（{environment.dataEgress.model}
-                ）。
-              </span>
-            </label>
-          ) : (
-            <p className="text-stone-700" data-testid="egress-note">
-              {modelMode === 'scripted_test'
-                ? '测试模式：由脚本化测试替身决定步骤，没有内容离开本机。'
-                : '未配置模型，不会外发任何内容。'}
-            </p>
-          )}
-        </div>
-
-        <fieldset className="space-y-2">
-          <legend className="text-sm font-medium text-stone-700">资源预算</legend>
-          <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-            {LIMIT_FIELDS.map(([name, label]) => (
-              <Field key={name} label={label}>
-                <input
-                  name={name}
-                  inputMode="numeric"
-                  className={INPUT_CLASS}
-                  placeholder={String(environment.defaultLimits[name])}
-                  value={limits[name] ?? ''}
-                  onChange={(event) => setLimits({ ...limits, [name]: event.target.value })}
-                />
-              </Field>
-            ))}
+            </Field>
+            <Field label="业务环境">
+              <select
+                name="environment"
+                className={INPUT_CLASS}
+                value={chosen}
+                onChange={(event) => setChosen(event.target.value)}
+              >
+                <option value="">选择已登记的环境</option>
+                <option value={environment.sourceEnvironment}>
+                  本地数据库 {environment.database}
+                </option>
+              </select>
+            </Field>
+            {!environment.coverageRegistered && (
+              <Notice tone="rose">
+                该环境未通过接入资格检查，不能启动调查：{environment.coverageNote}
+              </Notice>
+            )}
+            <fieldset>
+              <legend className="mb-1.5 text-meta font-medium text-ink-soft">资源预算</legend>
+              <div className="grid grid-cols-4 gap-3 max-md:grid-cols-2">
+                {LIMIT_FIELDS.map(([name, label]) => (
+                  <label key={name} className="block min-w-0">
+                    <span className="mb-1 block text-xs text-muted">{label}</span>
+                    <input
+                      name={name}
+                      inputMode="numeric"
+                      className={INPUT_CLASS}
+                      placeholder={String(environment.defaultLimits[name])}
+                      value={limits[name] ?? ''}
+                      onChange={(event) => setLimits({ ...limits, [name]: event.target.value })}
+                    />
+                  </label>
+                ))}
+              </div>
+              <p className="mt-1.5 text-xs text-muted">
+                留空使用默认值。启动后只有持预算权限的人可以调整。
+              </p>
+            </fieldset>
+            <div className="flex flex-wrap items-center gap-3 border-line border-t pt-4">
+              <Button tone="primary" type="submit" pending={submit.pending} disabled={!ready}>
+                创建案例并启动调查
+              </Button>
+              {!ready && (
+                <span className="text-xs text-muted">
+                  {sendsData && !egress
+                    ? '填写描述、选择环境，并确认数据外发后即可提交。'
+                    : '填写描述并选择环境后即可提交。'}
+                </span>
+              )}
+            </div>
+            <RefusalNote refusal={submit.refusal} />
           </div>
-          <p className="text-xs text-stone-500">
-            留空使用默认值。启动后只有持预算权限的人可以调整。
-          </p>
-        </fieldset>
-
-        <Button tone="primary" type="submit" pending={submit.pending} disabled={!ready}>
-          创建案例并启动调查
-        </Button>
-        <RefusalNote refusal={submit.refusal} />
-        <Technical>
-          <p>环境标识：{environment.sourceEnvironment}</p>
-          <p>
-            {environment.coverageNote}；已登记策略版本 {environment.policyVersions} 个
-          </p>
-        </Technical>
+        </Card>
+        <div className="space-y-4">
+          <Card title="调查授权范围">
+            <ul className="space-y-3 text-sm text-ink-soft">
+              {SCOPE.map(([tone, text]) => (
+                <li key={text} className="flex gap-3">
+                  <Dot tone={tone} className="mt-1.5" />
+                  <span>{text}</span>
+                </li>
+              ))}
+            </ul>
+            <Technical>
+              <p>环境标识：{environment.sourceEnvironment}</p>
+              <p>
+                {environment.coverageNote}；已登记策略版本 {environment.policyVersions} 个
+              </p>
+            </Technical>
+          </Card>
+          <Card title="数据外发">
+            {environment.dataEgress.kind === 'model_service' ? (
+              <label className="flex items-start gap-2.5 text-sm">
+                <input
+                  type="checkbox"
+                  name="egress"
+                  className={CHECK_CLASS}
+                  checked={egress}
+                  onChange={(event) => setEgress(event.target.checked)}
+                />
+                <span>
+                  我知道案例内容（快照中的记录、事故描述）会发送到模型服务{' '}
+                  <code className="font-mono text-meta">{environment.dataEgress.endpointHost}</code>
+                  （{environment.dataEgress.model}）。
+                </span>
+              </label>
+            ) : (
+              <p className="text-sm text-ink-soft" data-testid="egress-note">
+                {modelMode === 'scripted_test'
+                  ? '测试模式：由脚本化测试替身决定步骤，没有内容离开本机。'
+                  : '未配置模型，不会外发任何内容。'}
+              </p>
+            )}
+          </Card>
+        </div>
       </form>
-    </Card>
+    </>
   );
 }

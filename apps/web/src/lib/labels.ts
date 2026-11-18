@@ -24,28 +24,50 @@ export const STAGE_LABEL: Readonly<Record<Stage, string>> = {
   unresolved: '未决结束（没有封存结果）',
 };
 
-export type Tone = 'neutral' | 'active' | 'waiting' | 'good' | 'partial' | 'warning' | 'bad';
+/**
+ * Colour roles of the design system. A tone marks a category or a state; the
+ * words always say it too.
+ *   sky      in progress, information
+ *   violet   awaiting a business confirmation, under review
+ *   apricot  awaiting a person: an approval, a paused run
+ *   mint     sandbox, a sealed result
+ *   rose     failed, blocked, quarantined — the only danger tone
+ */
+export type Tone = 'neutral' | 'sky' | 'violet' | 'apricot' | 'mint' | 'rose';
 
-export const STAGE_TONE: Readonly<Record<Stage, Tone>> = {
-  no_run: 'neutral',
-  queued: 'active',
-  investigating: 'active',
-  awaiting_answer: 'waiting',
-  plan_compiled: 'active',
+/** Stages grouped the way an operator triages them: the filters, charts and colours of the console. */
+export const STAGE_GROUPS = {
+  running: { label: '调查中', tone: 'sky' },
+  confirming: { label: '待确认', tone: 'violet' },
+  waiting: { label: '待批准或暂停', tone: 'apricot' },
+  sealed: { label: '已封存', tone: 'mint' },
+  attention: { label: '需关注', tone: 'rose' },
+  ended: { label: '已结束', tone: 'neutral' },
+} as const satisfies Readonly<Record<string, { label: string; tone: Tone }>>;
+export type StageGroup = keyof typeof STAGE_GROUPS;
+
+export const STAGE_GROUP: Readonly<Record<Stage, StageGroup>> = {
+  no_run: 'ended',
+  queued: 'running',
+  investigating: 'running',
+  awaiting_answer: 'confirming',
+  plan_compiled: 'running',
   awaiting_approval: 'waiting',
-  applying: 'active',
-  applied_unverified: 'warning',
-  verified_sealed: 'good',
-  partially_resolved: 'partial',
-  result_stale: 'warning',
-  quarantined: 'bad',
-  failed: 'bad',
-  pausing: 'waiting',
+  applying: 'running',
+  applied_unverified: 'confirming',
+  verified_sealed: 'sealed',
+  partially_resolved: 'sealed',
+  result_stale: 'ended',
+  quarantined: 'attention',
+  failed: 'attention',
+  pausing: 'running',
   paused: 'waiting',
-  cancelling: 'waiting',
-  cancelled: 'neutral',
-  unresolved: 'warning',
+  cancelling: 'running',
+  cancelled: 'ended',
+  unresolved: 'ended',
 };
+
+export const stageTone = (stage: Stage): Tone => STAGE_GROUPS[STAGE_GROUP[stage]].tone;
 
 const REASONS: Readonly<Record<string, string>> = {
   operator_requested: '操作员请求',
@@ -130,6 +152,57 @@ export const EVENT_LABEL: Readonly<Record<string, string>> = {
   budget_amended: '预算已变更',
 };
 
+export const CASE_EVENT_LABEL: Readonly<Record<string, string>> = {
+  plan_compiled: '计划已编译',
+  repair_applied: '补丁已应用到沙箱',
+  verification_published: '验证报告已发布并封存',
+  activate_evidence: '证据进入案例依据',
+  record_confirmation: '记录了业务确认',
+  revoke_confirmation: '业务确认被撤回',
+  record_declaration: '记录了声明',
+  approve_execution: '执行契约获得批准',
+  revoke_execution_approval: '执行批准被撤销',
+  bind_execution_contract: '执行契约已绑定',
+  create_branch: '沙箱分支已创建',
+  switch_snapshot: '当前快照已更换',
+  open_run: '重新开启案例 run',
+  begin_investigation: '开始调查',
+  begin_planning: '进入方案阶段',
+  reopen_investigation: '回到调查阶段',
+  request_input: '请求业务说明',
+  pause_run: '案例 run 暂停',
+  resume_run: '案例 run 恢复',
+  cancel_run: '案例 run 取消',
+  fail_run: '案例 run 失败并隔离',
+  activate_certificate: '完整性凭证生效',
+  activate_policy_version: '回放策略版本生效',
+  activate_semantics_version: '语义版本生效',
+  withdraw_declaration: '声明被撤回',
+  register_hypothesis: '登记假设',
+  support_hypothesis: '假设得到支持',
+  refute_hypothesis: '假设被反驳',
+  create_successor_branch: '后继分支已创建',
+  bind_undo_contract: '撤销契约已绑定',
+  register_artefact: '登记产物',
+  complete_artefact: '产物生成完成',
+  grant_artefact_access: '产物获取授权',
+  revoke_artefact: '产物登记被撤销',
+  execution_attempt_started: '开始执行尝试',
+  verification_started: '开始独立验证',
+  branch_sealed: '分支已封存',
+};
+
+/** An event of either log, in words; an unknown type is shown as recorded. */
+export const eventLabel = (origin: 'agent' | 'case', eventType: string): string =>
+  (origin === 'agent' ? EVENT_LABEL[eventType] : CASE_EVENT_LABEL[eventType]) ?? eventType;
+
+export const VERDICT_LABEL: Readonly<Record<string, string>> = {
+  verified: '已验证',
+  partially_resolved: '部分解决',
+  failed: '验证失败',
+  blocked: '无法确立',
+};
+
 export const QUESTION_KIND_LABEL: Readonly<Record<string, string>> = {
   incident_scope: '事故范围',
   baseline: '可信基线',
@@ -158,3 +231,15 @@ export const when = (instant: string | null | undefined): string =>
   instant === null || instant === undefined
     ? '—'
     : new Date(instant).toLocaleString('zh-CN', { hour12: false });
+
+const SHORT_TIME = new Intl.DateTimeFormat('zh-CN', {
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  hour12: false,
+});
+
+/** Month, day and minute: for rows and lists, where the year is noise. */
+export const whenShort = (instant: string | null | undefined): string =>
+  instant === null || instant === undefined ? '—' : SHORT_TIME.format(new Date(instant));

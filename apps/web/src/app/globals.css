@@ -1,10 +1,113 @@
 @import "tailwindcss";
 
+/*
+ * Design tokens (aftercare-product-spec). A light neutral canvas; colour marks a
+ * category or a state, never decoration:
+ *   sky      information, in progress, timeline
+ *   violet   awaiting confirmation, under review
+ *   apricot  awaiting a person: approval, pause, deadline
+ *   mint     sandbox, sealed result, success
+ *   rose     failed, blocked, quarantined — the only danger colour
+ * The default palette is removed so nothing outside this set can be used.
+ */
 @theme {
-  --font-sans: ui-sans-serif, system-ui, "PingFang SC", "Microsoft YaHei", sans-serif;
+  --color-*: initial;
+  --color-white: #ffffff;
+  --color-canvas: #f1f3f2;
+  --color-canvas-2: #e7ebe9;
+  --color-card: #ffffff;
+  --color-ink: #161c19;
+  --color-ink-soft: #3c4541;
+  --color-muted: #6a736e;
+  --color-line: #e3e7e5;
+  --color-track: #eef1ef;
+  --color-nav: #171c1a;
+  --color-on-dark: #f6f7f6;
+  --color-on-dark-muted: #a8b0ac;
+
+  --color-mint: #2c8a62;
+  --color-mint-ink: #1a5c40;
+  --color-mint-wash: #d5efe4;
+  --color-mint-soft: #eaf7f1;
+  --color-sky: #3a7bbf;
+  --color-sky-ink: #1e4e80;
+  --color-sky-wash: #d7e7f7;
+  --color-sky-soft: #eaf3fb;
+  --color-apricot: #c46a32;
+  --color-apricot-ink: #8a3f16;
+  --color-apricot-wash: #f6e0d0;
+  --color-apricot-soft: #fbf1e8;
+  --color-violet: #6b5ea8;
+  --color-violet-ink: #443a74;
+  --color-violet-wash: #e6e1f5;
+  --color-violet-soft: #f3f0f9;
+  --color-rose: #b45664;
+  --color-rose-ink: #7a3140;
+  --color-rose-wash: #f6e3e6;
+  --color-rose-soft: #fbf0f2;
+
+  --radius-panel: 28px;
+  --radius-block: 22px;
+  --radius-drawer: 24px;
+  --radius-field: 16px;
+  --radius-input: 12px;
+  --radius-bar: 3px;
+
+  --shadow-card: 0 8px 28px rgb(22 28 25 / 0.08), 0 2px 6px rgb(22 28 25 / 0.04);
+  --shadow-soft: 0 4px 16px rgb(22 28 25 / 0.06);
+  --shadow-drawer: -8px 0 32px rgb(22 28 25 / 0.12);
+
+  --text-display: 52px;
+  --text-display--line-height: 0.95;
+  --text-display--letter-spacing: -0.04em;
+  --text-amount: 36px;
+  --text-amount--line-height: 1;
+  --text-amount--letter-spacing: -0.04em;
+  --text-figure: 22px;
+  --text-figure--line-height: 1.1;
+  --text-figure--letter-spacing: -0.03em;
+  --text-title: 28px;
+  --text-title--line-height: 34px;
+  --text-title--letter-spacing: -0.03em;
+  --text-body: 15px;
+  --text-body--line-height: 22px;
+  --text-meta: 13px;
+  --text-meta--line-height: 18px;
+
+  --ease-standard: ease;
+}
+
+@theme inline {
+  --font-sans:
+    var(--font-inter), var(--font-source-han-sans), "PingFang SC", "Microsoft YaHei",
+    "Noto Sans CJK SC", sans-serif;
   --font-mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
 }
 
-body {
-  @apply bg-stone-50 text-stone-900 antialiased;
+@layer base {
+  html {
+    @apply bg-canvas;
+    scrollbar-gutter: stable;
+  }
+
+  /* The page behind an open drawer or dialog does not scroll. */
+  html:has(dialog:modal) {
+    overflow: hidden;
+  }
+
+  body {
+    @apply min-h-screen bg-canvas font-sans text-body text-ink antialiased;
+    font-synthesis: none;
+    text-rendering: optimizeLegibility;
+  }
+
+  h1,
+  h2,
+  h3 {
+    @apply font-medium;
+  }
+
+  :focus-visible {
+    @apply outline-2 outline-offset-2 outline-sky;
+  }
 }

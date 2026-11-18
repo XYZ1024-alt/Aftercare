@@ -1,41 +1,59 @@
 'use client';
 
 import type { ActionResult, AdminView, RetentionReport } from '@aftercare/console/client';
-import { useState } from 'react';
+import { type ReactNode, useState } from 'react';
 import useSWR from 'swr';
+import { HBars } from '../../../components/charts.tsx';
+import { ConfirmDialog } from '../../../components/overlay.tsx';
 import {
-  Badge,
   Button,
   Card,
+  Dot,
   Empty,
   Json,
+  Loading,
+  MetricCard,
   Notice,
+  PageHead,
+  Pill,
   RefusalNote,
+  ROWS_CLASS,
+  Table,
   Technical,
 } from '../../../components/ui.tsx';
 import { getJson, refusalOfError, sendJson } from '../../../lib/api.ts';
-import type { Tone } from '../../../lib/labels.ts';
-import { when } from '../../../lib/labels.ts';
+import { type Tone, when } from '../../../lib/labels.ts';
 import { useSession } from '../../../lib/session.tsx';
 
-const HEALTH: Readonly<Record<string, [Tone, string]>> = {
-  ready: ['good', '就绪'],
-  degraded: ['warning', '可用但有降级'],
-  not_ready: ['bad', '未就绪'],
+type Words = Readonly<Record<string, readonly [Tone, string]>>;
+
+const HEALTH: Words = {
+  ready: ['mint', '就绪'],
+  degraded: ['apricot', '可用但有降级'],
+  not_ready: ['rose', '未就绪'],
 };
-const WORKER: Readonly<Record<string, string>> = {
-  active: '在工作',
-  stalled: '停滞：心跳超时，后台任务没有推进',
-  stopped: '已停止',
-  absent: '从未启动',
-  unknown: '未知',
+const DATABASE: Words = { ok: ['mint', '可连接'], unavailable: ['rose', '不可用'] };
+const SCHEMA: Words = {
+  current: ['mint', '与代码一致'],
+  behind: ['apricot', '落后于代码，需要迁移'],
+  ahead: ['apricot', '比代码新'],
 };
-const MODEL: Readonly<Record<string, string>> = {
-  configured: '已配置',
-  test_mode: '测试模式（脚本化测试替身）',
-  unconfigured: '未配置',
-  failing: '最近的请求失败',
-  unknown: '未知',
+const DEPLOYMENT: Words = {
+  ready: ['mint', '正常'],
+  restore_hold: ['apricot', '恢复保持中：旧租约与批准已禁用'],
+  unbound: ['rose', '未绑定：这是一个未围栏的恢复副本'],
+};
+const WORKER: Words = {
+  active: ['mint', '在工作'],
+  stalled: ['rose', '停滞：心跳超时，后台任务没有推进'],
+  stopped: ['apricot', '已停止'],
+  absent: ['apricot', '从未启动'],
+};
+const MODEL: Words = {
+  configured: ['mint', '已配置'],
+  test_mode: ['apricot', '测试模式（脚本化测试替身）'],
+  unconfigured: ['neutral', '未配置'],
+  failing: ['rose', '最近的请求失败'],
 };
 const RETENTION_KIND: Readonly<Record<string, string>> = {
   agent_events: '运行事件',
@@ -44,6 +62,10 @@ const RETENTION_KIND: Readonly<Record<string, string>> = {
   artefact_file: '产物文件',
   backup_file: '备份文件',
 };
+
+const words = (table: Words, value: string): readonly [Tone, string] =>
+  table[value] ?? ['neutral', value === 'unknown' ? '未知' : value];
+const megabytes = (bytes: string) => Number((Number(bytes) / 1048576).toFixed(1));
 
 function useAdminAction<T>(path: string, done: () => void) {
   const { csrfToken } = useSession();
@@ -59,6 +81,29 @@ function useAdminAction<T>(path: string, done: () => void) {
   return { pending, result, run };
 }
 
+function StatusRow({
+  label,
+  value,
+  testId,
+  detail,
+}: {
+  readonly label: string;
+  readonly value: readonly [Tone, string];
+  readonly testId?: string;
+  readonly detail?: ReactNode;
+}) {
+  return (
+    <li className="flex items-start gap-3 text-sm">
+      <Dot tone={value[0]} className="mt-1.5" />
+      <span className="w-20 shrink-0 text-ink-soft">{label}</span>
+      <span className="min-w-0">
+        <span data-testid={testId}>{value[1]}</span>
+        {detail !== undefined && <span className="block text-xs text-muted">{detail}</span>}
+      </span>
+    </li>
+  );
+}
+
 export default function AdminPage() {
   const { data, error, mutate } = useSWR<AdminView>('/api/admin', getJson, {
     refreshInterval: 10_000,
@@ -71,16 +116,23 @@ export default function AdminPage() {
 
   if (data === undefined) {
     const refusal = refusalOfError(error);
-    return refusal === null ? (
-      <p className="text-sm text-stone-600">加载中…</p>
-    ) : (
-      <Notice tone="bad" testId="admin-refused">
-        无法进入本地管理（{refusal.code}）：{refusal.message}
-      </Notice>
+    return (
+      <>
+        <PageHead title="本地管理" />
+        {refusal === null ? (
+          <Card>
+            <Loading />
+          </Card>
+        ) : (
+          <Notice tone="rose" testId="admin-refused">
+            无法进入本地管理（{refusal.code}）：{refusal.message}
+          </Notice>
+        )}
+      </>
     );
   }
   const { health, model, deployment, workers, resources } = data;
-  const [tone, label] = HEALTH[health.status] ?? ['neutral', health.status];
+  const [healthTone, healthLabel] = words(HEALTH, health.status);
   const candidates = data.retention.dryRun.reduce(
     (total, report) => total + report.items.length,
     0,
@@ -88,259 +140,264 @@ export default function AdminPage() {
 
   return (
     <>
-      <Card
-        title="运行状态"
-        aside={
-          <Badge tone={tone} testId="health">
-            {label}
-          </Badge>
+      <PageHead
+        title="本地管理"
+        description={`目标 ${data.target}，每 10 秒刷新`}
+        actions={
+          <Pill tone={healthTone} testId="health">
+            {healthLabel}
+          </Pill>
         }
-      >
-        <dl className="grid grid-cols-1 gap-x-8 gap-y-1 text-sm md:grid-cols-2">
-          <div>
-            <dt className="inline text-stone-500">数据库：</dt>
-            <dd className="inline">
-              {health.database === 'ok' ? '可连接' : '不可用'}（目标 {data.target}）
-            </dd>
-          </div>
-          <div>
-            <dt className="inline text-stone-500">Schema：</dt>
-            <dd className="inline">
-              {health.schema === 'current'
-                ? '与代码一致'
-                : health.schema === 'behind'
-                  ? '落后于代码，需要迁移'
-                  : '比代码新'}
-              （{deployment.latestMigration}）
-            </dd>
-          </div>
-          <div>
-            <dt className="inline text-stone-500">部署绑定：</dt>
-            <dd className="inline" data-testid="deployment-state">
-              {health.deployment === 'ready'
-                ? '正常'
-                : health.deployment === 'restore_hold'
-                  ? '恢复保持中：旧租约与批准已禁用'
-                  : '未绑定：这是一个未围栏的恢复副本'}
-            </dd>
-          </div>
-          <div>
-            <dt className="inline text-stone-500">Worker：</dt>
-            <dd className="inline" data-testid="worker-state">
-              {WORKER[health.worker]}
-            </dd>
-          </div>
-          <div>
-            <dt className="inline text-stone-500">模型：</dt>
-            <dd className="inline" data-testid="model-state">
-              {MODEL[health.model]}
-            </dd>
-          </div>
-        </dl>
-      </Card>
+      />
+      <div className="mb-4 grid grid-cols-4 gap-4 max-lg:grid-cols-2 max-sm:grid-cols-1">
+        <MetricCard
+          tone="sky"
+          label="案例"
+          value={resources.cases}
+          unit="个"
+          foot={`产物登记 ${resources.artefacts} 个`}
+        />
+        <MetricCard
+          tone="apricot"
+          label="未结束的运行"
+          value={resources.agentRuns.active}
+          unit="个"
+          foot={`已结束 ${resources.agentRuns.ended} 个，有效租约 ${resources.activeLeases} 个`}
+        />
+        <MetricCard
+          tone="mint"
+          label="有数据的沙箱分支"
+          value={resources.branches.withData}
+          unit="个"
+          foot={`已清理 ${resources.branches.dataRemoved} 个`}
+        />
+        <MetricCard
+          tone="violet"
+          label="有数据的快照"
+          value={resources.snapshots.published}
+          unit="个"
+          foot={`已清理 ${resources.snapshots.dropped} 个`}
+        />
+      </div>
 
-      <Card title="模型连接">
-        <dl className="space-y-1 text-sm">
-          <div>
-            <dt className="inline text-stone-500">模式：</dt>
-            <dd className="inline">
-              {model.mode === 'live'
-                ? '真实模型'
-                : model.mode === 'scripted_test'
-                  ? '测试模式（脚本化测试替身，不是模型）'
-                  : '未配置'}
-            </dd>
-          </div>
-          {model.mode === 'live' && (
-            <>
-              <div>
-                <dt className="inline text-stone-500">服务：</dt>
-                <dd className="inline">
-                  {model.endpointHost}，模型 {model.model}，单次超时 {model.timeoutMs} ms
-                </dd>
-              </div>
-              <div>
-                <dt className="inline text-stone-500">价格：</dt>
-                <dd className="inline">
-                  {model.pricingConfigured
-                    ? '已配置；供应商报告用量时显示费用'
-                    : '未配置；费用显示为未知'}
-                </dd>
-              </div>
-            </>
-          )}
-        </dl>
-        <p className="mt-2 text-xs text-stone-500">凭证只存在于服务端进程环境中，不在此显示。</p>
-      </Card>
-
-      <Card title="Worker">
-        {workers.length === 0 ? (
-          <Empty>没有 worker 心跳记录。</Empty>
-        ) : (
-          <ul className="text-sm">
-            {workers.map((worker) => (
-              <li key={worker.workerId} className="border-b border-stone-100 py-1.5">
-                {worker.workerId}：
-                {worker.stoppedAt !== null
-                  ? `已于 ${when(worker.stoppedAt)} 停止`
-                  : `最近心跳 ${worker.silentSeconds.toFixed(0)} 秒前`}
-                {typeof worker.detail.lastModelFailure === 'string' &&
-                  `；最近模型故障 ${worker.detail.lastModelFailure}`}
-                {typeof worker.detail.lastError === 'string' &&
-                  `；最近错误 ${worker.detail.lastError}`}
-              </li>
-            ))}
-          </ul>
-        )}
-      </Card>
-
-      <Card title="备份恢复">
-        <div className="space-y-2 text-sm">
-          {deployment.lastFence === null ? (
-            <p>这个数据库没有恢复围栏记录。</p>
-          ) : (
-            <p data-testid="fence">
-              最近一次恢复围栏：{when(deployment.lastFence.fencedAt)}（{deployment.lastFence.reason}
-              ）；作废租约 {deployment.lastFence.leasesExpired} 个， 禁用批准{' '}
-              {deployment.lastFence.approvalsFenced} 个，暂停运行 {deployment.lastFence.runsPaused}{' '}
-              个；
-              {deployment.lastFence.releasedAt === null
-                ? '尚未放行'
-                : `已由 ${deployment.lastFence.releasedBy} 于 ${when(deployment.lastFence.releasedAt)} 放行`}
-              。
-            </p>
-          )}
-          <div className="flex flex-wrap gap-2">
-            <Button pending={verify.pending} onClick={() => void verify.run({})}>
-              核验记录与内容摘要
-            </Button>
-            {deployment.hold && (
-              <Button tone="primary" pending={release.pending} onClick={() => void release.run({})}>
-                核验并放行
-              </Button>
-            )}
-          </div>
-          {verify.result?.ok === true && (
-            <Notice tone={verify.result.value.ok ? 'good' : 'bad'} testId="verify-result">
-              {verify.result.value.ok ? '全部记录与摘要一致。' : '发现不一致的记录。'}
-              <Json value={verify.result.value} />
-            </Notice>
-          )}
-          <RefusalNote
-            refusal={
-              (verify.result?.ok === false ? verify.result.refusal : null) ??
-              (release.result?.ok === false ? release.result.refusal : null)
-            }
-          />
-          <p className="text-xs text-stone-500">
-            放行后，被暂停的运行仍需逐个恢复；恢复前的批准不会重新生效，需要重新批准。
-          </p>
-        </div>
-      </Card>
-
-      <Card title="资源">
-        <dl className="grid grid-cols-2 gap-x-8 gap-y-1 text-sm md:grid-cols-3">
-          <div>
-            <dt className="inline text-stone-500">数据库大小：</dt>
-            <dd className="inline">{(Number(resources.databaseBytes) / 1048576).toFixed(1)} MB</dd>
-          </div>
-          <div>
-            <dt className="inline text-stone-500">案例：</dt>
-            <dd className="inline">{resources.cases}</dd>
-          </div>
-          <div>
-            <dt className="inline text-stone-500">快照：</dt>
-            <dd className="inline">
-              {resources.snapshots.published} 个有数据（
-              {(Number(resources.snapshots.bytes) / 1048576).toFixed(1)} MB），
-              {resources.snapshots.dropped} 个已清理
-            </dd>
-          </div>
-          <div>
-            <dt className="inline text-stone-500">沙箱分支：</dt>
-            <dd className="inline">
-              {resources.branches.withData} 个有数据，{resources.branches.dataRemoved} 个已清理
-            </dd>
-          </div>
-          <div>
-            <dt className="inline text-stone-500">运行：</dt>
-            <dd className="inline">
-              {resources.agentRuns.active} 个未结束，{resources.agentRuns.ended} 个已结束
-            </dd>
-          </div>
-          <div>
-            <dt className="inline text-stone-500">事件：</dt>
-            <dd className="inline">{resources.agentEvents} 条</dd>
-          </div>
-          <div>
-            <dt className="inline text-stone-500">产物登记：</dt>
-            <dd className="inline">{resources.artefacts}</dd>
-          </div>
-          <div>
-            <dt className="inline text-stone-500">有效租约：</dt>
-            <dd className="inline">{resources.activeLeases}</dd>
-          </div>
-        </dl>
-      </Card>
-
-      <Card title="保留与清理" testId="retention">
-        <table className="w-full text-left text-sm">
-          <thead className="text-xs text-stone-500">
-            <tr>
-              <th className="font-medium">类别</th>
-              <th className="font-medium">保留期</th>
-              <th className="font-medium">现在可清理</th>
-            </tr>
-          </thead>
-          <tbody>
-            {Object.entries(data.retention.days).map(([kind, days]) => (
-              <tr key={kind} data-testid="retention-row" data-kind={kind}>
-                <td>{RETENTION_KIND[kind] ?? kind}</td>
-                <td>{days === null ? '未配置：不会自动清理' : `${days} 天`}</td>
-                <td>
-                  {days === null
-                    ? '—'
-                    : `${data.retention.dryRun.find((report) => report.kind === kind)?.items.length ?? 0} 项`}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        <p className="mt-2 text-xs text-stone-500">
-          清理是物理删除数据，登记记录保留。只清理已结束且不再被引用的案例数据；记录“已失效”不构成清理理由；已下载的副本不受影响。
-        </p>
-        <div className="mt-2 flex flex-wrap items-center gap-3">
-          <Button pending={retention.pending} onClick={() => void retention.run({ apply: false })}>
-            演练（不删除）
-          </Button>
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              name="confirm-retention"
-              checked={confirmApply}
-              onChange={(event) => setConfirmApply(event.target.checked)}
+      <div className="mb-4 grid grid-cols-2 gap-4 max-lg:grid-cols-1">
+        <Card title="运行状态">
+          <ul className="space-y-3">
+            <StatusRow
+              label="数据库"
+              value={words(DATABASE, health.database)}
+              detail={`目标 ${data.target}`}
             />
-            我已查看演练结果，确认删除 {candidates} 项
-          </label>
-          <Button
+            <StatusRow
+              label="Schema"
+              value={words(SCHEMA, health.schema)}
+              detail={deployment.latestMigration ?? undefined}
+            />
+            <StatusRow
+              label="部署绑定"
+              value={words(DEPLOYMENT, health.deployment)}
+              testId="deployment-state"
+            />
+            <StatusRow label="Worker" value={words(WORKER, health.worker)} testId="worker-state" />
+            <StatusRow label="模型" value={words(MODEL, health.model)} testId="model-state" />
+          </ul>
+        </Card>
+        <Card title="模型连接" description="凭证只存在于服务端进程环境中，不在此显示。">
+          <dl className="space-y-2 text-sm">
+            <div className="flex gap-3">
+              <dt className="w-16 shrink-0 text-ink-soft">模式</dt>
+              <dd>
+                {model.mode === 'live'
+                  ? '真实模型'
+                  : model.mode === 'scripted_test'
+                    ? '测试模式（脚本化测试替身，不是模型）'
+                    : '未配置'}
+              </dd>
+            </div>
+            {model.mode === 'live' && (
+              <>
+                <div className="flex gap-3">
+                  <dt className="w-16 shrink-0 text-ink-soft">服务</dt>
+                  <dd className="break-all">
+                    {model.endpointHost}，模型 {model.model}，单次超时 {model.timeoutMs} ms
+                  </dd>
+                </div>
+                <div className="flex gap-3">
+                  <dt className="w-16 shrink-0 text-ink-soft">价格</dt>
+                  <dd>
+                    {model.pricingConfigured
+                      ? '已配置；供应商报告用量时显示费用'
+                      : '未配置；费用显示为未知'}
+                  </dd>
+                </div>
+              </>
+            )}
+          </dl>
+        </Card>
+      </div>
+
+      <div className="mb-4 grid grid-cols-2 gap-4 max-lg:grid-cols-1">
+        <Card title="Worker">
+          {workers.length === 0 ? (
+            <Empty>没有 worker 心跳记录。</Empty>
+          ) : (
+            <ul className={ROWS_CLASS}>
+              {workers.map((worker) => (
+                <li key={worker.workerId} className="flex items-start gap-3 text-sm">
+                  <Dot tone={worker.stoppedAt === null ? 'mint' : 'neutral'} className="mt-1.5" />
+                  <span className="min-w-0">
+                    <span className="block break-all font-medium">{worker.workerId}</span>
+                    <span className="block text-xs text-muted">
+                      {worker.stoppedAt !== null
+                        ? `已于 ${when(worker.stoppedAt)} 停止`
+                        : `最近心跳 ${worker.silentSeconds.toFixed(0)} 秒前`}
+                      {typeof worker.detail.lastModelFailure === 'string' &&
+                        `；最近模型故障 ${worker.detail.lastModelFailure}`}
+                      {typeof worker.detail.lastError === 'string' &&
+                        `；最近错误 ${worker.detail.lastError}`}
+                    </span>
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Card>
+        <Card title="存储">
+          <HBars
+            unit="MB"
+            rows={[
+              { label: '数据库总计', value: megabytes(resources.databaseBytes), tone: 'sky' },
+              { label: '快照数据', value: megabytes(resources.snapshots.bytes), tone: 'violet' },
+            ]}
+          />
+          <p className="mt-3 text-meta text-muted">运行事件 {resources.agentEvents} 条</p>
+        </Card>
+      </div>
+
+      <div className="mb-4">
+        <Card title="备份恢复">
+          <div className="space-y-3 text-sm">
+            {deployment.lastFence === null ? (
+              <p className="text-ink-soft">这个数据库没有恢复围栏记录。</p>
+            ) : (
+              <p data-testid="fence" className="text-ink-soft">
+                最近一次恢复围栏：{when(deployment.lastFence.fencedAt)}（
+                {deployment.lastFence.reason}
+                ）；作废租约 {deployment.lastFence.leasesExpired} 个，禁用批准{' '}
+                {deployment.lastFence.approvalsFenced} 个，暂停运行{' '}
+                {deployment.lastFence.runsPaused} 个；
+                {deployment.lastFence.releasedAt === null
+                  ? '尚未放行'
+                  : `已由 ${deployment.lastFence.releasedBy} 于 ${when(deployment.lastFence.releasedAt)} 放行`}
+                。
+              </p>
+            )}
+            <div className="flex flex-wrap gap-2">
+              <Button pending={verify.pending} onClick={() => void verify.run({})}>
+                核验记录与内容摘要
+              </Button>
+              {deployment.hold && (
+                <Button
+                  tone="primary"
+                  pending={release.pending}
+                  onClick={() => void release.run({})}
+                >
+                  核验并放行
+                </Button>
+              )}
+            </div>
+            {verify.result?.ok === true && (
+              <Notice tone={verify.result.value.ok ? 'mint' : 'rose'} testId="verify-result">
+                {verify.result.value.ok ? '全部记录与摘要一致。' : '发现不一致的记录。'}
+                <Technical label="核验结果">
+                  <Json value={verify.result.value} />
+                </Technical>
+              </Notice>
+            )}
+            <RefusalNote
+              refusal={
+                (verify.result?.ok === false ? verify.result.refusal : null) ??
+                (release.result?.ok === false ? release.result.refusal : null)
+              }
+            />
+            <p className="text-xs text-muted">
+              放行后，被暂停的运行仍需逐个恢复；恢复前的批准不会重新生效，需要重新批准。
+            </p>
+          </div>
+        </Card>
+      </div>
+
+      <div className="mb-4">
+        <Card
+          title="保留与清理"
+          description="清理是物理删除数据，登记记录保留。只清理已结束且不再被引用的案例数据；记录“已失效”不构成清理理由；已下载的副本不受影响。"
+          testId="retention"
+        >
+          <Table>
+            <thead>
+              <tr>
+                <th>类别</th>
+                <th>保留期</th>
+                <th className="num">现在可清理</th>
+              </tr>
+            </thead>
+            <tbody>
+              {Object.entries(data.retention.days).map(([kind, days]) => (
+                <tr key={kind} data-testid="retention-row" data-kind={kind}>
+                  <td>{RETENTION_KIND[kind] ?? kind}</td>
+                  <td>{days === null ? '未配置：不会自动清理' : `${days} 天`}</td>
+                  <td className="num">
+                    {days === null
+                      ? '—'
+                      : `${data.retention.dryRun.find((report) => report.kind === kind)?.items.length ?? 0} 项`}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </Table>
+          <div className="mt-4 flex flex-wrap items-center gap-2">
+            <Button
+              pending={retention.pending}
+              onClick={() => void retention.run({ apply: false })}
+            >
+              演练（不删除）
+            </Button>
+            <Button
+              tone="danger"
+              pending={retention.pending}
+              disabled={candidates === 0}
+              onClick={() => setConfirmApply(true)}
+            >
+              执行清理（{candidates} 项）
+            </Button>
+          </div>
+          {retention.result?.ok === true && (
+            <Technical label="最近一次结果">
+              <Json value={retention.result.value} />
+            </Technical>
+          )}
+          <RefusalNote refusal={retention.result?.ok === false ? retention.result.refusal : null} />
+          <ConfirmDialog
+            open={confirmApply}
+            onClose={() => setConfirmApply(false)}
+            title={`物理删除 ${candidates} 项数据？`}
+            warning="删除后无法恢复。登记记录保留；已下载的副本不受影响。"
+            confirmLabel="执行清理"
             tone="danger"
-            pending={retention.pending}
-            disabled={!confirmApply || candidates === 0}
-            onClick={() => {
-              setConfirmApply(false);
-              void retention.run({ apply: true });
-            }}
+            onConfirm={() => void retention.run({ apply: true })}
           >
-            执行清理
-          </Button>
-        </div>
-        {retention.result?.ok === true && (
-          <Technical label="最近一次结果">
-            <Json value={retention.result.value} />
-          </Technical>
-        )}
-        <RefusalNote refusal={retention.result?.ok === false ? retention.result.refusal : null} />
-      </Card>
+            <ul className="space-y-1">
+              {data.retention.dryRun
+                .filter((report) => report.items.length > 0)
+                .map((report) => (
+                  <li key={report.kind}>
+                    {RETENTION_KIND[report.kind] ?? report.kind}：{report.items.length} 项
+                  </li>
+                ))}
+            </ul>
+          </ConfirmDialog>
+        </Card>
+      </div>
 
       <Card title="指标">
         <Technical label="由记录统计（工具与模型错误、拒绝、批准状态、依赖失效、租约接管、对账、验证、未决域）">

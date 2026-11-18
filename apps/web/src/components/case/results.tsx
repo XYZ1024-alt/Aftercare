@@ -1,36 +1,42 @@
 'use client';
 
 import type { Artefact, Refusal, VerificationReport } from '@aftercare/console/client';
-import { useState } from 'react';
+import { Download } from 'lucide-react';
+import { type ReactNode, useState } from 'react';
 import { downloadFile } from '../../lib/api.ts';
-import { cents, reasonLabel, shortId, when } from '../../lib/labels.ts';
+import { cents, reasonLabel, shortId, type Tone, VERDICT_LABEL, when } from '../../lib/labels.ts';
 import { useCan, useSession } from '../../lib/session.tsx';
+import { ConfirmDialog } from '../overlay.tsx';
 import {
-  Badge,
   Button,
   Card,
+  CHECK_CLASS,
+  Dot,
   Empty,
   Field,
   INPUT_CLASS,
   Json,
   Notice,
+  Pill,
   RefusalNote,
+  ROWS_CLASS,
   Technical,
 } from '../ui.tsx';
 import { UntrustedText } from '../untrusted-text.tsx';
 import { useCase, useCaseAction } from './case-context.tsx';
 
-const VERDICT: Readonly<Record<string, string>> = {
-  verified: '已验证',
-  partially_resolved: '部分解决',
-  failed: '验证失败',
-  blocked: '无法确立',
-};
 const LAYER: Readonly<Record<string, string>> = {
   input_sufficiency: '输入充分性',
   compiled_semantics: '编译语义',
   execution_conformance: '执行符合性',
   business_appropriateness: '业务适当性',
+};
+const LAYER_STATUS: Readonly<Record<string, readonly [Tone, string]>> = {
+  holds: ['mint', '成立'],
+  fails: ['rose', '不成立'],
+  blocked: ['apricot', '无法确立'],
+  not_established: ['neutral', '未确立'],
+  acknowledged_by_approver: ['violet', '由批准人知悉'],
 };
 const KIND: Readonly<Record<string, string>> = {
   verification_report: '报告文件',
@@ -39,6 +45,18 @@ const KIND: Readonly<Record<string, string>> = {
 };
 const NOT_RECALLABLE =
   '已下载的文件无法远程撤回；之后的撤销或失效只标记登记，不会改变已下载的副本。';
+const ENDED = ['completed', 'partially_resolved', 'unresolved', 'failed', 'cancelled'];
+
+const artefactState = (artefact: Artefact): readonly [Tone, string] =>
+  artefact.status === 'ready'
+    ? artefact.currency === 'current'
+      ? ['mint', '可获取']
+      : ['apricot', '仅历史材料']
+    : artefact.status === 'pending'
+      ? ['sky', '生成中']
+      : artefact.status === 'revoked'
+        ? ['neutral', '已撤销']
+        : ['rose', '生成失败'];
 
 function Artefacts({ report }: { readonly report: VerificationReport }) {
   const { caseId, view, reload } = useCase();
@@ -48,7 +66,7 @@ function Artefacts({ report }: { readonly report: VerificationReport }) {
   const [schema, setSchema] = useState('');
   const [downloadRefusal, setDownloadRefusal] = useState<Refusal | null>(null);
   const [downloaded, setDownloaded] = useState<string | null>(null);
-  const [reason, setReason] = useState('');
+  const [revoking, setRevoking] = useState<Artefact | null>(null);
   const mayDownload = useCan('download_artefact');
   const mayExport = useCan('export_repair');
   const mayReadHistory = useCan('read_historical_artefact');
@@ -69,97 +87,84 @@ function Artefacts({ report }: { readonly report: VerificationReport }) {
   };
 
   return (
-    <div className="space-y-2" data-testid="artefacts">
-      <h3 className="text-sm font-medium">产物</h3>
-      <p className="text-xs text-stone-500">{NOT_RECALLABLE}</p>
+    <section className="space-y-3 border-line border-t pt-5" data-testid="artefacts">
+      <div>
+        <h3 className="font-medium">产物</h3>
+        <p className="mt-0.5 text-xs text-muted">{NOT_RECALLABLE}</p>
+      </div>
       {!repair && (
-        <Notice tone="bad" testId="no-artefact">
-          这份报告的结论是“{VERDICT[report.verdict]}”，不是修复产物：不能生成或下载修复产物。
+        <Notice tone="rose" testId="no-artefact">
+          这份报告的结论是“{VERDICT_LABEL[report.verdict]}”，不是修复产物：不能生成或下载修复产物。
         </Notice>
       )}
       {repair && !current && (
-        <Notice tone="warning">
+        <Notice tone="apricot">
           报告已失效：不能再生成新产物；已有产物只能由持历史读取权限的人明确作为历史材料读取。
         </Notice>
       )}
       {artefacts.length > 0 && (
-        <ul>
-          {artefacts.map((artefact) => (
-            <li
-              key={artefact.artefactId}
-              data-testid="artefact"
-              data-kind={artefact.kind}
-              data-status={artefact.status}
-              className="flex flex-wrap items-center gap-3 border-b border-stone-100 py-1.5 text-sm"
-            >
-              <span>
-                {KIND[artefact.kind]}
-                {artefact.kind === 'sql_export' && !artefact.executable ? '（不可执行）' : ''}
-              </span>
-              <Badge
-                tone={
-                  artefact.status === 'ready'
-                    ? artefact.currency === 'current'
-                      ? 'good'
-                      : 'warning'
-                    : artefact.status === 'pending'
-                      ? 'active'
-                      : 'bad'
-                }
+        <ul className={ROWS_CLASS}>
+          {artefacts.map((artefact) => {
+            const [tone, label] = artefactState(artefact);
+            return (
+              <li
+                key={artefact.artefactId}
+                data-testid="artefact"
+                data-kind={artefact.kind}
+                data-status={artefact.status}
+                className="flex flex-wrap items-center gap-x-3 gap-y-2 text-sm"
               >
-                {artefact.status === 'ready'
-                  ? artefact.currency === 'current'
-                    ? '可获取'
-                    : '仅历史材料'
-                  : artefact.status === 'pending'
-                    ? '生成中'
-                    : artefact.status === 'revoked'
-                      ? '已撤销'
-                      : '生成失败'}
-              </Badge>
-              <span className="text-xs text-stone-500">有效至 {when(artefact.expiresAt)}</span>
-              {artefact.status === 'ready' && artefact.currency === 'current' && (
-                <Button
-                  disabled={!(artefact.kind === 'verification_report' ? mayDownload : mayExport)}
-                  onClick={() => void download(artefact, false)}
-                >
-                  下载
-                </Button>
-              )}
-              {artefact.status === 'ready' && artefact.currency === 'historical' && (
-                <Button disabled={!mayReadHistory} onClick={() => void download(artefact, true)}>
-                  作为历史材料下载
-                </Button>
-              )}
-              {artefact.status === 'ready' && (
-                <Button
-                  tone="danger"
-                  pending={revoke.pending}
-                  disabled={reason.trim() === ''}
-                  onClick={() => void revoke.run({ id: artefact.artefactId, reason })}
-                >
-                  撤销登记
-                </Button>
-              )}
-              {downloaded === artefact.artefactId && (
-                <span className="text-xs text-stone-600">已下载。</span>
-              )}
-            </li>
-          ))}
+                <span className="font-medium">
+                  {KIND[artefact.kind]}
+                  {artefact.kind === 'sql_export' && !artefact.executable ? '（不可执行）' : ''}
+                </span>
+                <Pill tone={tone}>{label}</Pill>
+                <span className="text-xs text-muted">有效至 {when(artefact.expiresAt)}</span>
+                {downloaded === artefact.artefactId && (
+                  <span className="text-xs text-mint-ink">已下载。</span>
+                )}
+                <span className="ml-auto flex flex-wrap gap-2">
+                  {artefact.status === 'ready' && artefact.currency === 'current' && (
+                    <Button
+                      size="sm"
+                      disabled={
+                        !(artefact.kind === 'verification_report' ? mayDownload : mayExport)
+                      }
+                      onClick={() => void download(artefact, false)}
+                    >
+                      <Download aria-hidden className="size-3.5" />
+                      下载
+                    </Button>
+                  )}
+                  {artefact.status === 'ready' && artefact.currency === 'historical' && (
+                    <Button
+                      size="sm"
+                      disabled={!mayReadHistory}
+                      onClick={() => void download(artefact, true)}
+                    >
+                      作为历史材料下载
+                    </Button>
+                  )}
+                  {artefact.status === 'ready' && (
+                    <Button
+                      size="sm"
+                      tone="danger"
+                      pending={revoke.pending}
+                      onClick={() => setRevoking(artefact)}
+                    >
+                      撤销登记
+                    </Button>
+                  )}
+                </span>
+              </li>
+            );
+          })}
         </ul>
       )}
-      {artefacts.some((artefact) => artefact.status === 'ready') && (
-        <input
-          name="revoke-artefact-reason"
-          className={`${INPUT_CLASS} max-w-md`}
-          placeholder="撤销登记的理由（不影响已下载副本）"
-          value={reason}
-          onChange={(event) => setReason(event.target.value)}
-        />
-      )}
       {repair && current && (
-        <div className="flex flex-wrap items-end gap-2">
+        <div className="flex flex-wrap items-end gap-2 rounded-field bg-canvas p-4">
           <Button
+            tone="primary"
             pending={produce.pending}
             disabled={!mayDownload}
             onClick={() =>
@@ -175,32 +180,50 @@ function Artefacts({ report }: { readonly report: VerificationReport }) {
           >
             生成差异报告
           </Button>
-          <Field label="SQL 导出的本地演练目标 schema">
-            <input
-              name="export-schema"
-              className={INPUT_CLASS}
-              placeholder="例如 rehearsal_local"
-              value={schema}
-              onChange={(event) => setSchema(event.target.value.trim())}
-            />
-          </Field>
-          <Button
-            pending={produce.pending}
-            disabled={!mayExport || schema === ''}
-            onClick={() =>
-              void produce.run({
-                reportId: report.reportId,
-                kind: 'sql_export',
-                target: { schema, targetId: `rehearsal:${schema}` },
-              })
-            }
-          >
-            生成 SQL 导出
-          </Button>
+          <div className="flex min-w-64 flex-1 flex-wrap items-end gap-2">
+            <div className="min-w-48 flex-1">
+              <Field label="SQL 导出的本地演练目标 schema">
+                <input
+                  name="export-schema"
+                  className={INPUT_CLASS}
+                  placeholder="例如 rehearsal_local"
+                  value={schema}
+                  onChange={(event) => setSchema(event.target.value.trim())}
+                />
+              </Field>
+            </div>
+            <Button
+              pending={produce.pending}
+              disabled={!mayExport || schema === ''}
+              onClick={() =>
+                void produce.run({
+                  reportId: report.reportId,
+                  kind: 'sql_export',
+                  target: { schema, targetId: `rehearsal:${schema}` },
+                })
+              }
+            >
+              生成 SQL 导出
+            </Button>
+          </div>
         </div>
       )}
       <RefusalNote refusal={produce.refusal ?? revoke.refusal ?? downloadRefusal} />
-    </div>
+      <ConfirmDialog
+        open={revoking !== null}
+        onClose={() => setRevoking(null)}
+        title="撤销这份产物的登记？"
+        warning={NOT_RECALLABLE}
+        confirmLabel="撤销登记"
+        tone="danger"
+        reason={{ label: '撤销理由', name: 'revoke-artefact-reason' }}
+        onConfirm={(reason) => {
+          if (revoking !== null) void revoke.run({ id: revoking.artefactId, reason });
+        }}
+      >
+        <p>撤销后，这份产物不能再从操作台获取。</p>
+      </ConfirmDialog>
+    </section>
   );
 }
 
@@ -210,12 +233,15 @@ function Undo({ report }: { readonly report: VerificationReport }) {
   const conflict =
     undo.refusal?.code === 'undo_conflict' ? undo.refusal.detail.conflict : undefined;
   return (
-    <div className="space-y-2" data-testid="undo">
-      <h3 className="text-sm font-medium">受保护撤销</h3>
-      <p className="text-xs text-stone-500">
-        撤销在封存分支的后继分支上逆转账本记录的差异，仍需独立的批准、执行和验证。封存分支本身不会被改写。
-      </p>
+    <section className="space-y-3 border-line border-t pt-5" data-testid="undo">
+      <div>
+        <h3 className="font-medium">受保护撤销</h3>
+        <p className="mt-0.5 text-xs text-muted">
+          撤销在封存分支的后继分支上逆转账本记录的差异，仍需独立的批准、执行和验证。封存分支本身不会被改写。
+        </p>
+      </div>
       <Button
+        tone="sandbox"
         pending={undo.pending}
         disabled={!manage}
         onClick={() => void undo.run({ applicationId: report.applicationId })}
@@ -226,14 +252,45 @@ function Undo({ report }: { readonly report: VerificationReport }) {
         <>
           <RefusalNote refusal={undo.refusal} />
           {conflict !== undefined && (
-            <Notice tone="warning" testId="undo-conflict">
+            <Notice tone="apricot" testId="undo-conflict">
               存在撤销冲突，系统不会强制覆盖后续变化。请依据冲突内容决定后续处理（例如重新调查）。
               <Json value={conflict} />
             </Notice>
           )}
         </>
       )}
-    </div>
+    </section>
+  );
+}
+
+function Objects({
+  testId,
+  tone,
+  title,
+  entries,
+}: {
+  readonly testId: string;
+  readonly tone: Tone;
+  readonly title: string;
+  readonly entries: readonly { readonly key: string; readonly text: ReactNode }[];
+}) {
+  return (
+    <section data-testid={testId} className="min-w-0 rounded-field bg-canvas p-4">
+      <h3 className="mb-2 flex items-center gap-2 font-medium">
+        <Dot tone={tone} />
+        {title}
+        <span className="text-meta text-muted tabular-nums">{entries.length}</span>
+      </h3>
+      {entries.length === 0 ? (
+        <p className="text-muted">没有。</p>
+      ) : (
+        <ul className="space-y-1 break-words">
+          {entries.map((entry) => (
+            <li key={entry.key}>{entry.text}</li>
+          ))}
+        </ul>
+      )}
+    </section>
   );
 }
 
@@ -246,126 +303,128 @@ function Report({
 }) {
   const { objects, layers, findings, scope } = report.body;
   const current = report.validity === 'current';
+  const failing = findings.filter((finding) => finding.status !== 'passed').length;
   return (
     <li
       data-testid="report"
       data-verdict={report.verdict}
       data-validity={report.validity}
-      className="space-y-3 border-b border-stone-200 py-4 last:border-0"
+      className="space-y-5"
     >
       <div className="flex flex-wrap items-center gap-3">
-        <Badge
+        <Pill
           testId="report-validity"
           tone={
             !current
-              ? 'warning'
-              : report.verdict === 'verified'
-                ? 'good'
-                : report.verdict === 'partially_resolved'
-                  ? 'partial'
-                  : 'bad'
+              ? 'apricot'
+              : report.verdict === 'verified' || report.verdict === 'partially_resolved'
+                ? 'mint'
+                : 'rose'
           }
         >
           {current
-            ? `当前结果：${VERDICT[report.verdict]}`
-            : `历史报告（已失效）：当时结论为${VERDICT[report.verdict]}`}
-        </Badge>
-        <span className="text-xs text-stone-500">发布于 {when(report.publishedAt)}</span>
+            ? `当前结果：${VERDICT_LABEL[report.verdict]}`
+            : `历史报告（已失效）：当时结论为${VERDICT_LABEL[report.verdict]}`}
+        </Pill>
+        <span className="text-xs text-muted tabular-nums">发布于 {when(report.publishedAt)}</span>
       </div>
       {!current && (
-        <Notice tone="warning" testId="report-stale">
+        <Notice tone="apricot" testId="report-stale">
           这份报告在修订 {report.staleRevision} 因“{reasonLabel(report.staleReason)}
           ”失效。内容是当时依据下的结论，不代表现在仍然成立。
         </Notice>
       )}
-      <div className="grid grid-cols-1 gap-4 text-sm md:grid-cols-2">
-        <section data-testid="objects-modified">
-          <h3 className="font-medium">已修改（{objects.modified.length}）</h3>
-          <ul className="list-disc pl-5">
-            {objects.modified.map((entry) => (
-              <li key={entry.objectId}>
-                product/{entry.objectId}：{cents(entry.centsBefore)} → {cents(entry.centsAfter)}
-              </li>
-            ))}
-          </ul>
-        </section>
-        <section data-testid="objects-preserved">
-          <h3 className="font-medium">已保留（{objects.preserved.length}）</h3>
-          <ul className="list-disc pl-5">
-            {objects.preserved.map((entry) => (
-              <li key={entry.field}>
-                {entry.field}：保持 {cents(entry.cents)}
-              </li>
-            ))}
-          </ul>
-        </section>
-        <section data-testid="objects-unresolved">
-          <h3 className="font-medium">未决（{objects.unresolved.length}）</h3>
-          <ul className="list-disc pl-5">
-            {objects.unresolved.map((entry) => (
-              <li key={entry}>{entry}：按快照原样保留，本次修复没有决定它</li>
-            ))}
-          </ul>
-        </section>
-        <section data-testid="objects-affected">
-          <h3 className="font-medium">仅受影响、未修改（{objects.affectedOnly.length}）</h3>
-          <ul className="list-disc pl-5">
-            {objects.affectedOnly.map((entry) => (
-              <li key={entry}>{entry}</li>
-            ))}
-          </ul>
-        </section>
+      <div className="grid grid-cols-2 gap-3 text-sm max-md:grid-cols-1">
+        <Objects
+          testId="objects-modified"
+          tone="mint"
+          title="已修改"
+          entries={objects.modified.map((entry) => ({
+            key: entry.objectId,
+            text: `product/${entry.objectId}：${cents(entry.centsBefore)} → ${cents(entry.centsAfter)}`,
+          }))}
+        />
+        <Objects
+          testId="objects-preserved"
+          tone="sky"
+          title="已保留"
+          entries={objects.preserved.map((entry) => ({
+            key: entry.field,
+            text: `${entry.field}：保持 ${cents(entry.cents)}`,
+          }))}
+        />
+        <Objects
+          testId="objects-unresolved"
+          tone="violet"
+          title="未决"
+          entries={objects.unresolved.map((entry) => ({
+            key: entry,
+            text: `${entry}：按快照原样保留，本次修复没有决定它`,
+          }))}
+        />
+        <Objects
+          testId="objects-affected"
+          tone="neutral"
+          title="仅受影响、未修改"
+          entries={objects.affectedOnly.map((entry) => ({ key: entry, text: entry }))}
+        />
       </div>
       <section className="text-sm">
-        <h3 className="font-medium">四层结论</h3>
-        <ul className="list-disc pl-5">
-          {Object.entries(layers).map(([layer, status]) => (
-            <li key={layer}>
-              {LAYER[layer] ?? layer}：{status}
-            </li>
-          ))}
+        <h3 className="mb-2 font-medium">四层结论</h3>
+        <ul className="grid grid-cols-4 gap-2 max-lg:grid-cols-2">
+          {Object.entries(layers).map(([layer, status]) => {
+            const [tone, label] = LAYER_STATUS[status] ?? ['neutral', status];
+            return (
+              <li key={layer} className="rounded-input border border-line px-3 py-2.5">
+                <span className="block text-xs text-muted">{LAYER[layer] ?? layer}</span>
+                <span className="mt-1 block">
+                  <Pill tone={tone}>{label}</Pill>
+                </span>
+              </li>
+            );
+          })}
         </ul>
-        <p className="mt-1 text-xs text-stone-600">
+        <p className="mt-2 text-xs text-ink-soft">
           适用范围：
           <UntrustedText text={scope.appliesTo} />
         </p>
       </section>
-      <Technical
-        label={`义务检查（${findings.length} 项，${findings.filter((finding) => finding.status !== 'passed').length} 项未通过）`}
-      >
-        <table className="w-full text-left font-sans">
-          <thead>
-            <tr>
-              <th>义务</th>
-              <th>层</th>
-              <th>状态</th>
-              <th>说明</th>
-            </tr>
-          </thead>
-          <tbody>
-            {findings.map((finding) => (
-              <tr key={finding.obligationRef}>
-                <td>{finding.obligationRef}</td>
-                <td>{finding.layer}</td>
-                <td>{finding.status}</td>
-                <td>{finding.detail}</td>
+      <div>
+        <Technical label={`义务检查（${findings.length} 项，${failing} 项未通过）`}>
+          <table className="w-full text-left font-sans [&_td]:py-1 [&_td]:pr-3 [&_th]:pr-3">
+            <thead>
+              <tr>
+                <th>义务</th>
+                <th>层</th>
+                <th>状态</th>
+                <th>说明</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
-      </Technical>
-      <Technical>
-        <p>
-          报告 {report.reportId}，摘要 {report.digest}
-        </p>
-        <p>
-          分支 {report.branchId}，应用 {report.applicationId}，契约摘要{' '}
-          {report.body.executionDigest}
-        </p>
-        <Json
-          value={{ limitations: scope.limitations, counterexamples: report.body.counterexamples }}
-        />
-      </Technical>
+            </thead>
+            <tbody>
+              {findings.map((finding) => (
+                <tr key={finding.obligationRef}>
+                  <td>{finding.obligationRef}</td>
+                  <td>{finding.layer}</td>
+                  <td>{finding.status}</td>
+                  <td>{finding.detail}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Technical>
+        <Technical>
+          <p>
+            报告 {report.reportId}，摘要 {report.digest}
+          </p>
+          <p>
+            分支 {report.branchId}，应用 {report.applicationId}，契约摘要{' '}
+            {report.body.executionDigest}
+          </p>
+          <Json
+            value={{ limitations: scope.limitations, counterexamples: report.body.counterexamples }}
+          />
+        </Technical>
+      </div>
       <Artefacts report={report} />
       {latest && current && report.verdict !== 'failed' && report.verdict !== 'blocked' && (
         <Undo report={report} />
@@ -373,8 +432,6 @@ function Report({
     </li>
   );
 }
-
-const ENDED = ['completed', 'partially_resolved', 'unresolved', 'failed', 'cancelled'];
 
 function Reopen() {
   const { view } = useCase();
@@ -388,11 +445,12 @@ function Reopen() {
   if (run !== null && !ENDED.includes(run.status)) return null;
   const held = view.stage.stage === 'quarantined';
   return (
-    <Card title="重新调查" testId="reopen">
-      <div className="space-y-2 text-sm">
-        <p className="text-stone-700">
-          在同一案例上开始新的运行。已有的报告、账本和封存分支保留为历史。
-        </p>
+    <Card
+      title="重新调查"
+      description="在同一案例上开始新的运行。已有的报告、账本和封存分支保留为历史。"
+      testId="reopen"
+    >
+      <div className="space-y-3 text-sm">
         <Field label="事故描述">
           <textarea
             name="rerun-description"
@@ -403,10 +461,11 @@ function Reopen() {
           />
         </Field>
         {held && (
-          <label className="flex items-center gap-2">
+          <label className="flex items-start gap-2.5">
             <input
               type="checkbox"
               name="ack-isolation"
+              className={CHECK_CLASS}
               checked={isolation}
               onChange={(event) => setIsolation(event.target.checked)}
             />
@@ -414,10 +473,11 @@ function Reopen() {
           </label>
         )}
         {modelMode === 'live' && (
-          <label className="flex items-center gap-2">
+          <label className="flex items-start gap-2.5">
             <input
               type="checkbox"
               name="ack-egress"
+              className={CHECK_CLASS}
               checked={egress}
               onChange={(event) => setEgress(event.target.checked)}
             />
@@ -425,6 +485,7 @@ function Reopen() {
           </label>
         )}
         <Button
+          tone="primary"
           pending={start.pending}
           disabled={
             !manage ||
@@ -454,7 +515,7 @@ export function Results() {
   const reports = [...view.reports].reverse();
   return (
     <>
-      <Card title="验证报告" testId="reports">
+      <Card title="验证报告" description="由独立验证器发布并封存。" testId="reports">
         {reports.length === 0 ? (
           <Empty>
             还没有验证报告。
@@ -463,32 +524,39 @@ export function Results() {
               : ''}
           </Empty>
         ) : (
-          <ul>
+          <ul className="divide-y divide-line [&>li]:py-6 [&>li:first-child]:pt-0 [&>li:last-child]:pb-0">
             {reports.map((report, index) => (
               <Report key={report.reportId} report={report} latest={index === 0} />
             ))}
           </ul>
         )}
       </Card>
+      <Reopen />
       <Card title="运行与重开记录" testId="runs">
-        <ul className="text-sm">
+        <ul className={ROWS_CLASS}>
           {view.caseRuns.map((run) => (
-            <li key={run.runId} className="border-b border-stone-100 py-1.5">
-              案例 run #{run.runSeq}：{run.phase}，开启原因：
-              <UntrustedText text={run.openedReason} />（{run.openedBy}）
-              {run.endReason !== null && `；结束：${run.endReason}`}
+            <li key={run.runId} className="flex items-start gap-3 text-sm">
+              <Dot tone="violet" className="mt-1.5" />
+              <span className="min-w-0">
+                <span className="font-medium">案例 run #{run.runSeq}</span>：{run.phase}，开启原因：
+                <UntrustedText text={run.openedReason} />（{run.openedBy}）
+                {run.endReason !== null && `；结束：${run.endReason}`}
+              </span>
             </li>
           ))}
           {view.agentRuns.map((run) => (
-            <li key={run.agentRunId} className="border-b border-stone-100 py-1.5">
-              Agent 运行 {shortId(run.agentRunId)}：{run.status}
-              {run.statusReason === null ? '' : `（${reasonLabel(run.statusReason)}）`}，
-              {when(run.createdAt)}，由 {run.startedBy} 启动
+            <li key={run.agentRunId} className="flex items-start gap-3 text-sm">
+              <Dot tone="sky" className="mt-1.5" />
+              <span className="min-w-0">
+                <span className="font-medium">Agent 运行 {shortId(run.agentRunId)}</span>：
+                {run.status}
+                {run.statusReason === null ? '' : `（${reasonLabel(run.statusReason)}）`}，
+                {when(run.createdAt)}，由 {run.startedBy} 启动
+              </span>
             </li>
           ))}
         </ul>
       </Card>
-      <Reopen />
     </>
   );
 }

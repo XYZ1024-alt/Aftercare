@@ -111,7 +111,7 @@ test('from a vague report to a sealed partial result: real events, business answ
         .evaluateAll((items) => items.map((item) => Number(item.getAttribute('data-seq')))),
     );
   expect(sequence).toEqual(sequence.map((_, index) => index + 1));
-  await page.goto('/');
+  await page.goto('/cases');
   await expect(page.getByTestId('case-row')).toHaveCount(1);
   await expect(page.getByTestId('case-row')).toContainText('部分解决');
   await expect(page.getByTestId('case-row')).toContainText('当前有效');

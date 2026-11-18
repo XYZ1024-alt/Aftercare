@@ -7,6 +7,12 @@ import { getJson, sendJson } from './api.ts';
 
 const SessionContext = createContext<SessionView | null>(null);
 
+const GateNote = ({ children }: { readonly children: ReactNode }) => (
+  <p role="status" className="mx-auto max-w-[1240px] px-6 py-10 text-meta text-muted">
+    {children}
+  </p>
+);
+
 /** Everything below it is rendered only for a signed-in operator; the server checks every request anyway. */
 export function SessionGate({ children }: { readonly children: ReactNode }) {
   const { data, error } = useSWR<SessionView>('/api/session', getJson, {
@@ -14,10 +20,10 @@ export function SessionGate({ children }: { readonly children: ReactNode }) {
     shouldRetryOnError: false,
   });
   if (error !== undefined) {
-    return <p className="p-8 text-sm text-stone-600">正在转到登录页…</p>;
+    return <GateNote>正在转到登录页…</GateNote>;
   }
   if (data === undefined) {
-    return <p className="p-8 text-sm text-stone-600">加载中…</p>;
+    return <GateNote>加载中…</GateNote>;
   }
   return <SessionContext value={data}>{children}</SessionContext>;
 }

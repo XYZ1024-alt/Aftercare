@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import type { ReactNode } from 'react';
+import { inter, sourceHanSans } from './fonts.ts';
 import './globals.css';
 
 export const dynamic = 'force-dynamic';
@@ -11,7 +12,7 @@ export function generateMetadata(): Metadata {
 
 export default function RootLayout({ children }: { readonly children: ReactNode }) {
   return (
-    <html lang="zh-CN">
+    <html lang="zh-CN" className={`${inter.variable} ${sourceHanSans.variable}`}>
       <body>{children}</body>
     </html>
   );
