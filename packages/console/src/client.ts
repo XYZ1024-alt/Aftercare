@@ -3,6 +3,13 @@
 export type {
   AgentLimits,
   Artefact,
+  AutonomyCaseView,
+  AutonomyCharterSummary,
+  AutonomyDecision,
+  AutonomyDecisionAction,
+  AutonomyEnrollment,
+  AutonomyStatus,
+  AutonomySwitch,
   CaseOverview,
   EvidenceOverview,
   ExecutionApproval,

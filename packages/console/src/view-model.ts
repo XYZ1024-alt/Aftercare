@@ -2,6 +2,7 @@ import type {
   AgentLimits,
   AgentRun,
   Artefact,
+  AutonomyCaseView,
   BasisNode,
   BranchLineage,
   BudgetAmendment,
@@ -267,6 +268,8 @@ export interface CaseView {
   readonly execution: ExecutionView;
   readonly reports: readonly VerificationReport[];
   readonly artefacts: readonly Artefact[];
+  /** Whether the case runs under an autonomy charter, and every autopilot decision taken on it. */
+  readonly autonomy: AutonomyCaseView;
   /** Conclusions and inputs that may no longer be relied on, with the recorded reason. */
   readonly invalidated: readonly Pick<
     BasisNode,

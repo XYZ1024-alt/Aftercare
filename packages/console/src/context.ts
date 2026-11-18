@@ -10,6 +10,7 @@ import {
   type IdentityContext,
   type OperatorSession,
 } from '@aftercare/contracts';
+import { type AutonomyStore, createAutonomyStore } from '@aftercare/storage';
 import { type ArtefactService, createArtefactService } from '@aftercare/verify';
 import { createLogger, type Logger, secretsOf } from './log.ts';
 import { createProcessMetrics, type ProcessMetrics } from './metrics.ts';
@@ -27,6 +28,8 @@ export interface ConsoleContext {
   readonly settings: ConsoleSettings;
   readonly environment: AgentEnvironment;
   readonly artefacts: ArtefactService;
+  /** Charters, the kill switch, enrollments and autopilot decisions (runtime role). */
+  readonly autonomy: AutonomyStore;
   readonly logger: Logger;
   readonly metrics: ProcessMetrics;
   readonly model: ModelStatusView;
@@ -87,6 +90,7 @@ export function openConsoleContext(
       store: environment.store,
       directory: settings.artefactDirectory,
     }),
+    autonomy: createAutonomyStore(environment.runtimePool),
     logger: overrides.logger ?? createLogger(component, { secrets: secretsOf(env) }),
     metrics: createProcessMetrics(),
     model: model.status,

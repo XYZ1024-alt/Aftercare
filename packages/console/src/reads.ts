@@ -410,6 +410,7 @@ export async function caseView(
     },
     reports,
     artefacts: verification.artefacts,
+    autonomy: await context.autonomy.caseView(caseId),
     invalidated: nodes
       .filter(
         (node) =>
