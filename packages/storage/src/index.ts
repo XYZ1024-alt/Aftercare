@@ -8,6 +8,7 @@ export * from './control-store.ts';
 export * from './executor-store.ts';
 export * from './operations-store.ts';
 export * from './pool.ts';
+export * from './promotion-store.ts';
 export * from './repair-store.ts';
 export * from './snapshot-manager.ts';
 export * from './snapshot-reader.ts';
