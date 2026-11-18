@@ -11,7 +11,8 @@
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",
-    "ops": "tsx --env-file-if-exists=../../.env scripts/ops.ts"
+    "ops": "tsx --env-file-if-exists=../../.env scripts/ops.ts",
+    "demo:autonomous": "tsx --env-file-if-exists=../../.env scripts/demo-autonomous.ts"
   },
   "dependencies": {
     "@aftercare/agent": "workspace:*",
