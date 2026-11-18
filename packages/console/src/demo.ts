@@ -13,6 +13,7 @@ import { OPERATION_TYPES } from '@aftercare/domain';
 import { buildCoverageManifest } from '@aftercare/evidence';
 import { createRegistrationService } from '@aftercare/repair';
 import {
+  type BusinessEntry,
   createAuthorityAdmin,
   createBusinessEntry,
   createControlStore,
@@ -186,16 +187,96 @@ export async function declareCoverage(
   }
 }
 
-export interface DemoInitReport {
-  readonly database: string;
+/** One batch of ordinary business activity: an import that lowered five prices, and what followed it. */
+export interface DemoActivity {
   readonly products: readonly string[];
+  readonly suggestedDescription: string;
+}
+
+/**
+ * Ordinary business activity through the controlled entry. Nothing in it marks
+ * an incident: which writes were wrong is for the investigation to establish.
+ */
+async function writeDemoActivity(entry: BusinessEntry): Promise<DemoActivity> {
+  const suffix = randomBytes(3).toString('hex');
+  const products = ['kettle', 'grinder', 'filters', 'scale', 'server'].map(
+    (name) => `demo-${suffix}-${name}`,
+  );
+  const [kettle, grinder, , scale] = products as [string, string, string, string, string];
+  for (const productId of products) {
+    written(
+      productId,
+      await entry.createProduct({
+        principal: SIMULATOR,
+        productId,
+        name: productId,
+        initialPriceCents: 10_000n,
+      }),
+    );
+  }
+  written(
+    'import batch',
+    await entry.batchSetPrice({
+      principal: 'simulator:import-job',
+      targets: products.map((productId) => ({ productId, priceCents: 8_000n })),
+    }),
+  );
+  written(
+    'delta',
+    await entry.addPriceDelta({ principal: SIMULATOR, productId: kettle, deltaCents: 1_000n }),
+  );
+  written(
+    'later price',
+    await entry.setPrice({ principal: SIMULATOR, productId: grinder, priceCents: 9_500n }),
+  );
+  written(
+    'order',
+    await entry.createOrder({
+      principal: SIMULATOR,
+      orderId: `demo-${suffix}-order`,
+      productId: scale,
+      quantity: 1,
+    }),
+  );
+  return { products, suggestedDescription: `导入后商品价格异常（demo-${suffix}- 开头的商品）` };
+}
+
+/**
+ * A new batch of business activity in an initialised demonstration database,
+ * leaving accounts, sessions, the policy and the charter as they are: the
+ * live demo can run while people stay signed in to the console.
+ */
+export async function seedDemoIncident(
+  env: NodeJS.ProcessEnv,
+): Promise<DemoActivity & { readonly database: string }> {
+  const settings = readConsoleSettings(env);
+  const pools = {
+    writer: openRolePool(env, 'business_writer', settings.target),
+    runtime: openRolePool(env, 'runtime', settings.target),
+  };
+  try {
+    if (!(await createOperationsStore(pools.runtime).isDemoEnvironment())) {
+      throw new Error(
+        'this database is not registered as a local demonstration environment; run "pnpm ops demo:register" first',
+      );
+    }
+    return {
+      database: settings.target,
+      ...(await writeDemoActivity(createBusinessEntry(pools.writer))),
+    };
+  } finally {
+    await Promise.all(Object.values(pools).map((pool) => pool.end()));
+  }
+}
+
+export interface DemoInitReport extends DemoActivity {
+  readonly database: string;
   readonly accounts: readonly {
     readonly principal: string;
     readonly capabilities: readonly string[];
   }[];
   /** Shown once. Set AFTERCARE_DEMO_PASSWORD to choose it. */
   readonly password: string;
-  readonly suggestedDescription: string;
   readonly charter: { readonly charterId: string; readonly autopilotPrincipal: string };
 }
 
@@ -290,55 +371,13 @@ export async function initialiseDemo(env: NodeJS.ProcessEnv): Promise<DemoInitRe
       digest: charterDigest(body),
     });
 
-    // Ordinary business activity through the controlled entry.
-    const entry = createBusinessEntry(pools.writer);
-    const suffix = randomBytes(3).toString('hex');
-    const products = ['kettle', 'grinder', 'filters', 'scale', 'server'].map(
-      (name) => `demo-${suffix}-${name}`,
-    );
-    const [kettle, grinder, , scale] = products as [string, string, string, string, string];
-    for (const productId of products) {
-      written(
-        productId,
-        await entry.createProduct({
-          principal: SIMULATOR,
-          productId,
-          name: productId,
-          initialPriceCents: 10_000n,
-        }),
-      );
-    }
-    written(
-      'import batch',
-      await entry.batchSetPrice({
-        principal: 'simulator:import-job',
-        targets: products.map((productId) => ({ productId, priceCents: 8_000n })),
-      }),
-    );
-    written(
-      'delta',
-      await entry.addPriceDelta({ principal: SIMULATOR, productId: kettle, deltaCents: 1_000n }),
-    );
-    written(
-      'later price',
-      await entry.setPrice({ principal: SIMULATOR, productId: grinder, priceCents: 9_500n }),
-    );
-    written(
-      'order',
-      await entry.createOrder({
-        principal: SIMULATOR,
-        orderId: `demo-${suffix}-order`,
-        productId: scale,
-        quantity: 1,
-      }),
-    );
+    const activity = await writeDemoActivity(createBusinessEntry(pools.writer));
 
     return {
       database: settings.target,
-      products,
+      ...activity,
       accounts: ACCOUNTS.map(({ principal, capabilities }) => ({ principal, capabilities })),
       password,
-      suggestedDescription: `导入后商品价格异常（demo-${suffix}- 开头的商品）`,
       charter: { charterId: charter.charterId, autopilotPrincipal: charter.autopilotPrincipal },
     };
   } finally {

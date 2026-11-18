@@ -2,7 +2,7 @@ import { parseArgs } from 'node:util';
 import { formatEvent } from '@aftercare/agent';
 import { type AutonomyDecisionAction, ENDED_AGENT_RUN_STATUSES } from '@aftercare/contracts';
 import { z } from 'zod';
-import { initialiseDemo } from '../src/demo.ts';
+import { DEMO_AUTOPILOT, seedDemoIncident } from '../src/demo.ts';
 import {
   createHttpApi,
   modelOf,
@@ -108,9 +108,10 @@ if (arguments_.values.scripted === true) {
   console.log('');
 }
 
-// Demonstration data in the database the owner registered (pnpm ops
-// demo:register); accounts, coverage, one policy and one charter in force.
-const report = await initialiseDemo(process.env);
+// A new batch of business activity in the initialised demonstration database
+// (pnpm ops demo:init). Accounts, sessions, the policy and the charter stay as
+// they are, so the console can watch the run while people stay signed in.
+const report = await seedDemoIncident(process.env);
 console.log(`演示库：${report.database}（${report.products.length} 个商品）`);
 console.log(`建议告警描述：${report.suggestedDescription}`);
 
@@ -132,10 +133,12 @@ if (model === null) {
   );
 }
 
-const charter = await context.autonomy.findCharter(report.charter.charterId);
-if (charter === null) {
+const charter = (await context.autonomy.chartersInForce()).find(
+  (entry) => entry.autopilotPrincipal === DEMO_AUTOPILOT,
+);
+if (charter === undefined) {
   await context.environment.close();
-  throw new Error(`initialiseDemo 登记的演示章程 ${report.charter.charterId} 读不到`);
+  throw new Error(`没有 ${DEMO_AUTOPILOT} 的生效章程：请先运行 pnpm ops demo:init`);
 }
 console.log(
   `演示章程：${charter.body.name} r${charter.revision}｜autopilot 主体 ${charter.autopilotPrincipal}`,
@@ -266,9 +269,12 @@ try {
     if (run === null) {
       throw new Error(`运行 ${latestRunId} 不存在`);
     }
-    const openEscalation = view.escalations.find((entry) => entry.open);
-    if (openEscalation !== undefined) {
-      escalationReason = openEscalation.reason;
+    // Any hand-over to a person ends the autonomous part, whether or not its subject still waits.
+    const escalation = view.escalations.find(
+      (entry) => entry.decision.enrollmentId === latest.enrollmentId,
+    );
+    if (escalation !== undefined) {
+      escalationReason = escalation.reason;
       console.log(`[${clockOf(startedAt)}] 升级  ${escalationReason}`);
       console.log('已升级人工，演示停止。');
       exitCode = 1;
@@ -328,10 +334,7 @@ try {
             : promotion.checks.find((entry) => entry.promotionId === applied.promotionId);
         if (applied === undefined || checked === undefined) {
           if (reportPromotions.length === 0) {
-            // A daemon without a promotion step records nothing; the demo says so and ends.
-            console.log(
-              `[${clockOf(startedAt)}] 写回  跳过（daemon 尚未接入写回，promotion 未执行）`,
-            );
+            console.log(`[${clockOf(startedAt)}] 写回  本运行没有写回记录`);
           } else if (Date.now() < deadline) {
             console.log(
               `[${clockOf(startedAt)}] 写回  等待写回与核验（${reportPromotions
@@ -429,7 +432,7 @@ try {
   );
 
   if (finalPromotion.promotions.length === 0) {
-    console.log('写回：未执行（daemon 尚未接入写回）');
+    console.log('写回：本运行没有写回记录');
   } else {
     for (const drift of finalPromotion.promotions.filter(
       (entry) => entry.status === 'drift_refused',
