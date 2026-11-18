@@ -11,6 +11,7 @@ import { createCaseExecutor } from '@aftercare/execution';
 import type { OperatorWork } from '@aftercare/storage';
 import { createCaseVerifier } from '@aftercare/verify';
 import { type Autopilot, createAutopilot } from './autonomy/autopilot.ts';
+import { openPromotionStores, promoteUnderCharter } from './autonomy/promote.ts';
 import type { ConsoleContext } from './context.ts';
 
 // The worker process body: the one Agent of this deployment. It drives
@@ -232,6 +233,33 @@ export function startDaemon(
       stopping = true;
       wake?.();
       await done;
+    },
+  };
+}
+
+/**
+ * The worker of a deployment with autonomy: the daemon, with an autopilot that
+ * promotes sealed repairs through the promoter login this opens. `close`
+ * stops the daemon first, then closes the promotion connections; the context
+ * stays open (its owner closes it).
+ */
+export function startAutonomousDaemon(
+  context: ConsoleContext,
+  model: ModelAdapter | null,
+  env: NodeJS.ProcessEnv,
+  options: { readonly workerId?: string } = {},
+): { readonly daemon: Daemon; readonly close: () => Promise<void> } {
+  const stores = openPromotionStores(context, env);
+  const daemon = startDaemon(context, model, {
+    autopilot: createAutopilot(context, {
+      promote: promoteUnderCharter(stores, options.workerId ?? context.settings.worker.id),
+    }),
+  });
+  return {
+    daemon,
+    close: async () => {
+      await daemon.stop();
+      await stores.close();
     },
   };
 }
