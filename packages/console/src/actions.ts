@@ -309,10 +309,13 @@ export function createActions(
           if (blocked !== null) {
             return { ok: false, refusal: blocked };
           }
-          if (request.autonomous && !(await operations.hasCapability(principal, 'manage_case'))) {
+          // Checked before the case is created: a refused request leaves no case behind.
+          if (!(await operations.hasCapability(principal, 'manage_case'))) {
             return refused(
               'not_authorized',
-              'placing a case under the autonomy charter needs the manage_case capability',
+              request.autonomous
+                ? 'placing a case under the autonomy charter needs the manage_case capability'
+                : 'opening a case needs the manage_case capability',
             );
           }
           let caseId = claim.caseId;
