@@ -218,7 +218,14 @@ describe('published snapshot: who can do what', () => {
     // authority administrator. The executor login can execute none of them.
     // The agent_* entries are the runtime's; their internal helpers (agent_stop,
     // agent_conclude, ...) are not definers and are granted to nobody.
+    // Stage 8: console accounts are registered by the authority administrator
+    // only; sessions, request keys, budgets, deployment state, retention and
+    // heartbeats are runtime entries. The deployment checks, the session
+    // renderer and the capability list are helpers granted to nobody.
+    // is_demo_environment answers one boolean about the database itself, to
+    // each role a demo initialisation connects as.
     expect(rows.filter((row) => row.definer).map((row) => [row.name, row.grantees])).toEqual([
+      ['agent_amend_budget', ['aftercare_runtime']],
       ['agent_answer_question', ['aftercare_runtime']],
       ['agent_begin_model_request', ['aftercare_runtime']],
       ['agent_begin_tool_call', ['aftercare_runtime']],
@@ -238,12 +245,19 @@ describe('published snapshot: who can do what', () => {
       ['approval_state', ['aftercare_runtime', 'aftercare_verifier']],
       ['branch_orders', ['aftercare_runtime']],
       ['branch_products', ['aftercare_runtime']],
+      ['claim_operator_request', ['aftercare_runtime']],
+      ['complete_operator_request', ['aftercare_runtime']],
       ['create_case', ['aftercare_runtime']],
       ['create_snapshot', ['aftercare_snapshot_manager']],
+      ['deployment_bound', []],
+      ['deployment_ready', []],
+      ['deployment_status', ['aftercare_runtime']],
       ['describe_execution', ['aftercare_runtime']],
       ['describe_plan_applicability', ['aftercare_runtime']],
       ['describe_verification', ['aftercare_runtime']],
+      ['disable_operator_account', ['aftercare_authority_admin']],
       ['drop_snapshot', ['aftercare_snapshot_manager']],
+      ['end_operator_session', ['aftercare_runtime']],
       ['exec_admit', ['aftercare_sandbox_owner']],
       ['exec_begin_attempt', ['aftercare_sandbox_owner']],
       ['exec_claim_lease', ['aftercare_sandbox_owner']],
@@ -256,18 +270,39 @@ describe('published snapshot: who can do what', () => {
       ['exec_renew_lease', ['aftercare_sandbox_owner']],
       ['execute_case_command', ['aftercare_runtime']],
       ['grant_confirmation_authority', ['aftercare_authority_admin']],
+      ['has_capability', ['aftercare_runtime']],
+      [
+        'is_demo_environment',
+        ['aftercare_authority_admin', 'aftercare_business_writer', 'aftercare_runtime'],
+      ],
+      ['note_operator_request', ['aftercare_runtime']],
+      ['open_operator_session', ['aftercare_runtime']],
+      ['operator_login_challenge', ['aftercare_runtime']],
+      ['operator_session', ['aftercare_runtime']],
+      ['operator_session_json', []],
+      ['operator_work', ['aftercare_runtime']],
+      ['principal_capabilities', []],
       ['record_certificate', ['aftercare_runtime']],
       ['record_compiled_plan', ['aftercare_runtime']],
       ['register_coverage_manifest', ['aftercare_runtime']],
       ['register_incident_operation_set', ['aftercare_runtime']],
       ['register_policy_version', ['aftercare_runtime']],
+      ['release_restore_hold', ['aftercare_runtime']],
+      ['retention_drop_branches', ['aftercare_runtime']],
+      ['retention_drop_snapshots', ['aftercare_runtime']],
+      ['retention_prune_events', ['aftercare_runtime']],
+      ['retention_record_file_removal', ['aftercare_runtime']],
       ['revoke_confirmation_authority', ['aftercare_authority_admin']],
+      ['set_operator_account', ['aftercare_authority_admin']],
+      ['verify_branch_contents', ['aftercare_runtime']],
+      ['worker_beat', ['aftercare_runtime']],
     ]);
     expect(
       rows
         .filter((row) => !row.definer && row.grantees.length > 0)
         .map((row) => [row.name, row.grantees]),
     ).toEqual([
+      ['agent_effective_limits', ['aftercare_runtime']],
       ['agent_model_request_json', ['aftercare_runtime']],
       ['agent_question_json', ['aftercare_runtime']],
       ['agent_run_json', ['aftercare_runtime']],

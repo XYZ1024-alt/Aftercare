@@ -11,7 +11,7 @@ import type { JsonObject, JsonValue } from '@aftercare/domain';
 import type { AgentStore, CaseStore } from '@aftercare/storage';
 import type { ModelMessage } from './model/adapter.ts';
 import { pseudonym, untrustedText } from './present.ts';
-import { SYSTEM_PROMPT } from './prompt.ts';
+import { PLAIN_SYSTEM_PROMPT, SYSTEM_PROMPT } from './prompt.ts';
 import type { ToolRegistry } from './tools/registry.ts';
 
 // The model request of one decision turn, built from persisted state only:
@@ -25,6 +25,18 @@ export interface ContextOptions {
   readonly characterBudget: number;
   /** Tool results of this many most recent turns are never shortened. */
   readonly keepRecentTurns: number;
+  /**
+   * structured (default): refusals with category, allowed next step and
+   * counterexample detail; notices of what others changed; the current state
+   * as the last message of every request.
+   * plain_tool_agent: the comparison baseline of the evaluation — an ordinary
+   * tool-calling loop. Refusals are a code and a message, nothing is said
+   * about changes by others, and the state is only what get_case_state
+   * returns when asked. Answers to its questions are still delivered. Every
+   * guard, approval, freshness check and verification stays where it is: in
+   * the tools and the database, not in the context.
+   */
+  readonly profile?: 'structured' | 'plain_tool_agent';
 }
 
 export const DEFAULT_CONTEXT_OPTIONS: ContextOptions = {
@@ -161,6 +173,15 @@ function assistantMessage(
   };
 }
 
+/** What a plain tool-calling loop is shown of a refusal: its code and message. */
+function plainResult(result: JsonObject): JsonObject {
+  const { rejected } = result;
+  if (typeof rejected !== 'object' || rejected === null || Array.isArray(rejected)) {
+    return result;
+  }
+  return { rejected: { code: rejected.code ?? null, message: rejected.message ?? null } };
+}
+
 interface ResultSlot {
   readonly index: number;
   readonly turn: number;
@@ -183,6 +204,7 @@ function compacted(call: AgentToolCall): string {
 
 export async function buildModelContext(inputs: ContextInputs): Promise<BuiltContext> {
   const { run, agentStore, caseStore, registry, options } = inputs;
+  const plain = options.profile === 'plain_tool_agent';
   const [requests, calls, events, questions, caseEvents] = await Promise.all([
     agentStore.listModelRequests(run.agentRunId),
     agentStore.listToolCalls(run.agentRunId),
@@ -207,8 +229,12 @@ export async function buildModelContext(inputs: ContextInputs): Promise<BuiltCon
       .map((event) => [String(event.detail.modelRequestId), BigInt(event.seq)]),
   );
   // What others did to the case. The run's own commands are in its transcript already.
-  const external = caseEvents.filter((event) => event.identitySource !== AGENT_IDENTITY_SOURCE);
-  const noticeEvents = events.filter((event) => NOTICE_EVENTS.has(event.eventType));
+  const external = plain
+    ? []
+    : caseEvents.filter((event) => event.identitySource !== AGENT_IDENTITY_SOURCE);
+  const noticeEvents = events.filter((event) =>
+    plain ? event.eventType === 'question_answered' : NOTICE_EVENTS.has(event.eventType),
+  );
 
   /** Notices that became visible in (previous request, this request]: by event sequence and by case revision. */
   let seqFloor = 0n;
@@ -249,7 +275,7 @@ export async function buildModelContext(inputs: ContextInputs): Promise<BuiltCon
   });
 
   const messages: ModelMessage[] = [
-    { role: 'system', content: SYSTEM_PROMPT },
+    { role: 'system', content: plain ? PLAIN_SYSTEM_PROMPT : SYSTEM_PROMPT },
     {
       role: 'user',
       content: JSON.stringify({
@@ -281,20 +307,31 @@ export async function buildModelContext(inputs: ContextInputs): Promise<BuiltCon
         role: 'tool',
         toolCallId: call.toolCallId,
         content: JSON.stringify(
-          call.result ?? { pending: true, note: 'this request has not been settled yet' },
+          call.result === null
+            ? { pending: true, note: 'this request has not been settled yet' }
+            : plain
+              ? plainResult(call.result)
+              : call.result,
         ),
       });
     }
   }
   const pending = noticesUntil(null, null);
-  messages.push({
-    role: 'user',
-    content: JSON.stringify({
-      ...(pending.length > 0 ? { runtimeNotices: pending } : {}),
-      currentState: inputs.currentState,
-      source: `control registry at case revision ${String(inputs.currentState.revision)}; authoritative over anything earlier in this conversation`,
-    }),
-  });
+  if (!plain) {
+    messages.push({
+      role: 'user',
+      content: JSON.stringify({
+        ...(pending.length > 0 ? { runtimeNotices: pending } : {}),
+        currentState: inputs.currentState,
+        source: `control registry at case revision ${String(inputs.currentState.revision)}; authoritative over anything earlier in this conversation`,
+      }),
+    });
+  } else if (pending.length > 0) {
+    messages.push(noticeMessage(pending));
+  } else if (messages.at(-1)?.role === 'assistant') {
+    // A turn without tool requests: a chat transcript cannot end on the assistant.
+    messages.push({ role: 'user', content: JSON.stringify({ continue: true }) });
+  }
 
   const size = (): number =>
     messages.reduce(

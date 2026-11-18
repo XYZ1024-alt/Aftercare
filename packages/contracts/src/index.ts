@@ -3,6 +3,7 @@ export * from './audit.ts';
 export * from './case-state.ts';
 export * from './commands.ts';
 export * from './confirmation.ts';
+export * from './console.ts';
 export * from './coverage.ts';
 export * from './dependency.ts';
 export * from './evidence.ts';

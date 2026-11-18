@@ -1,5 +1,6 @@
 import { type CaseCommandService, createCaseCommandService } from '@aftercare/casework';
 import { principalSchema } from '@aftercare/contracts';
+import type { JsonObject } from '@aftercare/domain';
 import { createEvidenceService, type EvidenceService } from '@aftercare/evidence';
 import {
   type AgentStore,
@@ -9,14 +10,19 @@ import {
   createCaseStore,
   createControlStore,
   createExecutorStore,
+  createOperationsStore,
   createRepairStore,
   createRoleClient,
   createSnapshotManager,
   createVerifierStore,
   type DatabaseTarget,
+  type ExecutorStore,
+  type OperationsStore,
   openRolePool,
   type RepairStore,
+  type VerifierStore,
 } from '@aftercare/storage';
+import type { Pool } from 'pg';
 import type { ModelAdapter } from './model/adapter.ts';
 import { type AgentWorker, type AgentWorkerOptions, createAgentWorker } from './runtime.ts';
 import { type AgentService, createAgentService } from './service.ts';
@@ -33,10 +39,18 @@ export interface AgentEnvironment {
   readonly repairStore: RepairStore;
   readonly commands: CaseCommandService;
   readonly evidence: EvidenceService;
+  readonly operations: OperationsStore;
+  readonly executorStore: ExecutorStore;
+  readonly verifierStore: VerifierStore;
+  /** The pool of the runtime role, for connectivity probes. */
+  readonly runtimePool: Pool;
   /** A worker of this process for the given model. */
   readonly worker: (
     model: ModelAdapter,
-    options?: Pick<AgentWorkerOptions, 'context' | 'retryDelayMs'> & { readonly workerId?: string },
+    options?: Pick<AgentWorkerOptions, 'context' | 'retryDelayMs' | 'interrupted'> & {
+      readonly workerId?: string;
+      readonly leaseTtlSeconds?: number;
+    },
   ) => AgentWorker;
   readonly close: () => Promise<void>;
 }
@@ -52,6 +66,7 @@ export interface AgentEnvironment {
 export function openAgentEnvironment(
   env: NodeJS.ProcessEnv,
   target: DatabaseTarget,
+  deployment: { readonly snapshotLimits?: JsonObject } = {},
 ): AgentEnvironment {
   const agentPrincipal = principalSchema.parse(
     env.AFTERCARE_AGENT_PRINCIPAL ?? DEFAULT_AGENT_PRINCIPAL,
@@ -78,7 +93,12 @@ export function openAgentEnvironment(
       connect: () => createRoleClient(env, 'snapshot_manager', target),
     }),
     agentPrincipal,
+    ...(deployment.snapshotLimits === undefined
+      ? {}
+      : { snapshotLimits: deployment.snapshotLimits }),
   });
+  const executorStore = createExecutorStore(pools.executor);
+  const verifierStore = createVerifierStore(pools.verifier);
   return {
     agentPrincipal,
     service,
@@ -88,21 +108,26 @@ export function openAgentEnvironment(
     repairStore,
     commands,
     evidence,
+    operations: createOperationsStore(pools.runtime),
+    executorStore,
+    verifierStore,
+    runtimePool: pools.runtime,
     worker: (model, options = {}) =>
       createAgentWorker({
         workerId: options.workerId ?? `agent-worker:${process.pid}@${env.HOSTNAME ?? 'local'}`,
         model,
-        leaseTtlSeconds: 300,
+        leaseTtlSeconds: options.leaseTtlSeconds ?? 300,
         stores: {
           agentStore,
           caseStore,
           store,
           repairStore,
-          executorStore: createExecutorStore(pools.executor),
-          verifierStore: createVerifierStore(pools.verifier),
+          executorStore,
+          verifierStore,
           snapshotPool: pools.investigator,
         },
         ...(options.context === undefined ? {} : { context: options.context }),
+        ...(options.interrupted === undefined ? {} : { interrupted: options.interrupted }),
         ...(options.retryDelayMs === undefined ? {} : { retryDelayMs: options.retryDelayMs }),
       }),
     close: async () => {

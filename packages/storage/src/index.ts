@@ -5,6 +5,7 @@ export * from './case-store.ts';
 export * from './config.ts';
 export * from './control-store.ts';
 export * from './executor-store.ts';
+export * from './operations-store.ts';
 export * from './pool.ts';
 export * from './repair-store.ts';
 export * from './snapshot-manager.ts';

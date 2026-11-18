@@ -62,6 +62,110 @@ export async function reviewedSchemaVersion(): Promise<string> {
   return `${latest.name}@${createHash('sha256').update(ledger).digest('hex').slice(0, 16)}`;
 }
 
+/**
+ * The ledger must be an unmodified prefix of the files on disk: applied
+ * migrations are immutable and new ones may only be appended.
+ */
+function ledgerProblems(ledger: readonly LedgerRow[], files: readonly MigrationFile[]): string[] {
+  return ledger.flatMap((entry, index) => {
+    const file = files[index];
+    if (file === undefined || file.name !== entry.name) {
+      return [
+        `migration ledger mismatch at position ${index + 1}: applied "${entry.name}", on disk "${file?.name ?? '(nothing)'}"`,
+      ];
+    }
+    return file.checksum === entry.checksum
+      ? []
+      : [`migration "${entry.name}" was modified after it had been applied`];
+  });
+}
+
+export interface PreMigrationCheck {
+  readonly applied: readonly string[];
+  readonly pending: readonly string[];
+  /** Why the pending migrations must not be applied as things stand. Empty: nothing stands in the way. */
+  readonly blockers: readonly string[];
+  /** What the operator has to do or know around the migration; not a refusal. */
+  readonly notes: readonly string[];
+  readonly work: {
+    readonly unfinishedAgentRuns: Readonly<Record<string, number>>;
+    readonly liveLeases: number;
+    readonly activeApprovals: number;
+  };
+}
+
+/**
+ * What a migration would meet, without changing anything. The pool must be
+ * connected as `aftercare_migrator`. Work in flight is a blocker: a run that
+ * is being driven, or a lease that is held, belongs to code of the schema
+ * that is about to change.
+ */
+export async function checkBeforeMigration(pool: Pool): Promise<PreMigrationCheck> {
+  const files = await loadMigrationFiles();
+  const one = async <Row extends object>(statement: string): Promise<Row[]> =>
+    (await pool.query<Row>(statement)).rows;
+  const exists = async (relation: string): Promise<boolean> =>
+    (await one<{ present: boolean }>(`SELECT to_regclass('${relation}') IS NOT NULL AS present`))[0]
+      ?.present === true;
+
+  const ledger = (await exists('aftercare_meta.schema_migrations'))
+    ? await one<LedgerRow>(
+        'SELECT name, checksum FROM aftercare_meta.schema_migrations ORDER BY name',
+      )
+    : [];
+  const pending = files.slice(ledger.length).map((file) => file.name);
+  const runs = (await exists('aftercare_control.agent_runs'))
+    ? await one<{ status: string; n: number }>(
+        `SELECT status, count(*)::int AS n FROM aftercare_control.agent_runs
+          WHERE status IN ('queued', 'running', 'awaiting_input', 'paused') GROUP BY status`,
+      )
+    : [];
+  const leases = (await exists('aftercare_control.execution_leases'))
+    ? ((
+        await one<{ n: number }>(
+          'SELECT count(*)::int AS n FROM aftercare_control.execution_leases WHERE expires_at > clock_timestamp()',
+        )
+      )[0]?.n ?? 0)
+    : 0;
+  const approvals = (await exists('aftercare_control.execution_approvals'))
+    ? ((
+        await one<{ n: number }>(
+          `SELECT count(*)::int AS n FROM aftercare_control.execution_approvals AS a
+            WHERE aftercare_control.approval_state(a) = 'active'`,
+        )
+      )[0]?.n ?? 0)
+    : 0;
+  const unfinished = Object.fromEntries(runs.map((row) => [row.status, row.n]));
+  const inFlight = (unfinished.queued ?? 0) + (unfinished.running ?? 0);
+  return {
+    applied: ledger.map((entry) => entry.name),
+    pending,
+    blockers: [
+      ...ledgerProblems(ledger, files),
+      ...(pending.length > 0 && inFlight > 0
+        ? [`${inFlight} agent run(s) are queued or running: pause them and stop the worker first`]
+        : []),
+      ...(pending.length > 0 && leases > 0
+        ? [`${leases} case lease(s) are held: stop the worker and let the leases end first`]
+        : []),
+    ],
+    notes:
+      pending.length === 0
+        ? []
+        : [
+            'take a backup first (pnpm ops backup); a migration is not undone by this system',
+            'the coverage declaration is made for one schema version: after the migration the environment is not eligible for new cases until it is declared again',
+            'snapshots, evidence, plans, contracts and reports keep the versions they were made under; they are not rewritten or re-interpreted. Run "pnpm ops verify" afterwards',
+            ...(approvals > 0
+              ? [
+                  `${approvals} approval(s) are in force: they stay bound to their contract digests and are re-checked at execution`,
+                ]
+              : []),
+          ],
+    work: { unfinishedAgentRuns: unfinished, liveLeases: leases, activeApprovals: approvals },
+  };
+}
+
 async function applyPending(
   client: ClientBase,
   files: readonly MigrationFile[],
@@ -70,20 +174,10 @@ async function applyPending(
   const { rows: ledger } = await client.query<LedgerRow>(
     'SELECT name, checksum FROM aftercare_meta.schema_migrations ORDER BY name',
   );
-
-  // The ledger must be an unmodified prefix of the files on disk: applied
-  // migrations are immutable and new ones may only be appended.
-  ledger.forEach((entry, index) => {
-    const file = files[index];
-    if (file === undefined || file.name !== entry.name) {
-      throw new Error(
-        `migration ledger mismatch at position ${index + 1}: applied "${entry.name}", on disk "${file?.name ?? '(nothing)'}"`,
-      );
-    }
-    if (file.checksum !== entry.checksum) {
-      throw new Error(`migration "${entry.name}" was modified after it had been applied`);
-    }
-  });
+  const [problem] = ledgerProblems(ledger, files);
+  if (problem !== undefined) {
+    throw new Error(problem);
+  }
 
   const pending = files.slice(ledger.length);
   for (const file of pending) {

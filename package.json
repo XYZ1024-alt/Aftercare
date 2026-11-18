@@ -26,10 +26,20 @@
     "test": "vitest run",
     "demo:verify": "pnpm --filter @aftercare/verify run demo",
     "agent": "pnpm --filter @aftercare/agent run cli",
-    "demo:agent": "pnpm --filter @aftercare/agent run demo"
+    "demo:agent": "pnpm --filter @aftercare/agent run demo",
+    "ops": "pnpm --filter @aftercare/console run ops",
+    "test:e2e": "playwright test",
+    "eval:compare": "AFTERCARE_EVAL_COMPARE=1 vitest run packages/agent/test/comparison.test.ts",
+    "build:web": "pnpm --filter @aftercare/web run build",
+    "start:web": "pnpm --filter @aftercare/web run start"
   },
   "devDependencies": {
+    "@aftercare/agent": "workspace:*",
+    "@aftercare/console": "workspace:*",
+    "@aftercare/repair": "workspace:*",
+    "@aftercare/storage": "workspace:*",
     "@biomejs/biome": "^2.6.7",
+    "@playwright/test": "^1.65.1",
     "@types/node": "^26.6.6",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",

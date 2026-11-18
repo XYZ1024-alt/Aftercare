@@ -44,6 +44,8 @@ export interface AgentServiceOptions {
   readonly evidence: EvidenceService;
   /** The service identity model-chosen commands are issued under. It must hold investigate_case and manage_case only. */
   readonly agentPrincipal: string;
+  /** Deployment quota of one snapshot (rows, bytes, time). Unset: the defaults of the snapshot contract. */
+  readonly snapshotLimits?: JsonObject;
 }
 
 export interface AnsweredQuestion {
@@ -176,10 +178,13 @@ export function createAgentService(options: AgentServiceOptions): AgentService {
         if (!opened.ok) return commandRefused('opening a new case run', opened);
       }
       if (state.currentSnapshotId === null) {
-        const created = await snapshots.createSnapshot({ caseId });
+        const created = await snapshots.createSnapshot({
+          caseId,
+          ...(options.snapshotLimits === undefined ? {} : { limits: options.snapshotLimits }),
+        });
         if (!created.ok) {
           return refused(
-            'reference_rejected',
+            created.failure.code === 'quota_exceeded' ? 'resource_limit' : 'reference_rejected',
             `no snapshot could be taken: ${created.failure.code}: ${created.failure.message}`,
           );
         }

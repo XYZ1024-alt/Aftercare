@@ -44,6 +44,8 @@ export const APPROVAL_STATES = [
   'active',
   'revoked',
   'authority_revoked',
+  /** Given before a restore fence, or read in a database other than the one it was given in. */
+  'fenced_by_restore',
   'contract_invalidated',
   'contract_applied',
   'contract_applied_stale',

@@ -91,6 +91,12 @@ export interface AgentWorkerOptions {
   /** Pause before a retried model request. */
   readonly retryDelayMs?: number;
   readonly faults?: AgentFaults;
+  /**
+   * Asked before every step. True: the worker stops driving at this boundary
+   * and hands the lease back; the run stays as the database has it (running),
+   * and the next drive — by any worker — continues it from the records.
+   */
+  readonly interrupted?: () => boolean;
 }
 
 export type DriveStop =
@@ -101,7 +107,9 @@ export type DriveStop =
   /** This worker's lease generation was superseded mid-flight; it did nothing further. */
   | 'lease_lost'
   /** The run left "running": it waits for input, was paused, or ended. */
-  | 'run_stopped';
+  | 'run_stopped'
+  /** This worker was asked to stop at a step boundary; the run is still running and resumable by any worker. */
+  | 'interrupted';
 
 export interface DriveResult {
   readonly stop: DriveStop;
@@ -667,7 +675,7 @@ export function createAgentWorker(options: AgentWorkerOptions): AgentWorker {
     }
 
     let current = run;
-    while (current.status === 'running') {
+    while (current.status === 'running' && options.interrupted?.() !== true) {
       const renewed = await services.executor.renew();
       if (!renewed.ok) {
         throw fenceLost(renewed.rejection.message);
@@ -736,7 +744,14 @@ export function createAgentWorker(options: AgentWorkerOptions): AgentWorker {
         const finished = claim.claimed ? await driveRun(claim.run, fence, services) : claim.run;
         // Hand the case back: a waiting, paused or ended run holds no lease.
         await executor.release();
-        return { stop: claim.claimed ? 'run_stopped' : 'not_runnable', run: finished };
+        return {
+          stop: !claim.claimed
+            ? 'not_runnable'
+            : finished.status === 'running'
+              ? 'interrupted'
+              : 'run_stopped',
+          run: finished,
+        };
       } catch (error) {
         if (error instanceof Error && isFenceLost(error)) {
           const latest = await agentStore.findRun(agentRunId);

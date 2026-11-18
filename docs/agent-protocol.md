@@ -91,6 +91,7 @@ OpenAI 兼容实现把线格式全部关在 [openai-compatible.ts](../packages/a
 
 模型服务调用无法与 PostgreSQL 原子提交。协议：先提交意图与预算预留，再外呼；超时或断连记为 `outcome_unknown` 且 `billingUncertain: true`；
 worker 在外呼后、记录前死亡，下一代 `agent_claim_run` 将其标为 `worker_lost`（同样计费不明）。同一 turn 在 `maxModelRetries` 内重试，超过即暂停（`model_unavailable`）；不可重试的失败（凭证、不兼容）立即暂停。**不声称 exactly-once。**
+（第八阶段 0022：重试次数从最近一次人工恢复起计算，否则因此暂停的运行恢复后会立即再次暂停；总请求数仍受 `maxModelRequests` 约束。预算上限可由持 `manage_budget` 的人调整，见 console-protocol.md §9。）
 
 租约被接管后旧代 worker 收到的响应：`agent_complete_model_request` 以 fencing 拒绝，旧代只能调用 `agent_record_late_response` 把它存为 `late_recorded` 历史观察——不创建工具请求、不改状态、不执行任何东西。
 
@@ -113,7 +114,8 @@ worker 在外呼后、记录前死亡，下一代 `agent_claim_run` 将其标为
 
 “可以”“继续”不是批准：业务负责人以 approve 作答被 `not_authorized` 拒绝；remark 关闭问题但不产生批准，执行仍被 `approval_not_valid` 拒绝（有测试）。本仓库没有自动预授权；不复制旧批准。
 
-问题所依据的基础消失时由记录判定为 `superseded`（快照不再是当前快照、契约不再 bound、input request 已在别处回答或被放弃），迟到的回答被拒（`question_not_answerable`）；只因此等待的运行重新排队并收到通知。
+问题所依据的基础消失时由记录判定为 `superseded`（快照不再是当前快照、契约不再 bound、input request 被放弃），迟到的回答被拒（`question_not_answerable`）；只因此等待的运行重新排队并收到通知。
+（第八阶段 0022：input request 已由有权人的声明回答时，澄清问题记为**已回答**并引用该声明，不再标为失效——原先在“记录声明”与“关闭问题”两步之间刷新会把刚回答的问题误标为失效。）
 
 ## 8. 过期检测与串行
 

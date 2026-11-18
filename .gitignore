@@ -1,5 +1,5 @@
 node_modules/
-.next/
+.next*/
 next-env.d.ts
 coverage/
 *.tsbuildinfo
@@ -12,3 +12,9 @@ coverage/
 .env
 .env.*
 !.env.example
+
+# Local data of a deployment: artefact files and backups.
+.aftercare/
+# End-to-end test output.
+test-results/
+playwright-report/

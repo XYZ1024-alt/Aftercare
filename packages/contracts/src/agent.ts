@@ -89,12 +89,18 @@ export const agentRunSchema = z.strictObject({
   statusReason: z.string().nullable(),
   statusDetail: jsonObjectSchema,
   controlRequest: z.enum(['pause', 'cancel']).nullable(),
+  /** The limits in force: the starting limits, or the latest amendment by a human holding manage_budget. */
   limits: agentLimitsSchema,
+  budgetAmendments: z.number().int(),
   usage: agentUsageSchema,
   /** Revision of the case when the run started: only reports published after it can complete the run. */
   startRevision: int64TextSchema,
   /** The sealed report the end state rests on; null unless completed or partially_resolved. */
   reportId: z.uuid().nullable(),
+  /** Sequence number of the latest event of the run. */
+  eventSeq: int64TextSchema,
+  /** Events up to and including this number were removed by retention; a cursor below it must resynchronise. */
+  eventsPrunedThrough: int64TextSchema,
   createdAt: instantSchema,
   updatedAt: instantSchema,
 });
@@ -408,6 +414,8 @@ export const AGENT_REJECTION_CODES = [
   'answer_rejected',
   /** The command the answer maps to was refused; its own rejection is attached. */
   'command_rejected',
+  /** A deployment quota (snapshot rows or bytes) would be exceeded; nothing was created. */
+  'resource_limit',
 ] as const;
 export type AgentRejectionCode = (typeof AGENT_REJECTION_CODES)[number];
 

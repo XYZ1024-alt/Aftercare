@@ -45,6 +45,10 @@ export const CASE_CAPABILITIES = [
   'read_historical_artefact',
   /** May register and obtain controlled SQL exports; separate from download_artefact and approve_execution. */
   'export_repair',
+  /** May use the local administration entry: deployment state, retention, release of a restore hold. */
+  'administer_local',
+  /** May change the limits of an agent run that has not ended. Never held by an agent principal. */
+  'manage_budget',
 ] as const;
 export type CaseCapability = (typeof CASE_CAPABILITIES)[number];
 
