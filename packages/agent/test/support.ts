@@ -44,6 +44,7 @@ import {
   createAgentService,
   createAgentWorker,
   type ModelAdapter,
+  type ToolRegistry,
 } from '../src/index.ts';
 import type { ScriptScenario } from './scripts.ts';
 
@@ -69,6 +70,8 @@ export interface WorkerOverrides {
   readonly faults?: AgentFaults;
   readonly context?: ContextOptions;
   readonly leaseTtlSeconds?: number;
+  /** The tools the model is offered. Omitted: every tool of the Agent. */
+  readonly registry?: ToolRegistry;
 }
 
 export interface AgentHarness extends RepairHarness {
@@ -151,6 +154,7 @@ export async function openAgentHarness(): Promise<AgentHarness> {
         },
         ...(overrides.faults === undefined ? {} : { faults: overrides.faults }),
         ...(overrides.context === undefined ? {} : { context: overrides.context }),
+        ...(overrides.registry === undefined ? {} : { registry: overrides.registry }),
       }),
     start: async (description, limits = {}, caseId) => {
       const started = await service.forIdentity(OPERATOR).start({

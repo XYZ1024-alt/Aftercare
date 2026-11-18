@@ -6,6 +6,7 @@ import {
   type ModelAdapter,
   type ModelPricing,
   runCost,
+  type ToolRegistry,
 } from '../src/index.ts';
 import type { EvaluationCase, EvaluationSetup } from './eval-cases.ts';
 import { createOperatorOracle, type OracleAnswer } from './oracle.ts';
@@ -76,6 +77,8 @@ export interface EvaluationOptions {
   readonly maxRounds: number;
   /** Builds the driver from what the case set up. Omitted: oracleDriver. */
   readonly driver?: (setup: EvaluationSetup) => EvaluationDriver;
+  /** The tools the model is offered (an arm without CodeMode). Omitted: every tool of the Agent. */
+  readonly registry?: ToolRegistry;
 }
 
 /** Refusals that mean "this was built on something that no longer holds". Each one was caught by a guard. */
@@ -102,6 +105,7 @@ export async function runEvaluationCase(
   const worker = h.worker(model, {
     leaseTtlSeconds: options.leaseTtlSeconds,
     context: { ...DEFAULT_CONTEXT_OPTIONS, profile: options.arm },
+    ...(options.registry === undefined ? {} : { registry: options.registry }),
   });
 
   let ended = run;
