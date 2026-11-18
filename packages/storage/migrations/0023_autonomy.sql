@@ -668,6 +668,21 @@ $$;
 CREATE TRIGGER declarations_autonomy BEFORE INSERT ON aftercare_control.declarations
   FOR EACH ROW EXECUTE FUNCTION aftercare_control.guard_autonomy_declaration();
 
+-- Whether an approval window stays within the charter's validity, in whole
+-- seconds. cmd_approve_execution takes effective_at and expires_at from two
+-- clock_timestamp() calls, which may fall microseconds apart: comparing the
+-- exact difference would refuse a window of exactly the allowed length now
+-- and then. Truncating to the second keeps the bound and drops that noise.
+CREATE FUNCTION aftercare_control.autonomy_window_within(
+  p_effective_at timestamptz, p_expires_at timestamptz, p_seconds integer
+) RETURNS boolean
+LANGUAGE sql
+IMMUTABLE
+SET search_path = pg_catalog, pg_temp
+AS $$
+  SELECT date_trunc('second', p_expires_at - p_effective_at) <= make_interval(secs => p_seconds);
+$$;
+
 -- The approval envelope is checked against the contract's patch and the values
 -- of the contract's snapshot, not against anything the approving code says.
 CREATE FUNCTION aftercare_control.guard_autonomy_approval() RETURNS trigger
@@ -693,7 +708,8 @@ BEGIN
   IF v_contract.kind <> 'repair' THEN
     RAISE EXCEPTION 'an autopilot approves repair contracts only, not "%"', v_contract.kind USING ERRCODE = 'AC704';
   END IF;
-  IF NEW.expires_at - NEW.effective_at > make_interval(secs => (v_envelope ->> 'validForSeconds')::int) THEN
+  IF NOT aftercare_control.autonomy_window_within(NEW.effective_at, NEW.expires_at,
+                                                  (v_envelope ->> 'validForSeconds')::int) THEN
     RAISE EXCEPTION 'the charter lets an approval stand for % seconds at most', v_envelope ->> 'validForSeconds'
       USING ERRCODE = 'AC704';
   END IF;
@@ -843,6 +859,7 @@ REVOKE ALL ON FUNCTION aftercare_control.autonomy_enabled(), aftercare_control.a
   aftercare_control.autonomy_record_decision(uuid, text, text, text, jsonb),
   aftercare_control.autonomy_settle_decision(uuid, text, jsonb),
   aftercare_control.autonomy_check_actor(text, text),
+  aftercare_control.autonomy_window_within(timestamptz, timestamptz, integer),
   aftercare_control.guard_autonomy_decision(), aftercare_control.guard_autonomy_confirmation(),
   aftercare_control.guard_autonomy_declaration(), aftercare_control.guard_autonomy_approval(),
   aftercare_control.guard_autonomy_budget(), aftercare_control.guard_autonomy_run(),
