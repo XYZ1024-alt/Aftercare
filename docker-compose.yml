@@ -17,6 +17,9 @@ x-app: &app
   build:
     context: .
     dockerfile: Dockerfile
+    # The last stage is the single-container ModelScope Studio image; the
+    # Compose stack keeps using the runtime stage with an external database.
+    target: runtime
   image: aftercare:local
   env_file:
     - .env
