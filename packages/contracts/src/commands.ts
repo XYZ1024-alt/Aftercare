@@ -298,6 +298,8 @@ export const COMMAND_REJECTION_CODES = [
   'undo_conflict',
   /** An artefact request was refused: not ready, expired, revoked, historical without explicit access, or another case's. */
   'artefact_refused',
+  /** An autopilot record outside its charter: switched off, no charter, not delegated, outside the envelope. */
+  'outside_charter',
 ] as const;
 export type CommandRejectionCode = (typeof COMMAND_REJECTION_CODES)[number];
 

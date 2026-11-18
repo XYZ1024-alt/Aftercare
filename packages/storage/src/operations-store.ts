@@ -255,6 +255,10 @@ const REJECTION_BY_SQLSTATE: Readonly<Record<string, AgentRejectionCode>> = {
   AC204: 'invalid_request',
   AC301: 'not_authorized',
   AC602: 'illegal_status',
+  AC701: 'outside_charter',
+  AC702: 'outside_charter',
+  AC703: 'outside_charter',
+  AC704: 'outside_charter',
 };
 
 const RETENTION_STATEMENT = {

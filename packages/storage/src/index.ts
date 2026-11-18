@@ -1,5 +1,6 @@
 export * from './agent-store.ts';
 export * from './authority-admin.ts';
+export * from './autonomy-store.ts';
 export * from './business-entry.ts';
 export * from './case-store.ts';
 export * from './config.ts';

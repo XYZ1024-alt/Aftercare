@@ -1,8 +1,12 @@
 import {
   type AuthorityGrantRequest,
   type AuthorityRecord,
+  type AutonomyCharter,
+  type AutonomyCharterRecord,
   authorityGrantRequestSchema,
   authorityRecordSchema,
+  autonomyCharterRecordSchema,
+  type IdentityContext,
 } from '@aftercare/contracts';
 import type { Pool, QueryResultRow } from 'pg';
 import { z } from 'zod';
@@ -19,6 +23,9 @@ const AUTHORITY_STATEMENTS = {
   setAccount:
     'SELECT aftercare_control.set_operator_account($1, $2, $3, $4, $5, $6, $7) AS document',
   disableAccount: 'SELECT aftercare_control.disable_operator_account($1) AS document',
+  registerCharter:
+    'SELECT aftercare_control.register_autonomy_charter($1, $2, $3, $4::jsonb, $5) AS document',
+  retireCharter: 'SELECT aftercare_control.retire_autonomy_charter($1, $2, $3, $4) AS document',
 } as const;
 
 /** The scrypt key of an operator's password, as the application derived it. The password itself never reaches the database. */
@@ -42,6 +49,23 @@ export interface AuthorityAdmin {
     readonly credential: OperatorCredential;
   }) => Promise<void>;
   readonly disableOperatorAccount: (principal: string) => Promise<void>;
+  /**
+   * Registers a charter on behalf of the person in `registeredBy`, who must hold
+   * delegate_autonomy and everything the charter delegates. The autopilot is
+   * granted exactly the delegated capabilities in the same transaction.
+   */
+  readonly registerCharter: (charter: {
+    readonly registeredBy: IdentityContext;
+    readonly charterId: string;
+    readonly body: AutonomyCharter;
+    readonly digest: string;
+  }) => Promise<AutonomyCharterRecord>;
+  /** Retires a charter; when it is the latest of its autopilot, the autopilot's grants are revoked with it. */
+  readonly retireCharter: (
+    charterId: string,
+    retiredBy: IdentityContext,
+    reason: string,
+  ) => Promise<AutonomyCharterRecord>;
 }
 
 export function createAuthorityAdmin(pool: Pool): AuthorityAdmin {
@@ -92,5 +116,17 @@ export function createAuthorityAdmin(pool: Pool): AuthorityAdmin {
     disableOperatorAccount: async (principal) => {
       await call('disableAccount', [principal], z.looseObject({ principal: z.string() }));
     },
+    registerCharter: ({ registeredBy, charterId, body, digest }) =>
+      call(
+        'registerCharter',
+        [registeredBy.principal, registeredBy.source, charterId, JSON.stringify(body), digest],
+        autonomyCharterRecordSchema,
+      ),
+    retireCharter: (charterId, retiredBy, reason) =>
+      call(
+        'retireCharter',
+        [charterId, retiredBy.principal, retiredBy.source, reason],
+        autonomyCharterRecordSchema,
+      ),
   };
 }

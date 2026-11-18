@@ -116,6 +116,7 @@ export const COMMAND_CATEGORIES: Readonly<Record<CommandRejectionCode, FeedbackC
   limit_exceeded: 'deterministic_limit',
   undo_conflict: 'deterministic_limit',
   artefact_refused: 'authorization',
+  outside_charter: 'authorization',
 };
 
 export const EXECUTION_CATEGORIES: Readonly<Record<ExecutionErrorCode, FeedbackCategory>> = {

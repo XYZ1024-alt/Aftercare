@@ -416,6 +416,8 @@ export const AGENT_REJECTION_CODES = [
   'command_rejected',
   /** A deployment quota (snapshot rows or bytes) would be exceeded; nothing was created. */
   'resource_limit',
+  /** An autopilot act outside its charter: switched off, no charter, not delegated, outside the envelope. */
+  'outside_charter',
 ] as const;
 export type AgentRejectionCode = (typeof AGENT_REJECTION_CODES)[number];
 

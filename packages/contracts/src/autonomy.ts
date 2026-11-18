@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { agentLimitsSchema } from './agent.ts';
 import type { CaseCapability, ConfirmationCapability } from './confirmation.ts';
 import { principalSchema } from './primitives.ts';
-import { int64TextSchema } from './wire.ts';
+import { instantSchema, int64TextSchema, jsonObjectSchema, sha256HexSchema } from './wire.ts';
 
 // Stage nine: autonomy charters. A charter is a business owner's standing,
 // typed instruction: within this envelope an autopilot principal may answer
@@ -155,3 +155,154 @@ export const autonomyCharterSchema = z
   });
 export type AutonomyCharter = z.output<typeof autonomyCharterSchema>;
 export type AutonomyCharterInput = z.input<typeof autonomyCharterSchema>;
+
+// ── Records ─────────────────────────────────────────────────────────────────
+// What the database keeps about charters, the switch, intakes, enrollments
+// and decisions, as its entries return them (see 0023_autonomy.sql).
+
+export const autonomyCharterRecordSchema = z.strictObject({
+  charterId: z.uuid(),
+  sourceEnvironment: z.string(),
+  autopilotPrincipal: principalSchema,
+  revision: z.number().int().min(1),
+  body: autonomyCharterSchema,
+  digest: sha256HexSchema,
+  registeredBy: principalSchema,
+  identitySource: z.string(),
+  registeredAt: instantSchema,
+  retirement: z
+    .strictObject({ retiredBy: principalSchema, reason: z.string(), retiredAt: instantSchema })
+    .nullable(),
+});
+export type AutonomyCharterRecord = z.output<typeof autonomyCharterRecordSchema>;
+
+/** The kill switch as it stands: no entry yet means on. */
+export const autonomySwitchSchema = z.strictObject({
+  enabled: z.boolean(),
+  changedBy: principalSchema.nullable(),
+  reason: z.string().nullable(),
+  changedAt: instantSchema.nullable(),
+});
+export type AutonomySwitch = z.output<typeof autonomySwitchSchema>;
+
+export const autonomyIntakeSchema = z.strictObject({
+  intakeId: z.uuid(),
+  dedupeKey: z.string(),
+  source: z.string(),
+  description: z.string(),
+  payloadDigest: sha256HexSchema,
+  receivedAt: instantSchema,
+});
+export type AutonomyIntake = z.output<typeof autonomyIntakeSchema>;
+
+export const autonomyEnrollmentSchema = z.strictObject({
+  enrollmentId: z.uuid(),
+  caseId: z.uuid(),
+  agentRunId: z.uuid(),
+  charterId: z.uuid(),
+  trigger: z.enum(AUTONOMY_TRIGGERS),
+  requestedBy: principalSchema,
+  identitySource: z.string(),
+  intakeId: z.uuid().nullable(),
+  reopenOf: z.uuid().nullable(),
+  reopenReason: z.string().nullable(),
+  enrolledAt: instantSchema,
+});
+export type AutonomyEnrollment = z.output<typeof autonomyEnrollmentSchema>;
+
+/** What one autopilot decision did. "escalate" hands the subject to a person. */
+export const AUTONOMY_DECISION_ACTIONS = [
+  'answer',
+  'approve',
+  'decline',
+  'escalate',
+  'resume',
+  'top_up',
+  'deliver',
+  'promote',
+  'reopen',
+] as const;
+export type AutonomyDecisionAction = (typeof AUTONOMY_DECISION_ACTIONS)[number];
+
+/** intent: written before acting; applied / refused: what came of it. */
+export const AUTONOMY_DECISION_STATUSES = ['intent', 'applied', 'refused'] as const;
+
+export const autonomyDecisionSchema = z.strictObject({
+  decisionId: z.uuid(),
+  enrollmentId: z.uuid(),
+  caseId: z.uuid(),
+  agentRunId: z.uuid(),
+  charterId: z.uuid(),
+  charterRevision: z.number().int().min(1),
+  /** "question:<id>", "pause:<seq>", "report:<id>", "promotion:<id>", "reopen:<id>". */
+  subject: z.string(),
+  action: z.enum(AUTONOMY_DECISION_ACTIONS),
+  /** The charter rule the decision rests on, e.g. "incidentRule", "approval", "recovery". */
+  rule: z.string(),
+  /** What was evaluated: values, evidence ids, the verdict of the rule. */
+  input: jsonObjectSchema,
+  status: z.enum(AUTONOMY_DECISION_STATUSES),
+  outcome: jsonObjectSchema.nullable(),
+  recordedAt: instantSchema,
+  settledAt: instantSchema.nullable(),
+});
+export type AutonomyDecision = z.output<typeof autonomyDecisionSchema>;
+
+// ── Views ───────────────────────────────────────────────────────────────────
+// What the console shows: the charter in force without its rules in full,
+// the switch, and per case the enrollments, the decisions and what was handed
+// back to a person.
+
+export const autonomyCharterSummarySchema = z.strictObject({
+  charterId: z.uuid(),
+  name: z.string(),
+  autopilotPrincipal: principalSchema,
+  revision: z.number().int(),
+  digest: sha256HexSchema,
+  registeredBy: principalSchema,
+  registeredAt: instantSchema,
+  delegated: z.array(z.enum(DELEGABLE_CAPABILITIES)),
+  incidentRule: autonomyCharterSchema.shape.incidentRule,
+  approval: autonomyCharterSchema.shape.approval,
+  promotion: z.strictObject({ enabled: z.boolean(), allowPartial: z.boolean() }),
+  deliveryWebhook: z.boolean(),
+});
+export type AutonomyCharterSummary = z.output<typeof autonomyCharterSummarySchema>;
+
+export const autonomyStatusSchema = z.strictObject({
+  switch: autonomySwitchSchema,
+  /** The charters in force in this environment (one per autopilot principal). */
+  charters: z.array(autonomyCharterSummarySchema),
+});
+export type AutonomyStatus = z.output<typeof autonomyStatusSchema>;
+
+export const autonomyCaseViewSchema = z.strictObject({
+  /** Every enrollment of the case, oldest first; a drift reopen adds one. */
+  enrollments: z.array(autonomyEnrollmentSchema),
+  charter: autonomyCharterSummarySchema.nullable(),
+  decisions: z.array(autonomyDecisionSchema),
+  /** Decisions that handed a subject to a person ("escalate"), with whether that subject still waits. */
+  escalations: z.array(
+    z.strictObject({ decision: autonomyDecisionSchema, open: z.boolean(), reason: z.string() }),
+  ),
+  switch: autonomySwitchSchema,
+});
+export type AutonomyCaseView = z.output<typeof autonomyCaseViewSchema>;
+
+export function charterSummary(record: AutonomyCharterRecord): AutonomyCharterSummary {
+  const { body } = record;
+  return {
+    charterId: record.charterId,
+    name: body.name,
+    autopilotPrincipal: record.autopilotPrincipal,
+    revision: record.revision,
+    digest: record.digest,
+    registeredBy: record.registeredBy,
+    registeredAt: record.registeredAt,
+    delegated: body.delegated,
+    incidentRule: body.incidentRule,
+    approval: body.approval,
+    promotion: { enabled: body.promotion.enabled, allowPartial: body.promotion.allowPartial },
+    deliveryWebhook: body.delivery.webhookUrl !== null,
+  };
+}
