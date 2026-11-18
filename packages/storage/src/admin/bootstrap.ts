@@ -34,9 +34,9 @@ const SNAPSHOT_MANAGER_SESSION_DEFAULTS: Readonly<Record<string, string>> = {
 };
 
 /**
- * Server-side ceilings for every executor and verifier session: an execution
- * or seal transaction can never wait, run or sit idle without bound, whatever
- * the client does.
+ * Server-side ceilings for every executor, verifier and promoter session: an
+ * execution, seal or promotion transaction can never wait, run or sit idle
+ * without bound, whatever the client does.
  */
 const EXECUTOR_SESSION_DEFAULTS: Readonly<Record<string, string>> = {
   lock_timeout: '15s',
@@ -90,7 +90,7 @@ async function ensureRoles(client: Client, env: NodeJS.ProcessEnv): Promise<void
     );
   }
 
-  for (const login of [DATABASE_ROLES.executor, DATABASE_ROLES.verifier]) {
+  for (const login of [DATABASE_ROLES.executor, DATABASE_ROLES.verifier, DATABASE_ROLES.promoter]) {
     const role = escapeIdentifier(login.user);
     for (const [setting, value] of Object.entries(EXECUTOR_SESSION_DEFAULTS)) {
       await client.query(

@@ -12,6 +12,7 @@ export * from './execution.ts';
 export * from './inputs.ts';
 export * from './policy.ts';
 export * from './primitives.ts';
+export * from './promotion.ts';
 export * from './repair.ts';
 export * from './results.ts';
 export * from './snapshot.ts';
