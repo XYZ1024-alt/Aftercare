@@ -1,15 +1,38 @@
-# Local, single-tenant, single PostgreSQL instance. Never point this at anything shared.
-name: aftercare
+# Local, single-tenant deployment. Never point this at anything shared.
+name: aftercare-deploy
+
+# Shared by the console, the worker and the one-off initialisation container.
+# The application only accepts a loopback database host, so the entrypoint
+# forwards a loopback port to the postgres service (docker/entrypoint.sh).
+x-app-environment: &app-environment
+  # Keep the loopback-only configuration the application enforces: the
+  # entrypoint forwards this local port to the postgres service.
+  AFTERCARE_DB_HOST: 127.0.0.1
+  AFTERCARE_DB_PORT: "5432"
+  AFTERCARE_DB_FORWARD_TO: postgres:5432
+  AFTERCARE_DATA_DIR: /data
+  NODE_ENV: production
+
+x-app: &app
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: aftercare:local
+  env_file:
+    - .env
+  environment: *app-environment
+  volumes:
+    - aftercare-data:/data
+  restart: unless-stopped
 
 services:
   postgres:
     image: postgres:17-alpine
     environment:
-      # Superuser credential: used only by the one-off `pnpm db:bootstrap` step.
+      # Superuser credential: used only by the one-off initialisation step.
       POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:?copy .env.example to .env first}
-    ports:
-      # Loopback only: the database is not reachable from other hosts.
-      - "127.0.0.1:${AFTERCARE_DB_PORT:-55432}:5432"
+    # No host port: only the containers of this project reach the database.
+    # Use "docker compose exec postgres psql ..." for an interactive client.
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
       interval: 2s
@@ -18,5 +41,68 @@ services:
     volumes:
       - aftercare-pgdata:/var/lib/postgresql/data
 
+  # One-off: roles, databases, migrations, coverage declaration and, on the
+  # first start, the demonstration accounts and business activity. Re-running
+  # it is safe and does not seed the demonstration a second time.
+  init:
+    <<: *app
+    restart: "no"
+    command: ["/app/docker/init.sh"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  web:
+    <<: *app
+    command:
+      [
+        "pnpm",
+        "--filter",
+        "@aftercare/web",
+        "exec",
+        "next",
+        "start",
+        "--hostname",
+        "0.0.0.0",
+        "--port",
+        "3100",
+      ]
+    environment:
+      <<: *app-environment
+      # Browser-facing origin. Set this to the address people actually open.
+      AFTERCARE_CONSOLE_ORIGIN: ${AFTERCARE_CONSOLE_ORIGIN:-http://127.0.0.1:3100}
+      # 1 only when the console is served over HTTPS.
+      AFTERCARE_CONSOLE_SECURE_COOKIES: ${AFTERCARE_CONSOLE_SECURE_COOKIES:-0}
+    ports:
+      # 127.0.0.1 by default. Set AFTERCARE_WEB_BIND=0.0.0.0 to expose it on a LAN.
+      - "${AFTERCARE_WEB_BIND:-127.0.0.1}:${AFTERCARE_WEB_PORT:-3100}:3100"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      init:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3100/api/health/live').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  worker:
+    <<: *app
+    command: ["pnpm", "--filter", "@aftercare/worker", "start"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      init:
+        condition: service_completed_successfully
+
 volumes:
   aftercare-pgdata:
+  aftercare-data:

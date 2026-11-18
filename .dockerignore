@@ -1,0 +1,20 @@
+# Never bake the local environment file into an image.
+.env
+.env.*
+!.env.example
+
+.git
+.gitignore
+node_modules
+**/node_modules
+.next
+**/.next
+.aftercare
+test-results
+playwright-report
+e2e
+docs
+**/.eval
+**/*.log
+**/tsconfig.tsbuildinfo
+apps/web/next-env.d.ts

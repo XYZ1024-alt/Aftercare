@@ -1,0 +1,25 @@
+# Local development database only. The full Docker deployment is
+# docker-compose.yml (project "aftercare-deploy"); this file keeps the
+# loopback-only PostgreSQL instance that "pnpm db:up" and the host-side
+# "pnpm ops ..." commands use.
+name: aftercare
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      # Superuser credential: used only by the one-off `pnpm db:bootstrap` step.
+      POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:?copy .env.example to .env first}
+    ports:
+      # Loopback only: the database is not reachable from other hosts.
+      - "127.0.0.1:${AFTERCARE_DB_PORT:-55432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    volumes:
+      - aftercare-pgdata:/var/lib/postgresql/data
+
+volumes:
+  aftercare-pgdata:

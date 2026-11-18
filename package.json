@@ -7,8 +7,8 @@
     "node": ">=22.12"
   },
   "scripts": {
-    "db:up": "docker compose up -d --wait",
-    "db:down": "docker compose down",
+    "db:up": "docker compose -f docker-compose.dev.yml up -d --wait",
+    "db:down": "docker compose -f docker-compose.dev.yml down",
     "db:bootstrap": "pnpm --filter @aftercare/storage run db:bootstrap",
     "db:migrate": "pnpm --filter @aftercare/storage run db:migrate development",
     "db:migrate:test": "pnpm --filter @aftercare/storage run db:migrate test",

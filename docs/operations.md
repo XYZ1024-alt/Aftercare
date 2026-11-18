@@ -91,7 +91,7 @@ pnpm ops restore:drill <dump 文件> [--keep]
 > 以下流程由本仓库的组件组成，但**没有**在本仓库中对开发库原地执行过；演练只在隔离库中做过。执行前先在隔离库演练同一个备份。
 
 1. 停止操作台与 worker。确认要替换的是哪个库，保留原库（重命名或另行备份）而不是直接删除。
-2. 恢复到**同一集群、同一库名**可以保持源环境标识（`postgresql:<集群标识>/<库名>`），已有的能力登记、覆盖声明与策略版本继续有效：在空库上（`pnpm db:bootstrap` 会为缺失的库建库并授权）执行 `docker compose exec -T postgres pg_restore -U postgres --exit-on-error --dbname <库名> < <dump 文件>`，并把 `.dump.artefacts/` 复制回 `<AFTERCARE_DATA_DIR>/<target>/artefacts/`。
+2. 恢复到**同一集群、同一库名**可以保持源环境标识（`postgresql:<集群标识>/<库名>`），已有的能力登记、覆盖声明与策略版本继续有效：在空库上（`pnpm db:bootstrap` 会为缺失的库建库并授权）执行 `docker compose -f docker-compose.dev.yml exec -T postgres pg_restore -U postgres --exit-on-error --dbname <库名> < <dump 文件>`，并把 `.dump.artefacts/` 复制回 `<AFTERCARE_DATA_DIR>/<target>/artefacts/`。
 3. 恢复到另一个集群或另一个库名就是另一个环境：授权管理员需要为新环境重新登记能力，重新声明覆盖、登记策略；旧案例作为历史可读，但其中绑定旧环境的确认与策略不能用于新的工作。
 4. `pnpm ops restore:fence --reason "<原因>"`：围栏并核验，此时数据库处于保持状态，操作台就绪检查显示 `restore_hold`，worker 不做任何工作。
 5. 阅读核验结果。`pnpm ops restore:release --as <持 administer_local 的主体>`（或在管理页“核验并放行”）：重新核验，没有问题才解除保持。

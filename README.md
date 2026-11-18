@@ -94,6 +94,34 @@ pnpm demo:autonomous        # 第九阶段：一条签名告警从开案走到�
 `pnpm db:bootstrap`（新增登录角色 `aftercare_verifier`，它继承调查角色的读权限；迁移角色新增 TEMPORARY 权限，用于执行事务内的前像临时表），然后 `pnpm db:migrate`（应用 0020）。
 0020 会回填已有分支的基线信息；已有的 applied 分支可以直接进入独立验证。
 
+## Docker 部署
+
+需要 Docker（含 Compose）。完整部署栈在 `docker-compose.yml`（Compose 项目名 `aftercare-deploy`，独立数据卷，不碰本地开发库）；
+本地开发数据库仍在 `docker-compose.dev.yml`，`pnpm db:up` 与宿主机上的 `pnpm ops ...` 继续使用它。
+一个镜像同时运行操作台与 worker；`init` 是一次性容器，负责建角色/库、迁移、登记覆盖声明，并在首次启动时写入演示数据。
+
+```bash
+cp .env.example .env        # 修改密码；模型与演示密码见 .env.example
+docker compose up -d --build
+docker compose logs init    # 首次启动：bootstrap → migrate → coverage → demo:init
+```
+
+- 操作台：<http://127.0.0.1:3100>。`AFTERCARE_WEB_PORT` 与 `AFTERCARE_WEB_BIND` 控制宿主机端口和绑定地址（默认只绑回环）。
+- `init` 只在**没有操作台账号**时执行 `demo:init`：三个演示账号、一个策略、一个演示章程、五个商品、一笔订单。
+  再次 `up` 不会重复写入。演示密码只显示一次，用 `docker compose logs init` 查看；也可以提前在 `.env` 设置 `AFTERCARE_DEMO_PASSWORD`。
+- 启动后自检：`docker compose exec web pnpm ops status`，应显示 database ok、schema current、deployment ready、worker 在工作、model 已配置。
+- 初始化还会创建 `superadmin`（显示名 Super Admin），持有全部 14 项能力；它只在不存在时创建，不会重置密码或重复授权。
+  密码优先取 `AFTERCARE_SUPERADMIN_PASSWORD`，否则取 `AFTERCARE_DEMO_PASSWORD`，都没有则由 `init` 随机生成并打印一次。
+- 只要结构、不要演示数据：`AFTERCARE_DEMO_INIT=0`（`superadmin` 仍会创建），之后用
+  `docker compose exec web pnpm ops account:set <principal> --name <名字> --grant <能力,...>` 建其他账号。
+- 数据库不映射到宿主机，避免与本地开发库的 55432 冲突；需要客户端时用 `docker compose exec postgres psql -U postgres -d aftercare_dev`。
+- 产物与备份保存在命名卷 `aftercare-data`（容器内 `/data`），web 与 worker 共享；数据库在 `aftercare-pgdata`。
+- 升级：`git pull && docker compose up -d --build`。`init` 会应用新迁移，不会重复 seed。
+- 重置 Docker 部署（**只删除部署栈的数据库与产物卷，不影响 `pnpm db:up` 的本地开发库**）：`docker compose down -v && docker compose up -d --build`。
+- 局域网/公网：设置 `AFTERCARE_WEB_BIND=0.0.0.0`，并把 `AFTERCARE_CONSOLE_ORIGIN` 设为浏览器实际访问的地址；
+  HTTPS 时设 `AFTERCARE_CONSOLE_SECURE_COOKIES=1`。放在反向代理后面时，`/api/*` 的 SSE 需要关闭响应缓冲。
+- 镜像不包含 `.env`；所有密钥经 Compose 注入。数据库端口仍只绑定宿主机回环。
+
 ## 检查与测试
 
 ```bash
