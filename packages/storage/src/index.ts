@@ -1,5 +1,6 @@
 export * from './agent-store.ts';
 export * from './authority-admin.ts';
+export * from './autonomy-store.ts';
 export * from './business-entry.ts';
 export * from './case-store.ts';
 export * from './config.ts';
@@ -7,6 +8,7 @@ export * from './control-store.ts';
 export * from './executor-store.ts';
 export * from './operations-store.ts';
 export * from './pool.ts';
+export * from './promotion-store.ts';
 export * from './repair-store.ts';
 export * from './snapshot-manager.ts';
 export * from './snapshot-reader.ts';

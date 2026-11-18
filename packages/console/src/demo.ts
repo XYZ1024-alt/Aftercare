@@ -1,8 +1,10 @@
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { DEFAULT_AGENT_PRINCIPAL } from '@aftercare/agent';
 import {
+  type AutonomyCharter,
   type CaseCapability,
   type ConfirmationCapability,
+  DELEGABLE_CAPABILITIES,
   POLICY_COMPOSITION,
   principalSchema,
   type WriteOutcome,
@@ -19,6 +21,7 @@ import {
   openRolePool,
 } from '@aftercare/storage';
 import { reviewedSchemaVersion } from '@aftercare/storage/admin';
+import { charterDigest, parseCharter } from './autonomy/charter.ts';
 import { deriveCredential } from './identity.ts';
 import { readConsoleSettings } from './settings.ts';
 
@@ -32,6 +35,64 @@ import { readConsoleSettings } from './settings.ts';
 // environment (pnpm ops demo:register), so it cannot be aimed at anything else.
 
 type Capability = CaseCapability | ConfirmationCapability;
+
+export const DEMO_OWNER = 'ops:demo-owner';
+export const DEMO_AUTOPILOT = 'autopilot:demo-pricing';
+
+/**
+ * The charter of the demonstration: price decreases of 15 % or more by a
+ * single or a batch price change are incidents; the baseline is the version
+ * before the first of them; the demo policy applies; approvals and promotions
+ * stand within 50 objects, 200.00 per object and 200 %.
+ */
+export function demoCharter(sourceEnvironment: string, policyVersionId: string): AutonomyCharter {
+  return parseCharter({
+    charterFormat: 1,
+    name: '定价事故自主处置（演示）',
+    sourceEnvironment,
+    autopilotPrincipal: DEMO_AUTOPILOT,
+    delegated: [...DELEGABLE_CAPABILITIES],
+    intake: { acknowledgeDataEgress: true, limits: {} },
+    incidentRule: {
+      operationTypes: ['batch_set_price', 'set_price'],
+      direction: 'decrease',
+      minRelativeChangeBps: 1500,
+      onNoMatch: 'decline',
+    },
+    baselineRule: { kind: 'version_before_first_incident' },
+    replayPolicy: { policyVersionId },
+    clarification: {
+      kind: 'record_unknown_intent',
+      statement: '业务方无法说明这次改动的意图；该对象按未决处理，不做猜测。',
+    },
+    approval: {
+      maxChangedObjects: 50,
+      maxAbsoluteChangeCents: '20000',
+      maxRelativeChangeBps: 20000,
+      maxUnresolvedDomains: 50,
+      validForSeconds: 1800,
+    },
+    recovery: {
+      resumableReasons: ['budget_exhausted', 'model_unavailable', 'repetition_limit'],
+      maxResumesPerRun: 3,
+      budgetTopUp: {
+        modelRequests: 20,
+        toolCalls: 60,
+        maxTotalModelRequests: 120,
+        maxTotalToolCalls: 400,
+      },
+    },
+    promotion: {
+      enabled: true,
+      allowPartial: true,
+      maxChangedObjects: 50,
+      maxAbsoluteChangeCents: '20000',
+      maxRelativeChangeBps: 20000,
+      maxDriftReopens: 1,
+    },
+    delivery: { produceReport: true, webhookUrl: null },
+  });
+}
 
 const ACCOUNTS: readonly {
   readonly principal: string;
@@ -62,6 +123,13 @@ const ACCOUNTS: readonly {
     principal: 'ops:demo-admin',
     displayName: '本地管理员（演示）',
     capabilities: ['investigate_case', 'administer_local', 'manage_budget'],
+  },
+  {
+    // The business owner who stands behind the autonomy charter: delegation
+    // needs the delegating person to hold everything delegated.
+    principal: DEMO_OWNER,
+    displayName: '业务负责人（演示）',
+    capabilities: ['delegate_autonomy', 'administer_local', ...DELEGABLE_CAPABILITIES],
   },
 ];
 
@@ -128,6 +196,7 @@ export interface DemoInitReport {
   /** Shown once. Set AFTERCARE_DEMO_PASSWORD to choose it. */
   readonly password: string;
   readonly suggestedDescription: string;
+  readonly charter: { readonly charterId: string; readonly autopilotPrincipal: string };
 }
 
 export async function initialiseDemo(env: NodeJS.ProcessEnv): Promise<DemoInitReport> {
@@ -212,6 +281,15 @@ export async function initialiseDemo(env: NodeJS.ProcessEnv): Promise<DemoInitRe
       throw new Error(`the demo policy was refused: ${policy.rejection.message}`);
     }
 
+    // The owner's standing instructions: the autopilot may carry a pricing incident through.
+    const body = demoCharter(sourceEnvironment, policy.value.policyVersionId);
+    const charter = await authorities.registerCharter({
+      registeredBy: { principal: DEMO_OWNER, source: 'demo-init' },
+      charterId: randomUUID(),
+      body,
+      digest: charterDigest(body),
+    });
+
     // Ordinary business activity through the controlled entry.
     const entry = createBusinessEntry(pools.writer);
     const suffix = randomBytes(3).toString('hex');
@@ -261,6 +339,7 @@ export async function initialiseDemo(env: NodeJS.ProcessEnv): Promise<DemoInitRe
       accounts: ACCOUNTS.map(({ principal, capabilities }) => ({ principal, capabilities })),
       password,
       suggestedDescription: `导入后商品价格异常（demo-${suffix}- 开头的商品）`,
+      charter: { charterId: charter.charterId, autopilotPrincipal: charter.autopilotPrincipal },
     };
   } finally {
     await Promise.all(Object.values(pools).map((pool) => pool.end()));

@@ -36,6 +36,11 @@ const REJECTION_BY_SQLSTATE: Readonly<Record<string, CommandRejectionCode>> = {
   AC524: 'execution_not_possible',
   AC525: 'artefact_refused',
   AC526: 'artefact_refused',
+  AC701: 'outside_charter',
+  AC702: 'outside_charter',
+  AC703: 'outside_charter',
+  AC704: 'outside_charter',
+  AC705: 'outside_charter',
 };
 
 const appliedSchema = z.strictObject({

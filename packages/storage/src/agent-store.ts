@@ -174,6 +174,11 @@ const REJECTION_BY_SQLSTATE: Readonly<Record<string, AgentRejectionCode>> = {
   AC602: 'illegal_status',
   AC603: 'isolation_hold',
   AC604: 'question_not_answerable',
+  AC701: 'outside_charter',
+  AC702: 'outside_charter',
+  AC703: 'outside_charter',
+  AC704: 'outside_charter',
+  AC705: 'outside_charter',
 };
 
 const MAX_LISTED = 500;

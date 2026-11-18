@@ -390,6 +390,8 @@ export const agentStartRequestSchema = z.strictObject({
   limits: agentLimitsSchema.prefault({}),
   /** Required to start again on a case whose last run was stopped by a deterministic invariant failure. */
   acknowledgeIsolation: z.boolean().default(false),
+  /** Takes a new snapshot even when the case has a current one (a reopen after the source moved on). */
+  freshSnapshot: z.boolean().default(false),
 });
 export type AgentStartRequest = z.input<typeof agentStartRequestSchema>;
 
@@ -416,6 +418,8 @@ export const AGENT_REJECTION_CODES = [
   'command_rejected',
   /** A deployment quota (snapshot rows or bytes) would be exceeded; nothing was created. */
   'resource_limit',
+  /** An autopilot act outside its charter: switched off, no charter, not delegated, outside the envelope. */
+  'outside_charter',
 ] as const;
 export type AgentRejectionCode = (typeof AGENT_REJECTION_CODES)[number];
 

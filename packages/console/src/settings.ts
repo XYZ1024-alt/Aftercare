@@ -43,6 +43,10 @@ const settingsSchema = z.object({
    * is configured, otherwise no run is driven.
    */
   AFTERCARE_MODEL_MODE: z.enum(['live', 'scripted_test']).optional(),
+  /** Shared secret of signed intake requests (POST /api/intake). Unset: the intake endpoint does not exist. */
+  AFTERCARE_INTAKE_SECRET: z.string().min(16).optional(),
+  /** Secret the autopilot signs its delivery webhooks with. Unset: no webhook is sent. */
+  AFTERCARE_DELIVERY_SECRET: z.string().min(16).optional(),
 });
 
 export type ModelMode = 'live' | 'scripted_test' | 'unconfigured';
@@ -72,6 +76,10 @@ export interface ConsoleSettings {
     readonly pollMs: number;
   };
   readonly modelMode: ModelMode;
+  readonly autonomy: {
+    readonly intakeSecret: string | null;
+    readonly deliverySecret: string | null;
+  };
 }
 
 /**
@@ -140,5 +148,9 @@ export function readConsoleSettings(env: NodeJS.ProcessEnv): ConsoleSettings {
       pollMs: data.AFTERCARE_WORKER_POLL_MS,
     },
     modelMode,
+    autonomy: {
+      intakeSecret: data.AFTERCARE_INTAKE_SECRET ?? null,
+      deliverySecret: data.AFTERCARE_DELIVERY_SECRET ?? null,
+    },
   };
 }

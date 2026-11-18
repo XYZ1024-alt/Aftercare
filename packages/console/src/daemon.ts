@@ -10,6 +10,7 @@ import type { JsonObject } from '@aftercare/domain';
 import { createCaseExecutor } from '@aftercare/execution';
 import type { OperatorWork } from '@aftercare/storage';
 import { createCaseVerifier } from '@aftercare/verify';
+import { type Autopilot, createAutopilot } from './autonomy/autopilot.ts';
 import type { ConsoleContext } from './context.ts';
 
 // The worker process body: the one Agent of this deployment. It drives
@@ -51,7 +52,12 @@ export function modelOf(context: ConsoleContext, env: NodeJS.ProcessEnv): ModelA
   }
 }
 
-export function startDaemon(context: ConsoleContext, model: ModelAdapter | null): Daemon {
+export function startDaemon(
+  context: ConsoleContext,
+  model: ModelAdapter | null,
+  options: { readonly autopilot?: Autopilot } = {},
+): Daemon {
+  const autopilot = options.autopilot ?? createAutopilot(context);
   const { environment, settings, metrics } = context;
   const { agentStore, operations, executorStore, verifierStore } = environment;
   const workerId = settings.worker.id;
@@ -199,6 +205,8 @@ export function startDaemon(context: ConsoleContext, model: ModelAdapter | null)
               if (stopping) break;
               await operatorWork(work);
             }
+            // The charter's standing decisions; idle while autonomy is switched off.
+            if (!stopping) await autopilot.round();
           }
           lastError = null;
         } catch (error) {

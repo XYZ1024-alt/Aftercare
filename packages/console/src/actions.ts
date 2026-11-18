@@ -2,6 +2,7 @@ import { derivedUuid } from '@aftercare/agent';
 import {
   type AgentRejection,
   agentLimitsSchema,
+  autonomySwitchSchema,
   type CommandOutcome,
   type CommandRejection,
   executionApprovalSchema,
@@ -12,8 +13,12 @@ import {
 } from '@aftercare/contracts';
 import { digestJson, type JsonObject } from '@aftercare/domain';
 import { z } from 'zod';
+import { admitEnvironment, admitNewRun, refuse } from './admission.ts';
+import { startAutonomousRun } from './autonomy/start.ts';
 import { type ConsoleContext, identityOf } from './context.ts';
-import type { ActionResult, Refusal } from './view-model.ts';
+import type { ActionResult } from './view-model.ts';
+
+export { refuse };
 
 // The state-changing operations of a console session. Each one
 //
@@ -48,27 +53,6 @@ const storedResultSchema = z.discriminatedUnion('ok', [
   z.strictObject({ ok: z.literal(false), refusal: refusalSchema }),
 ]);
 
-/** Refusals after which what the operator looked at is no longer what is on record. */
-const STALE_VIEW_CODES = new Set([
-  'revision_conflict',
-  'dependency_not_usable',
-  'execution_not_possible',
-  'execution_scope_rejected',
-  'question_not_answerable',
-  'already_revoked',
-  'illegal_status',
-  'illegal_transition',
-]);
-
-export function refuse(code: string, message: string, detail?: JsonObject): Refusal {
-  return {
-    code,
-    message,
-    recovery: STALE_VIEW_CODES.has(code) ? 'reload_and_review' : 'none',
-    detail: detail ?? {},
-  };
-}
-
 const refused = <T>(code: string, message: string, detail?: JsonObject): ActionResult<T> => ({
   ok: false,
   refusal: refuse(code, message, detail),
@@ -95,6 +79,14 @@ const startInputSchema = z.strictObject({
   limits: z.record(z.string(), z.number().int()).default({}),
   /** Required when a model service outside this machine will be sent case content. */
   acknowledgeDataEgress: z.boolean().default(false),
+  /** Puts the run under the autonomy charter in force: its autopilot starts it and answers for the owner. */
+  autonomous: z.boolean().default(false),
+});
+
+const switchInputSchema = z.strictObject({
+  requestKey: requestKeySchema,
+  enabled: z.boolean(),
+  reason: reasonSchema,
 });
 
 const rerunInputSchema = z.strictObject({
@@ -209,7 +201,7 @@ export function createActions(
   session: OperatorSession,
   options: { readonly takeoverSeconds?: number } = {},
 ) {
-  const { environment, settings, logger, metrics } = context;
+  const { environment, logger, metrics } = context;
   const { service, operations, caseStore, agentStore, store, commands, repairStore } = environment;
   const identity = identityOf(session);
   const { principal } = session;
@@ -305,51 +297,23 @@ export function createActions(
     }
   }
 
-  async function admitNewRun(acknowledgeDataEgress: boolean): Promise<Refusal | null> {
-    const deployment = await operations.readDeployment();
-    if (!deployment.bound || deployment.hold) {
-      return refuse(
-        'deployment_on_hold',
-        'this database was restored from a backup and has not been released; no run can be started',
-      );
-    }
-    if (settings.modelMode === 'unconfigured') {
-      return refuse(
-        'model_unavailable',
-        'no model is configured for this deployment; a run could not be driven',
-      );
-    }
-    if (settings.modelMode === 'live' && !acknowledgeDataEgress) {
-      return refuse(
-        'egress_not_acknowledged',
-        'case content will be sent to the configured model service; this has to be acknowledged before a run starts',
-      );
-    }
-    return null;
-  }
-
   return {
     /** Opens a case for an incident description in the registered environment and queues an agent run on it. */
     submitIncident: (input: JsonObject) =>
       parsed(startInputSchema, input, ({ requestKey, ...request }) =>
         once('submit_incident', requestKey, request, startedSchema, async (claim) => {
-          const sourceEnvironment = await store.readSourceEnvironment();
-          if (request.environment !== sourceEnvironment) {
-            return refused(
-              'environment_not_registered',
-              'the chosen environment is not the registered environment of this deployment',
-            );
-          }
-          const manifest = await store.findLatestCoverageManifest(sourceEnvironment);
-          if (manifest === null) {
-            return refused(
-              'environment_not_eligible',
-              'no coverage declaration is registered for this environment; it cannot be investigated',
-            );
-          }
-          const blocked = await admitNewRun(request.acknowledgeDataEgress);
+          // An autonomous run is admitted under the charter's own acknowledgement, in startAutonomousRun.
+          const blocked =
+            (await admitEnvironment(context, request.environment)) ??
+            (request.autonomous ? null : await admitNewRun(context, request.acknowledgeDataEgress));
           if (blocked !== null) {
             return { ok: false, refusal: blocked };
+          }
+          if (request.autonomous && !(await operations.hasCapability(principal, 'manage_case'))) {
+            return refused(
+              'not_authorized',
+              'placing a case under the autonomy charter needs the manage_case capability',
+            );
           }
           let caseId = claim.caseId;
           if (caseId === null) {
@@ -366,6 +330,21 @@ export function createActions(
           if (existing !== undefined) {
             return { ok: true, value: { caseId, agentRunId: existing.agentRunId }, replayed: true };
           }
+          if (request.autonomous) {
+            const autonomous = await startAutonomousRun(context, {
+              trigger: 'console',
+              requestedBy: principal,
+              description: request.description,
+              caseId,
+            });
+            return autonomous.ok
+              ? {
+                  ok: true,
+                  value: { caseId, agentRunId: autonomous.value.agentRunId },
+                  replayed: false,
+                }
+              : autonomous;
+          }
           const started = await service.forIdentity(identity).start({
             caseId,
             description: request.description,
@@ -377,11 +356,26 @@ export function createActions(
         }),
       ),
 
+    /** Switches autonomy on or off for this deployment (the kill switch). */
+    setAutonomy: (input: JsonObject) =>
+      parsed(switchInputSchema, input, ({ requestKey, ...request }) =>
+        once('set_autonomy', requestKey, request, autonomySwitchSchema, async () => {
+          const changed = await context.autonomy.setSwitch(
+            identity,
+            request.enabled,
+            request.reason,
+          );
+          return changed.ok
+            ? { ok: true, value: changed.value, replayed: false }
+            : fromAgent(changed.rejection);
+        }),
+      ),
+
     /** Starts another agent run on a case whose earlier run has ended (after a stale result, an unresolved end, a failure). */
     startRun: (caseId: string, input: JsonObject) =>
       parsed(rerunInputSchema, input, ({ requestKey, ...request }) =>
         once('start_run', requestKey, { caseId, ...request }, startedSchema, async (claim) => {
-          const blocked = await admitNewRun(request.acknowledgeDataEgress);
+          const blocked = await admitNewRun(context, request.acknowledgeDataEgress);
           if (blocked !== null) {
             return { ok: false, refusal: blocked };
           }

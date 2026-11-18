@@ -255,6 +255,10 @@ const REJECTION_BY_SQLSTATE: Readonly<Record<string, AgentRejectionCode>> = {
   AC204: 'invalid_request',
   AC301: 'not_authorized',
   AC602: 'illegal_status',
+  AC701: 'outside_charter',
+  AC702: 'outside_charter',
+  AC703: 'outside_charter',
+  AC704: 'outside_charter',
 };
 
 const RETENTION_STATEMENT = {
@@ -299,7 +303,7 @@ export interface DeclarationWithStatus {
 }
 
 /** The newest migration this code was written against; readiness compares it with the ledger of the database. */
-export const EXPECTED_LATEST_MIGRATION = '0023_autonomy.sql';
+export const EXPECTED_LATEST_MIGRATION = '0024_promotion.sql';
 
 const operatorWorkSchema = z.strictObject({
   kind: z.enum(['execute_undo', 'verify_undo']),

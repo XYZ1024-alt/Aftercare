@@ -1,5 +1,6 @@
 export * from './actions.ts';
 export * from './admin.ts';
+export * from './autonomy/index.ts';
 export * from './context.ts';
 export * from './daemon.ts';
 export * from './http.ts';
