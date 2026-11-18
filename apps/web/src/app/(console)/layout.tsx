@@ -36,10 +36,10 @@ function TopNav() {
   };
   return (
     <header className="sticky top-0 z-20 bg-canvas/70 backdrop-blur-xl">
-      <div className="mx-auto flex min-h-16 max-w-[1240px] flex-wrap items-center gap-x-5 gap-y-2 px-6 max-md:px-4 max-md:py-2.5">
+      <div className="mx-auto grid min-h-16 max-w-[1240px] grid-cols-[1fr_auto_1fr] items-center gap-x-5 gap-y-2 px-6 max-md:grid-cols-[1fr_auto] max-md:px-4 max-md:py-2.5">
         <Link
           href="/"
-          className="inline-flex items-center gap-2.5 text-base font-semibold tracking-[-0.02em]"
+          className="inline-flex items-center gap-2.5 justify-self-start text-base font-semibold tracking-[-0.02em]"
         >
           <span
             aria-hidden
@@ -52,7 +52,7 @@ function TopNav() {
         <nav
           ref={bar}
           aria-label="主要页面"
-          className="relative flex gap-0.5 rounded-full bg-card p-1 shadow-soft max-md:order-last max-md:w-full max-md:overflow-x-auto"
+          className="relative flex gap-0.5 rounded-full bg-card p-1 shadow-soft max-md:col-span-2 max-md:row-start-2 max-md:overflow-x-auto"
         >
           <SlidingPill pill={pill} className="top-1 h-8 bg-ink" />
           {links.map((link) => {
@@ -70,20 +70,15 @@ function TopNav() {
             );
           })}
         </nav>
-        <div className="ml-auto flex min-w-0 items-center gap-1.5">
+        <div className="flex items-center gap-1.5 justify-self-end">
           <span
-            className="inline-flex min-w-0 items-center gap-2 rounded-full py-1 pr-1 text-meta"
+            className="grid size-8 shrink-0 place-items-center rounded-full bg-violet-wash text-sm font-semibold text-violet-ink uppercase"
+            title={`${session.displayName}（${session.principal}）`}
             data-testid="principal"
           >
-            <span
-              aria-hidden
-              className="grid size-8 shrink-0 place-items-center rounded-full bg-violet-wash text-sm font-semibold text-violet-ink uppercase"
-            >
-              {session.displayName.slice(0, 1)}
-            </span>
-            <span className="min-w-0 truncate max-sm:sr-only">
-              <span className="font-medium text-ink">{session.displayName}</span>
-              <span className="text-muted">（{session.principal}）</span>
+            <span aria-hidden>{session.displayName.slice(0, 1)}</span>
+            <span className="sr-only">
+              {session.displayName}（{session.principal}）
             </span>
           </span>
           <button
