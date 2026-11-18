@@ -17,8 +17,10 @@ import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   type Autopilot,
   createAutopilot,
+  openPromotionStores,
   type PromotionInput,
   type PromotionStep,
+  promoteUnderCharter,
   SIGNATURE_HEADER,
   signBody,
   startAutonomousRun,
@@ -317,6 +319,8 @@ const runEnds = (agentRunId: string, what: string) =>
 
 describe('signed intake', () => {
   it('opens one case per dedupe key, refuses unsigned requests, and does not exist without a secret', async () => {
+    await c.close();
+    c = await openConsoleHarness({ AFTERCARE_INTAKE_SECRET: undefined });
     const unconfigured = await c.api.handle(
       new Request(`${ORIGIN}/api/intake`, { method: 'POST', body: '{}' }),
     );
@@ -392,6 +396,10 @@ describe('recovery and delivery', () => {
       ['escalate', 'recovery'],
     ]);
     expect(view.escalations[0]?.reason).toContain('the charter allows 2');
+    // The same pause is handed over once, however many rounds look at it.
+    await createAutopilot(c.context).round();
+    await createAutopilot(c.context).round();
+    expect((await c.context.autonomy.caseView(caseId)).decisions).toHaveLength(3);
 
     // A person resumes once the service is back; the autopilot carries the rest.
     c.gate.failWith(null);
@@ -621,5 +629,76 @@ describe('who may act under a charter', () => {
       'incident',
     );
     expect(confirmations).toHaveLength(1);
+  });
+});
+
+describe('end to end: from the report to the corrected source', () => {
+  it('five products: the autopilot promotes the sealed repair, the source holds a/d/e repaired and c untouched, the check matches', async () => {
+    const scenario = await fiveProducts(c.h);
+    await registerCharter(c, scenario.policy.policyVersionId);
+    const before = await sourcePrices();
+    const stores = openPromotionStores(c.context, c.env);
+    const { caseId, agentRunId } = await startUnderCharter();
+    const daemon = startWorkerWith(
+      createAutopilot(c.context, { promote: promoteUnderCharter(stores, 'test-worker') }),
+    );
+    try {
+      expect((await runEnds(agentRunId, 'the autonomous run to end'))?.status).toBe(
+        'partially_resolved',
+      );
+      const view = await settledView(
+        caseId,
+        (actions) => actions.includes('deliver'),
+        'the delivery',
+      );
+      const promoted = view.decisions.find((entry) => entry.action === 'promote');
+      expect(promoted).toMatchObject({
+        status: 'applied',
+        outcome: { writes: 3, conclusion: 'matches' },
+      });
+      expect(view.escalations).toEqual([]);
+      const after = await sourcePrices();
+      expect(after).toEqual({ ...before, a: '11000', d: '10000', e: '10000' });
+      expect(after.b).toBe(before.b);
+      expect(after.c).toBe(before.c);
+      // The next round finds nothing left to do: the promotion is not repeated.
+      expect(
+        (
+          await createAutopilot(c.context, {
+            promote: promoteUnderCharter(stores, 'test-worker'),
+          }).round()
+        ).decisions,
+      ).toEqual([]);
+      expect(await sourcePrices()).toEqual(after);
+    } finally {
+      await daemon.stop();
+      await stores.close();
+    }
+  });
+});
+
+async function sourcePrices(): Promise<Record<string, string>> {
+  const { rows } = await c.h.db.migratorPool.query<{ id: string; cents: string }>(
+    'SELECT product_id AS id, price_cents::text AS cents FROM aftercare.products ORDER BY product_id',
+  );
+  return Object.fromEntries(rows.map((row) => [row.id, row.cents]));
+}
+
+describe('the approval window of the charter', () => {
+  it('is measured in whole seconds: two clock readings microseconds apart are not outside the envelope', async () => {
+    const within = async (effective: string, expires: string, seconds: number) =>
+      (
+        await c.h.db.migratorPool.query<{ ok: boolean }>(
+          'SELECT aftercare_control.autonomy_window_within($1::timestamptz, $2::timestamptz, $3) AS ok',
+          [effective, expires, seconds],
+        )
+      ).rows[0]?.ok;
+    const start = '2026-11-18T08:00:00.123456Z';
+    expect(await within(start, '2026-11-18T08:30:00.123456Z', 1800)).toBe(true);
+    // The second clock reading of cmd_approve_execution, a few microseconds later.
+    expect(await within(start, '2026-11-18T08:30:00.123499Z', 1800)).toBe(true);
+    expect(await within(start, '2026-11-18T08:30:00.999999Z', 1800)).toBe(true);
+    expect(await within(start, '2026-11-18T08:30:01.123457Z', 1800)).toBe(false);
+    expect(await within(start, '2026-11-18T08:30:02.000000Z', 1800)).toBe(false);
   });
 });

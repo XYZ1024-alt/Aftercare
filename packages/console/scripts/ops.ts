@@ -1,7 +1,8 @@
+import { randomUUID } from 'node:crypto';
 import { stdin, stdout } from 'node:process';
 import { createInterface } from 'node:readline/promises';
 import { parseArgs } from 'node:util';
-import { CAPABILITIES } from '@aftercare/contracts';
+import { CAPABILITIES, charterSummary } from '@aftercare/contracts';
 import { createAuthorityAdmin, openRolePool, readDatabaseEndpoint } from '@aftercare/storage';
 import {
   checkBeforeMigration,
@@ -11,9 +12,11 @@ import {
 import { fenceAndVerify, restoreDrill, takeBackup } from '../src/backup.ts';
 import { declareCoverage, initialiseDemo } from '../src/demo.ts';
 import {
+  charterDigest,
   deriveCredential,
   openConsoleContext,
   planRetention,
+  readCharterFile,
   readConsoleSettings,
   readiness,
   verificationDocument,
@@ -48,6 +51,13 @@ const USAGE = `aftercare operations (target: AFTERCARE_DATABASE_TARGET, default 
   demo:register --confirm <database>       marks THIS local database as a demonstration environment
   demo:init                                accounts, coverage declaration, policy and business activity for the demo
   demo:reset --confirm <database>          drops and re-migrates a REGISTERED demonstration database
+  charter:register <file> --as <principal> registers an autonomy charter (YAML or JSON) for <principal>, who must
+                                           hold delegate_autonomy and every capability it delegates; its
+                                           sourceEnvironment is set to this database's environment
+  charter:retire <charterId> --as <principal> --reason <text>
+  autonomy:on | autonomy:off --as <principal> --reason <text>
+                                           the kill switch (needs administer_local or delegate_autonomy)
+  autonomy:status                          the switch and the charters in force
 `;
 
 const { positionals, values } = parseArgs({
@@ -109,6 +119,8 @@ async function withContext<T>(
     await context.environment.close();
   }
 }
+
+const OPS_SOURCE = 'local-ops-session';
 
 switch (command) {
   case 'status':
@@ -234,6 +246,55 @@ switch (command) {
       if (!values.apply)
         console.log('\nDry run: nothing was removed. Add --apply to remove exactly these items.');
     });
+    break;
+  case 'charter:register': {
+    const file = need(first, 'a charter file');
+    await withAuthorities(async (admin) => {
+      const body = await readCharterFile(file, {
+        sourceEnvironment: await admin.readSourceEnvironment(),
+      });
+      const record = await admin.registerCharter({
+        registeredBy: { principal: need(values.as, '--as'), source: OPS_SOURCE },
+        charterId: randomUUID(),
+        body,
+        digest: charterDigest(body),
+      });
+      show(charterSummary(record));
+    });
+    break;
+  }
+  case 'charter:retire':
+    await withAuthorities(async (admin) =>
+      show(
+        charterSummary(
+          await admin.retireCharter(
+            need(first, 'a charter id'),
+            { principal: need(values.as, '--as'), source: OPS_SOURCE },
+            need(values.reason, '--reason'),
+          ),
+        ),
+      ),
+    );
+    break;
+  case 'autonomy:on':
+  case 'autonomy:off':
+    await withContext(async (context) => {
+      const changed = await context.autonomy.setSwitch(
+        { principal: need(values.as, '--as'), source: OPS_SOURCE },
+        command === 'autonomy:on',
+        need(values.reason, '--reason'),
+      );
+      if (!changed.ok) fail(`refused: ${changed.rejection.code}: ${changed.rejection.message}`);
+      show(changed.value);
+    });
+    break;
+  case 'autonomy:status':
+    await withContext(async (context) =>
+      show({
+        switch: await context.autonomy.readSwitch(),
+        charters: (await context.autonomy.chartersInForce()).map(charterSummary),
+      }),
+    );
     break;
   case 'demo:register': {
     if (values.confirm !== database)

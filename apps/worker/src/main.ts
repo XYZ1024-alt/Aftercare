@@ -1,4 +1,4 @@
-import { modelOf, openConsoleContext, startDaemon } from '@aftercare/console';
+import { modelOf, openConsoleContext, startAutonomousDaemon } from '@aftercare/console';
 import { probeDatabase } from '@aftercare/storage';
 
 // The worker process: the one Agent of this local deployment. It drives
@@ -27,7 +27,8 @@ if (model === null) {
   });
 }
 
-const daemon = startDaemon(context, model);
+// The promoter login exists in this process only: the console never writes the source.
+const worker = startAutonomousDaemon(context, model, process.env);
 let stopping = false;
 
 function shutDown(signal: NodeJS.Signals): void {
@@ -38,8 +39,8 @@ function shutDown(signal: NodeJS.Signals): void {
   logger.info('worker.signal', { signal });
   // The step in flight finishes or fails under its own protocol; then the
   // lease is handed back and the pools are closed, and the process exits on its own.
-  daemon
-    .stop()
+  worker
+    .close()
     .then(() => context.environment.close())
     .then(
       () => logger.info('worker.exited'),

@@ -404,7 +404,8 @@ export function createAutopilot(
       (decision) => decision.action === 'resume' && decision.status === 'applied',
     ).length;
     const verdict = recoveryVerdict(charter.body.recovery, run.statusReason, resumes, run.limits);
-    const pause = `pause:${run.updatedAt}`;
+    const pauseSeq = (await autonomy.pauseOf(run.agentRunId)) ?? run.updatedAt;
+    const pause = `pause:${pauseSeq}`;
     const input = { pauseReason: run.statusReason, resumesSoFar: resumes };
     if (verdict.action === 'escalate')
       return [escalation(pause, 'recovery', verdict.reason, input)];
@@ -426,7 +427,7 @@ export function createAutopilot(
     };
     if (verdict.action === 'resume') return [resume];
     const topUp: Plan = {
-      subject: `budget:${run.updatedAt}`,
+      subject: `budget:${pauseSeq}`,
       action: 'top_up',
       rule: 'recovery',
       input: { ...input, from: { ...run.limits }, to: { ...verdict.limits } },
@@ -633,7 +634,8 @@ export function createAutopilot(
       }
     } else if (
       (kind === 'pause' || kind === 'budget') &&
-      (run.status !== 'paused' || id !== run.updatedAt)
+      (run.status !== 'paused' ||
+        id !== ((await autonomy.pauseOf(run.agentRunId)) ?? run.updatedAt))
     ) {
       settled = { applied: true, outcome: { replayed: true, runStatus: run.status } };
     }

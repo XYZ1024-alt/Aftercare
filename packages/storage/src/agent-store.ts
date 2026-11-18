@@ -7,11 +7,15 @@ import {
   type AgentRejectionCode,
   type AgentRun,
   type AgentToolCall,
+  type AutonomyCharterRecord,
+  type AutonomyEnrollment,
   agentEventSchema,
   agentModelRequestSchema,
   agentQuestionSchema,
   agentRunSchema,
   agentToolCallSchema,
+  autonomyCharterRecordSchema,
+  autonomyEnrollmentSchema,
   type CaseCommandType,
   type CommandOutcome,
   HYPOTHESIS_STANDINGS,
@@ -40,6 +44,13 @@ import { commandResponseSchema, settleCommand } from './command-outcome.ts';
  * There is no statement here that sets a status, a counter or an answer.
  */
 const AGENT_STATEMENTS = {
+  autonomy: `
+    SELECT jsonb_build_object(
+             'enrollment', aftercare_control.autonomy_enrollment_json(e),
+             'charter', aftercare_control.autonomy_charter_json(c)) AS document
+      FROM aftercare_control.autonomy_enrollments AS e
+      JOIN aftercare_control.autonomy_charters AS c ON c.charter_id = e.charter_id
+     WHERE e.agent_run_id = $1`,
   start: 'SELECT aftercare_control.agent_start_run($1, $2, $3, $4, $5, $6::jsonb, $7) AS document',
   control: 'SELECT aftercare_control.agent_control($1, $2, $3, $4, $5) AS document',
   answer: 'SELECT aftercare_control.agent_answer_question($1, $2, $3, $4::jsonb) AS document',
@@ -411,6 +422,11 @@ export interface AgentStore {
 
   // ── Reads ──
   readonly findRun: (agentRunId: string) => Promise<AgentRun | null>;
+  /** The charter a run was enrolled under, if an autopilot answers for it (stage nine). */
+  readonly findAutonomy: (agentRunId: string) => Promise<{
+    readonly enrollment: AutonomyEnrollment;
+    readonly charter: AutonomyCharterRecord;
+  } | null>;
   readonly listRunsOfCase: (caseId: string) => Promise<AgentRun[]>;
   /** Runs a worker may have something to do for: queued, running, or waiting on questions that may have lapsed. */
   readonly listRunnable: (limit: number) => Promise<AgentRun[]>;
@@ -696,6 +712,15 @@ export function createAgentStore(pool: Pool): AgentStore {
       entry('finishRun', [...fenceOf(fence), claim, JSON.stringify(detail)], finishRunSchema),
 
     findRun: (agentRunId) => first('run', [agentRunId], agentRunSchema),
+    findAutonomy: (agentRunId) =>
+      first(
+        'autonomy',
+        [agentRunId],
+        z.strictObject({
+          enrollment: autonomyEnrollmentSchema,
+          charter: autonomyCharterRecordSchema,
+        }),
+      ),
     listRunsOfCase: (caseId) => documents('runsOfCase', [caseId], agentRunSchema),
     listRunnable: (limit) => documents('runnable', [limit], agentRunSchema),
     listEvents: (agentRunId, afterSeq, limit) =>
