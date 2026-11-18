@@ -1,5 +1,6 @@
 import { CONTROLLED_WRITE_LOCK } from '@aftercare/domain';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { reviewedSchemaVersion } from '../src/admin/index.ts';
 import { createRoleClient, withSnapshotSession } from '../src/index.ts';
 import {
   consistentAt,
@@ -73,7 +74,7 @@ describe('consistent snapshot protocol', () => {
       },
     });
     expect(snapshot.schemaName).toBe(`aftercare_snap_${snapshot.snapshotId.replaceAll('-', '')}`);
-    expect(snapshot.versions.schema).toMatch(/^0022_console\.sql@[0-9a-f]{16}$/);
+    expect(snapshot.versions.schema).toBe(await reviewedSchemaVersion());
     expect(snapshot.scope.map((table) => table.table)).toEqual([
       'products',
       'orders',

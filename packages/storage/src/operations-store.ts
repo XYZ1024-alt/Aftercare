@@ -299,7 +299,7 @@ export interface DeclarationWithStatus {
 }
 
 /** The newest migration this code was written against; readiness compares it with the ledger of the database. */
-export const EXPECTED_LATEST_MIGRATION = '0022_console.sql';
+export const EXPECTED_LATEST_MIGRATION = '0023_autonomy.sql';
 
 const operatorWorkSchema = z.strictObject({
   kind: z.enum(['execute_undo', 'verify_undo']),

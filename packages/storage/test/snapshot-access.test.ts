@@ -311,6 +311,7 @@ describe('published snapshot: who can do what', () => {
       ['approval_json', ['aftercare_runtime', 'aftercare_verifier']],
       ['artefact_json', ['aftercare_runtime']],
       ['attempt_json', ['aftercare_runtime']],
+      ['autonomy_enabled', ['aftercare_runtime']],
       ['branch_json', ['aftercare_runtime', 'aftercare_verifier']],
       ['confirmation_json', ['aftercare_runtime', 'aftercare_verifier']],
       ['contract_json', ['aftercare_runtime', 'aftercare_verifier']],

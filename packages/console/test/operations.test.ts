@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { fiveProducts } from '@aftercare/agent/testing';
 import { createCaseExecutor } from '@aftercare/execution';
 import { createAuthorityAdmin, createExecutorStore, openRolePool } from '@aftercare/storage';
-import { resetRegisteredDemoDatabase } from '@aftercare/storage/admin';
+import { resetRegisteredDemoDatabase, reviewedSchemaVersion } from '@aftercare/storage/admin';
 import { recreateTestDatabase } from '@aftercare/storage/testing';
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { restoreDrill, takeBackup } from '../src/backup.ts';
@@ -368,7 +368,7 @@ describe('backup and restore', () => {
     const backup = await takeBackup(c.env);
     expect(backup).toMatchObject({
       database: process.env.AFTERCARE_TEST_DATABASE,
-      latestMigration: '0022_console.sql',
+      latestMigration: (await reviewedSchemaVersion()).split('@')[0],
     });
     expect((await stat(join(c.context.settings.backupDirectory, backup.file))).size).toBe(
       backup.bytes,
