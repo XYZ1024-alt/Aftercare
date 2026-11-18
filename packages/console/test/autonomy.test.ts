@@ -17,8 +17,10 @@ import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   type Autopilot,
   createAutopilot,
+  openPromotionStores,
   type PromotionInput,
   type PromotionStep,
+  promoteUnderCharter,
   SIGNATURE_HEADER,
   signBody,
   startAutonomousRun,
@@ -623,3 +625,55 @@ describe('who may act under a charter', () => {
     expect(confirmations).toHaveLength(1);
   });
 });
+
+describe('end to end: from the report to the corrected source', () => {
+  it('five products: the autopilot promotes the sealed repair, the source holds a/d/e repaired and c untouched, the check matches', async () => {
+    const scenario = await fiveProducts(c.h);
+    await registerCharter(c, scenario.policy.policyVersionId);
+    const before = await sourcePrices();
+    const stores = openPromotionStores(c.context, c.env);
+    const { caseId, agentRunId } = await startUnderCharter();
+    const daemon = startWorkerWith(
+      createAutopilot(c.context, { promote: promoteUnderCharter(stores, 'test-worker') }),
+    );
+    try {
+      expect((await runEnds(agentRunId, 'the autonomous run to end'))?.status).toBe(
+        'partially_resolved',
+      );
+      const view = await settledView(
+        caseId,
+        (actions) => actions.includes('deliver'),
+        'the delivery',
+      );
+      const promoted = view.decisions.find((entry) => entry.action === 'promote');
+      expect(promoted).toMatchObject({
+        status: 'applied',
+        outcome: { writes: 3, conclusion: 'matches' },
+      });
+      expect(view.escalations).toEqual([]);
+      const after = await sourcePrices();
+      expect(after).toEqual({ ...before, a: '11000', d: '10000', e: '10000' });
+      expect(after.b).toBe(before.b);
+      expect(after.c).toBe(before.c);
+      // The next round finds nothing left to do: the promotion is not repeated.
+      expect(
+        (
+          await createAutopilot(c.context, {
+            promote: promoteUnderCharter(stores, 'test-worker'),
+          }).round()
+        ).decisions,
+      ).toEqual([]);
+      expect(await sourcePrices()).toEqual(after);
+    } finally {
+      await daemon.stop();
+      await stores.close();
+    }
+  });
+});
+
+async function sourcePrices(): Promise<Record<string, string>> {
+  const { rows } = await c.h.db.migratorPool.query<{ id: string; cents: string }>(
+    'SELECT product_id AS id, price_cents::text AS cents FROM aftercare.products ORDER BY product_id',
+  );
+  return Object.fromEntries(rows.map((row) => [row.id, row.cents]));
+}

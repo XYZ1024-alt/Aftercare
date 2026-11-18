@@ -1,4 +1,11 @@
-import { modelOf, openConsoleContext, startDaemon } from '@aftercare/console';
+import {
+  createAutopilot,
+  modelOf,
+  openConsoleContext,
+  openPromotionStores,
+  promoteUnderCharter,
+  startDaemon,
+} from '@aftercare/console';
 import { probeDatabase } from '@aftercare/storage';
 
 // The worker process: the one Agent of this local deployment. It drives
@@ -27,7 +34,13 @@ if (model === null) {
   });
 }
 
-const daemon = startDaemon(context, model);
+// The promoter login exists in this process only: the console never writes the source.
+const promotion = openPromotionStores(context, process.env);
+const daemon = startDaemon(context, model, {
+  autopilot: createAutopilot(context, {
+    promote: promoteUnderCharter(promotion, context.settings.worker.id),
+  }),
+});
 let stopping = false;
 
 function shutDown(signal: NodeJS.Signals): void {
@@ -40,7 +53,7 @@ function shutDown(signal: NodeJS.Signals): void {
   // lease is handed back and the pools are closed, and the process exits on its own.
   daemon
     .stop()
-    .then(() => context.environment.close())
+    .then(() => Promise.all([promotion.close(), context.environment.close()]))
     .then(
       () => logger.info('worker.exited'),
       (error: Error) => {
