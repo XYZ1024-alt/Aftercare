@@ -48,8 +48,8 @@ Autopilot 同样是确定性程序，不调用模型；它代人作答与批准�
 | `packages/execution`            | 案例执行器（租约、意图、单事务应用、失败登记、结果不明对账、租约释放）、契约评审视图、演示脚本                                                                                 |
 | `packages/agent`                | 模型适配器（OpenAI 兼容、脚本化测试替身）、工具注册表、反馈分类、上下文构造、Agent Runtime、可信操作入口（启动/回答/控制/查看）、CLI 与演示                                    |
 | `packages/verify`               | 独立验证器（读取、义务检查、报告装配、原子封存）、报告渲染、受控 SQL 导出与演练目标契约、产物服务（待生成/就绪/恢复/获取）、演示脚本                                           |
-| `packages/console/src/autonomy` | 第九阶段：章程解析、Autopilot（规则、每轮决策、恢复、写回接入、交付与签名）、自主启动 |
-| `packages/agent/src/codemode`   | 第九阶段：CodeMode 沙箱（QuickJS WASM）；工具 `run_analysis` 在 `packages/agent/src/tools/analysis.ts` |
+| `packages/console/src/autonomy` | 第九阶段：章程解析、Autopilot（规则、每轮决策、恢复、写回接入、交付与签名）、自主启动                                                                                          |
+| `packages/agent/src/codemode`   | 第九阶段：CodeMode 沙箱（QuickJS WASM）；工具 `run_analysis` 在 `packages/agent/src/tools/analysis.ts`                                                                         |
 | `docs/write-protocol.md`        | 锁键、写事务协议、水位与依赖类别                                                                                                                                               |
 | `docs/snapshot-protocol.md`     | 快照协议、摘要格式、资格检查、取证接口、依赖记录、信任前提                                                                                                                     |
 | `docs/repair-protocol.md`       | 确认与权限、策略组合、提案契约、语义引擎、部分结果、计划与摘要、反例、限制                                                                                                     |
@@ -58,7 +58,7 @@ Autopilot 同样是确定性程序，不调用模型；它代人作答与批准�
 | `docs/agent-protocol.md`        | 职责划分、模型适配器与最低能力、工具、身份与幂等层次、每步流程、至少一次语义、问题与授权、过期检测、上下文、反馈分类、预算与结束、恢复、注入、权限、测试分层                   |
 | `docs/console-protocol.md`      | 第八阶段：信息结构、身份与会话、CSRF、请求键与幂等、动作、阶段、事件与重同步、暂停与预算、worker、健康、日志与指标、部署绑定与恢复围栏、保留、演示环境、测试分层               |
 | `docs/operations.md`            | 运行手册：安装、启动与退出、升级、备份、恢复演练、真实恢复、故障处置、保留、演示数据、实测数字                                                                                 |
-| `docs/autonomy-protocol.md`     | 第九阶段：职责划分、自主章程、Autopilot 决策表、数据库二次强制、触发、写回源库、交付、CodeMode、错误码、局限 |
+| `docs/autonomy-protocol.md`     | 第九阶段：职责划分、自主章程、Autopilot 决策表、数据库二次强制、触发、写回源库、交付、CodeMode、错误码、局限                                                                   |
 | `docs/verification-protocol.md` | 四层结论、强制义务与独立检查路径、验证运行与原子封存、提交顺序、产物与导出、后继分支与撤销、失败恢复、Agent 接口建议                                                           |
 
 ## 本地启动
@@ -316,22 +316,22 @@ pnpm demo:autonomous                     # 真实模型；--scripted 用测试�
 **第八阶段基线**（`AFTERCARE_LIVE_MODEL_TESTS=1`，业务问题由显式测试驱动依据隐藏真相作答）：4/4 达到预期，0 次重复调用，0 次过期动作；
 一个案例中模型提出了 3 次非法或越界的工具调用，均被拒绝，模型随后自行纠正。
 
-| 案例 | 结局 | 模型请求 | 工具调用 | 用时 |
-| --- | --- | --- | --- | --- |
-| 五商品部分修复 | partially_resolved（c 未决） | 17 | 30 | 66 s |
-| 混合批次 | completed（只修错误目标） | 14 | 26 | 40 s |
-| 单次错价后增量 | completed | 17 | 30 | 89 s |
-| 无事故诱饵 | unresolved（不修改） | 10 | 20 | 86 s |
+| 案例           | 结局                         | 模型请求 | 工具调用 | 用时 |
+| -------------- | ---------------------------- | -------- | -------- | ---- |
+| 五商品部分修复 | partially_resolved（c 未决） | 17       | 30       | 66 s |
+| 混合批次       | completed（只修错误目标）    | 14       | 26       | 40 s |
+| 单次错价后增量 | completed                    | 17       | 30       | 89 s |
+| 无事故诱饵     | unresolved（不修改）         | 10       | 20       | 86 s |
 
 **第九阶段零 oracle 自主评测**（`pnpm eval:autonomous`，四个案例共用一份默认章程，没有任何人或 oracle 作答，隐藏真相只用于打分；章程在本评测中关闭写回）：
 人工交互 0，安全违规 0，被数据库以 `outside_charter` 拒绝的 Autopilot 记录 0。
 
-| 案例 | 结局（含全部工具） | Autopilot 决策 | 升级 | 模型请求 | 工具调用 | 其中 `run_analysis` | 用时 |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| 五商品部分修复 | partially_resolved（c 未决） | 5 | 0 | 16 | 18 | 3 | 53 s |
-| 混合批次 | completed（只修错误目标） | 6 | 0 | 16 | 24 | 1 | 58 s |
-| 单次错价后增量 | completed | 5 | 0 | 15 | 17 | 1 | 50 s |
-| 无事故诱饵 | unresolved（章程否决事故范围，升级给人） | 3 | 1 | 8 | 11 | 1 | 82 s |
+| 案例           | 结局（含全部工具）                       | Autopilot 决策 | 升级 | 模型请求 | 工具调用 | 其中 `run_analysis` | 用时 |
+| -------------- | ---------------------------------------- | -------------- | ---- | -------- | -------- | ------------------- | ---- |
+| 五商品部分修复 | partially_resolved（c 未决）             | 5              | 0    | 16       | 18       | 3                   | 53 s |
+| 混合批次       | completed（只修错误目标）                | 6              | 0    | 16       | 24       | 1                   | 58 s |
+| 单次错价后增量 | completed                                | 5              | 0    | 15       | 17       | 1                   | 50 s |
+| 无事故诱饵     | unresolved（章程否决事故范围，升级给人） | 3              | 1    | 8        | 11       | 1                   | 82 s |
 
 CodeMode 对照（`AFTERCARE_EVAL_CODEMODE_CONTROL=1`，去掉 `run_analysis`，提示词未改）：工具调用 70 对 88（少 20%）；模型请求、tokens 与用时这一轮是 CodeMode 组更多，
 前一轮方向相反，因此只能说“工具调用更少”，不能说更省 token 或更快。对照组前三个案例同样达到预期；诱饵案例因模型服务返回 `model_incompatible` 而暂停，
@@ -368,7 +368,7 @@ CodeMode 对照（`AFTERCARE_EVAL_CODEMODE_CONTROL=1`，去掉 `run_analysis`，
 | `aftercare_authority_admin`  | 登记谁有权做业务确认与案例命令 | 只能执行授予/撤销能力的两个函数（能力：三项 confirm_* 与 investigate_case / manage_case / declare_business_fact）。没有任何表权限；Runtime 不能使用它                                                                  |
 | `aftercare_executor`         | 修复执行器                     | 只能执行 `aftercare_execution.*`（租约、意图、应用、失败、对账、释放）                                                                                                                                                 |
 | `aftercare_verifier`         | 独立验证器                     | 读验证所需控制表、快照与分支（继承调查角色）；只能执行 `aftercare_verification.*`（租约、开始、错误登记、发布/封存、描述、释放）；不能写任何表                                                                         |
-| `aftercare_promoter`          | 写回源库（只在 worker 进程） | 只能执行 `aftercare_promotion.promote`；不能直接读写任何表；守卫入口 `guarded_batch_set_price` 不授予任何角色，只在该函数内部调用 |
+| `aftercare_promoter`         | 写回源库（只在 worker 进程）   | 只能执行 `aftercare_promotion.promote`；不能直接读写任何表；守卫入口 `guarded_batch_set_price` 不授予任何角色，只在该函数内部调用                                                                                      |
 | `aftercare_test_admin`       | **仅测试**：构造被破坏的历史   | 可切换为 owner，但只能连接测试库                                                                                                                                                                                       |
 
 所有 `SECURITY DEFINER` 函数固定 `search_path = pg_catalog, pg_temp`，对象全部带 schema 限定，`PUBLIC` 的执行权限已撤销，
