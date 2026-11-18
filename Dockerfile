@@ -38,6 +38,14 @@ FROM deps AS build
 COPY . .
 RUN pnpm build:web
 
+# ModelScope Studio displays the console inside an iframe on modelscope.cn.
+# Only this build carries that exception; the ordinary runtime keeps refusing
+# to be framed.
+FROM deps AS build-studio
+ENV AFTERCARE_CONSOLE_FRAME_ANCESTORS="https://modelscope.cn https://www.modelscope.cn"
+COPY . .
+RUN pnpm build:web
+
 FROM base AS runtime
 ENV NODE_ENV=production
 # Used by docker/init.sh to inspect the database before seeding the demo.
@@ -60,7 +68,8 @@ CMD ["pnpm", "--filter", "@aftercare/web", "exec", "next", "start", "--hostname"
 FROM postgres:17-bookworm AS studio
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \
-    AFTERCARE_STUDIO_ROOT=/mnt/workspace/aftercare
+    AFTERCARE_STUDIO_ROOT=/mnt/workspace/aftercare \
+    AFTERCARE_CONSOLE_FRAME_ANCESTORS="https://modelscope.cn https://www.modelscope.cn"
 RUN groupadd --gid 1000 node \
  && useradd --uid 1000 --gid 1000 --create-home --shell /bin/sh node
 COPY --from=base /usr/local/bin/node /usr/local/bin/node
@@ -68,7 +77,7 @@ COPY --from=base /usr/local/bin/pnpm /usr/local/bin/pnpm
 COPY --from=base /usr/local/bin/pnpx /usr/local/bin/pnpx
 COPY --from=base /usr/local/lib/node_modules/pnpm /usr/local/lib/node_modules/pnpm
 WORKDIR /app
-COPY --from=build --chown=1000:1000 /app /app
+COPY --from=build-studio --chown=1000:1000 /app /app
 RUN chmod +x /app/docker/studio-start.sh
 EXPOSE 7860
 CMD ["/app/docker/studio-start.sh"]
