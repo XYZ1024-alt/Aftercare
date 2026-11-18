@@ -26,6 +26,7 @@ import {
 } from '../ui.tsx';
 import { UntrustedText } from '../untrusted-text.tsx';
 import { useCase, useCaseAction } from './case-context.tsx';
+import { Promotions } from './promotion.tsx';
 
 const LAYER: Readonly<Record<string, string>> = {
   input_sufficiency: '输入充分性',
@@ -520,6 +521,7 @@ export function Results() {
   const reports = [...view.reports].reverse();
   return (
     <>
+      <Promotions />
       <Card
         title="验证报告"
         description="由独立验证器发布并封存。"

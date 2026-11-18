@@ -33,6 +33,7 @@ export function AutonomyBadge() {
   const enrollment = autonomy.enrollments.at(-1);
   if (enrollment === undefined) return null;
   const waiting = autonomy.escalations.filter((escalation) => escalation.open).length;
+  const promoted = view.promotion.promotions.some((promotion) => promotion.status === 'applied');
   const { charter } = autonomy;
   return (
     <>
@@ -45,6 +46,11 @@ export function AutonomyBadge() {
       {waiting > 0 && (
         <Pill tone="apricot" testId="autonomy-waiting">
           待人处理 {waiting}
+        </Pill>
+      )}
+      {promoted && (
+        <Pill tone="mint" testId="promotion-applied">
+          已写回源库
         </Pill>
       )}
     </>

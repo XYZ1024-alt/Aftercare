@@ -302,3 +302,16 @@ export const subjectLabel = (subject: string): string => {
       return subject;
   }
 };
+
+export const PROMOTION_STATUS_LABEL: Readonly<Record<'applied' | 'drift_refused', string>> = {
+  applied: '已写回源库',
+  drift_refused: '源库已变化，未写入',
+};
+
+export const PROMOTION_CHECK_LABEL: Readonly<
+  Record<'matches' | 'superseded_by_later_write' | 'mismatch', string>
+> = {
+  matches: '源库与写回一致',
+  superseded_by_later_write: '写回后源库又有合法变更',
+  mismatch: '不一致',
+};
