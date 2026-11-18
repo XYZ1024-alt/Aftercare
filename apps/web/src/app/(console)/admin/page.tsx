@@ -1,9 +1,15 @@
 'use client';
 
-import type { ActionResult, AdminView, RetentionReport } from '@aftercare/console/client';
+import type {
+  ActionResult,
+  AdminView,
+  AutonomySwitch,
+  RetentionReport,
+} from '@aftercare/console/client';
 import {
   Activity,
   ArchiveRestore,
+  Bot,
   Camera,
   ChartLine,
   Cpu,
@@ -26,6 +32,8 @@ import {
   Card,
   Dot,
   Empty,
+  Field,
+  INPUT_CLASS,
   Json,
   Loading,
   MetricCard,
@@ -38,9 +46,11 @@ import {
   Table,
   Technical,
 } from '../../../components/ui.tsx';
+import { UntrustedText } from '../../../components/untrusted-text.tsx';
 import { getJson, refusalOfError, sendJson } from '../../../lib/api.ts';
+import { charterEnvelope, useAutonomyStatus } from '../../../lib/autonomy.ts';
 import { type Tone, when } from '../../../lib/labels.ts';
-import { useSession } from '../../../lib/session.tsx';
+import { useAction, useCan, useSession } from '../../../lib/session.tsx';
 
 type Words = Readonly<Record<string, readonly [Tone, string]>>;
 
@@ -118,6 +128,108 @@ function StatusRow({
         {detail !== undefined && <span className="block text-xs text-muted">{detail}</span>}
       </span>
     </li>
+  );
+}
+
+/** The autonomy kill switch and the charters in force. */
+function AutonomyCard() {
+  const { data, error, mutate } = useAutonomyStatus();
+  const [reason, setReason] = useState('');
+  const canAdminister = useCan('administer_local');
+  const canDelegate = useCan('delegate_autonomy');
+  const toggle = useAction<AutonomySwitch>('/api/admin/autonomy', (result) => {
+    if (result.ok) {
+      setReason('');
+      void mutate();
+    }
+  });
+
+  if (data === undefined) {
+    const refusal = refusalOfError(error);
+    return (
+      <Card title="自主模式" icon={Bot} testId="autonomy-admin">
+        {refusal === null ? (
+          <Loading />
+        ) : (
+          <Notice tone="rose">
+            无法读取自主模式（{refusal.code}）：{refusal.message}
+          </Notice>
+        )}
+      </Card>
+    );
+  }
+  const { switch: autonomy, charters } = data;
+  const enabled = autonomy.enabled;
+
+  return (
+    <Card title="自主模式" icon={Bot} tone={enabled ? 'mint' : 'neutral'} testId="autonomy-admin">
+      <div className="space-y-5">
+        <div className="space-y-2 text-sm">
+          <div className="flex flex-wrap items-center gap-3">
+            <Pill tone={enabled ? 'mint' : 'rose'}>{enabled ? '已开启' : '已关闭'}</Pill>
+            {autonomy.changedBy !== null && (
+              <span className="text-meta text-muted">
+                {autonomy.changedBy} · {when(autonomy.changedAt)}
+              </span>
+            )}
+          </div>
+          {autonomy.changedBy !== null && autonomy.reason !== null && (
+            <p className="text-meta text-ink-soft">
+              <UntrustedText text={autonomy.reason} />
+            </p>
+          )}
+        </div>
+
+        {charters.length === 0 ? (
+          <Empty>没有生效的章程。</Empty>
+        ) : (
+          <ul className={ROWS_CLASS}>
+            {charters.map((charter) => (
+              <li key={charter.charterId} className="text-sm">
+                <div className="flex flex-wrap items-baseline gap-x-2">
+                  <span className="font-medium">{charter.name}</span>
+                  <span className="text-xs text-muted">r{charter.revision}</span>
+                </div>
+                <p className="mt-1 break-all text-meta text-ink-soft">
+                  {charter.autopilotPrincipal}
+                </p>
+                <p className="mt-1 text-meta text-muted">
+                  委托能力 {charter.delegated.length} 项 ·{' '}
+                  {charter.deliveryWebhook ? '推送 webhook' : '不推送'}
+                </p>
+                <p className="mt-1 text-meta text-ink-soft">{charterEnvelope(charter)}</p>
+                <Technical>
+                  <p>charterId：{charter.charterId}</p>
+                  <p>digest：{charter.digest}</p>
+                </Technical>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        {(canAdminister || canDelegate) && (
+          <div className="space-y-3 border-line border-t pt-4">
+            <Field label="原因">
+              <input
+                className={INPUT_CLASS}
+                value={reason}
+                placeholder="记录这次切换的原因"
+                onChange={(event) => setReason(event.target.value)}
+              />
+            </Field>
+            <Button
+              tone={enabled ? 'danger' : 'primary'}
+              pending={toggle.pending}
+              disabled={reason.trim() === ''}
+              onClick={() => void toggle.run({ enabled: !enabled, reason })}
+            >
+              {enabled ? '关闭自主模式' : '开启自主模式'}
+            </Button>
+            <RefusalNote refusal={toggle.refusal} />
+          </div>
+        )}
+      </div>
+    </Card>
   );
 }
 
@@ -270,6 +382,8 @@ export default function AdminPage() {
             </dl>
           </Card>
         </div>
+
+        <AutonomyCard />
 
         <div className="grid grid-cols-2 gap-4 max-lg:grid-cols-1">
           <Card title="Worker" icon={HeartPulse} tone="mint">
