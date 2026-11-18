@@ -1,3 +1,4 @@
+import type { AgentRun } from '@aftercare/contracts';
 import { collect } from '@aftercare/repair/testing';
 import {
   type ContextOptions,
@@ -6,14 +7,16 @@ import {
   type ModelPricing,
   runCost,
 } from '../src/index.ts';
-import type { EvaluationCase } from './eval-cases.ts';
-import { createOperatorOracle } from './oracle.ts';
+import type { EvaluationCase, EvaluationSetup } from './eval-cases.ts';
+import { createOperatorOracle, type OracleAnswer } from './oracle.ts';
 import { type AgentHarness, APPROVER, OPERATOR, trace } from './support.ts';
 
-// One evaluation case, run once: a model drives the run, an explicit test
-// driver answers from the hidden truth of the case, and what happened is
-// read back from the records. Shared by the live-model evaluation and by the
-// comparison of the two context profiles.
+// One evaluation case, run once: a model drives the run, a DRIVER stands for
+// the business side — by default the explicit test driver answering from the
+// hidden truth of the case, or the autopilot of a charter — and what happened
+// is read back from the records. Shared by the live-model evaluation, the
+// comparison of the two context profiles and the autonomous evaluation; the
+// scoring and the safety invariants below exist once, whoever answered.
 //
 // A record states raw observations. Whether they add up to "better" is not
 // decided here, and one run per case is a sample, not a rate.
@@ -23,13 +26,56 @@ export type EvaluationArm = NonNullable<ContextOptions['profile']>;
 /** A change made to the case from outside while the run waits, to see whether stale work is noticed. */
 export type Interference = 'none' | 'new_evidence_before_first_approval';
 
+export type RunLimits = { readonly maxModelRequests: number; readonly maxToolCalls: number };
+
+/** Who stands for the business side of one evaluation run. */
+export interface EvaluationDriver {
+  readonly kind: 'oracle' | 'autopilot';
+  /** Opens the run of the case (and the case itself). */
+  readonly start: (description: string, limits: RunLimits) => Promise<AgentRun>;
+  /** One round for a run that waits for input or is paused: answer, decide, resume — or leave it to a person. */
+  readonly respond: (run: AgentRun) => Promise<void>;
+  /** The principals whose approvals are legitimate. An approval by anyone else is a violation. */
+  readonly approvers: readonly string[];
+  /** What the business side decided, in order. */
+  readonly answers: () => readonly OracleAnswer[];
+  /** Answers given by a person, or by a test driver standing in for one. */
+  readonly humanInteractions: () => number;
+}
+
+/** The default driver: the explicit test driver answering from the hidden truth, as two human identities. */
+export function oracleDriver(h: AgentHarness, setup: EvaluationSetup): EvaluationDriver {
+  const oracle = createOperatorOracle({
+    service: h.service,
+    business: OPERATOR,
+    approver: APPROVER,
+    truth: setup.truth,
+  });
+  return {
+    kind: 'oracle',
+    start: (description, limits) => h.start(description, limits),
+    respond: async (run) => {
+      // A paused run is left as it is: resuming it is a person's decision.
+      if (run.status !== 'awaiting_input') return;
+      for (const question of await h.agentStore.listQuestions(run.agentRunId)) {
+        if (question.state === 'open') await oracle.answer(question);
+      }
+    },
+    approvers: [APPROVER.principal],
+    answers: () => oracle.log(),
+    humanInteractions: () => oracle.log().length,
+  };
+}
+
 export interface EvaluationOptions {
   readonly arm: EvaluationArm;
   readonly interference: Interference;
   readonly pricing: ModelPricing | null;
   readonly leaseTtlSeconds: number;
-  readonly limits: { readonly maxModelRequests: number; readonly maxToolCalls: number };
+  readonly limits: RunLimits;
   readonly maxRounds: number;
+  /** Builds the driver from what the case set up. Omitted: oracleDriver. */
+  readonly driver?: (setup: EvaluationSetup) => EvaluationDriver;
 }
 
 /** Refusals that mean "this was built on something that no longer holds". Each one was caught by a guard. */
@@ -49,14 +95,10 @@ export async function runEvaluationCase(
   model: ModelAdapter,
   options: EvaluationOptions,
 ) {
-  const { truth, expected } = await evaluation.setup(h);
-  const run = await h.start(evaluation.description, options.limits);
-  const oracle = createOperatorOracle({
-    service: h.service,
-    business: OPERATOR,
-    approver: APPROVER,
-    truth,
-  });
+  const setup = await evaluation.setup(h);
+  const { truth, expected } = setup;
+  const driver = (options.driver ?? ((built) => oracleDriver(h, built)))(setup);
+  const run = await driver.start(evaluation.description, options.limits);
   const worker = h.worker(model, {
     leaseTtlSeconds: options.leaseTtlSeconds,
     context: { ...DEFAULT_CONTEXT_OPTIONS, profile: options.arm },
@@ -65,30 +107,40 @@ export async function runEvaluationCase(
   let ended = run;
   let wallMs = 0;
   let interfered = false;
+  /** The driver left a waiting or paused run as it was: it is a person's now. */
+  let escalated = false;
   for (let round = 0; round < options.maxRounds; round += 1) {
     const started = Date.now();
     ended = (await worker.drive(run.agentRunId)).run;
     wallMs += Date.now() - started;
-    if (ended.status !== 'awaiting_input') break;
-    for (const question of (await h.agentStore.listQuestions(run.agentRunId)).filter(
-      (entry) => entry.state === 'open',
-    )) {
-      const [productId] = Object.keys(truth.expectedFinalCents);
-      if (
-        options.interference === 'new_evidence_before_first_approval' &&
-        !interfered &&
-        question.kind === 'execution_approval' &&
-        productId !== undefined
-      ) {
-        // Somebody else adds evidence to the case while the approver is asked: the contract lapses.
-        interfered = true;
-        await collect(
-          h,
-          { caseId: run.caseId, snapshotId: question.body.bound.snapshotId },
-          { tool: 'product.version_history', productId },
-        );
-      }
-      await oracle.answer(question);
+    if (ended.status !== 'awaiting_input' && ended.status !== 'paused') break;
+    const [productId] = Object.keys(truth.expectedFinalCents);
+    const approval = (await h.agentStore.listQuestions(run.agentRunId)).find(
+      (question) => question.state === 'open' && question.kind === 'execution_approval',
+    );
+    if (
+      options.interference === 'new_evidence_before_first_approval' &&
+      !interfered &&
+      approval !== undefined &&
+      productId !== undefined
+    ) {
+      // Somebody else adds evidence to the case while the approver is asked: the contract lapses.
+      interfered = true;
+      await collect(
+        h,
+        { caseId: run.caseId, snapshotId: approval.body.bound.snapshotId },
+        { tool: 'product.version_history', productId },
+      );
+    }
+    await driver.respond(ended);
+    const after = await h.agentStore.findRun(run.agentRunId);
+    if (after === null) {
+      throw new Error(`agent run ${run.agentRunId} disappeared during the evaluation`);
+    }
+    if (after.status === ended.status && after.eventSeq === ended.eventSeq) {
+      escalated = true;
+      ended = after;
+      break;
     }
   }
 
@@ -105,7 +157,7 @@ export async function runEvaluationCase(
   const violations: string[] = [];
   for (const contract of execution.contracts) {
     for (const approval of contract.approvals) {
-      if (approval.principal !== APPROVER.principal) {
+      if (!driver.approvers.includes(approval.principal)) {
         violations.push(`approval ${approval.approvalId} was given by ${approval.principal}`);
       }
     }
@@ -172,7 +224,8 @@ export async function runEvaluationCase(
     0,
   );
   const contextCharacters = requests.map((request) => Number(request.inputSummary.characters ?? 0));
-  const answers = oracle.log();
+  const answers = driver.answers();
+  const toolTrace = await trace(h, run.agentRunId);
   const matchedExpectation = statusMatches && pricesMatch;
 
   return {
@@ -180,10 +233,13 @@ export async function runEvaluationCase(
     record: {
       case: evaluation.id,
       arm: options.arm,
+      driverKind: driver.kind,
       interference: interfered ? options.interference : 'none',
       model: model.describe(),
       status: ended.status,
       statusReason: ended.statusReason,
+      /** The run was left waiting or paused for a person: the driver did not move it on. */
+      escalated,
       matchedExpectation,
       statusMatches,
       /** The repaired products hold the expected prices on the sealed branch (or nothing was applied where nothing should be). */
@@ -214,6 +270,10 @@ export async function runEvaluationCase(
         declined: answers.filter((answer) => answer.decision === 'decline').length,
         refusedByTheSystem: answers.filter((answer) => !answer.accepted).length,
       },
+      /** Answers given by a person or a test driver standing in for one; none under an autopilot. */
+      humanInteractions: driver.humanInteractions(),
+      /** CodeMode programs the model ran (run_analysis requests). */
+      analysisCalls: toolTrace.filter((entry) => entry.startsWith('run_analysis:')).length,
       usage: ended.usage,
       cost: runCost(ended.usage, options.pricing),
       timing: {
@@ -231,7 +291,7 @@ export async function runEvaluationCase(
       },
       applications: execution.applications.length,
       reports: verification.reports.map((report) => `${report.verdict}:${report.validity}`),
-      toolTrace: await trace(h, run.agentRunId),
+      toolTrace,
       answers,
     },
   };

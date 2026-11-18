@@ -1,6 +1,8 @@
 import { recreateTestDatabase } from '@aftercare/storage/testing';
 import { afterAll, describe, expect, it } from 'vitest';
+import type { ModelAdapter } from '../src/index.ts';
 import { EVALUATION_CASES } from './eval-cases.ts';
+import { oracleDriver, runEvaluationCase } from './evaluation.ts';
 import { createOperatorOracle } from './oracle.ts';
 import {
   APPROVER,
@@ -79,4 +81,53 @@ describe('the evaluation cases and the explicit operator test driver', () => {
       }
     });
   }
+});
+describe('the evaluation runner with its default driver (SCRIPTED model)', () => {
+  it('walks the five-product case to the expected outcome and records it, with no violation', async () => {
+    await recreateTestDatabase();
+    const h = await openAgentHarness();
+    try {
+      const [evaluation] = EVALUATION_CASES;
+      if (evaluation === undefined) throw new Error('no evaluation case');
+      // The script needs the operation ids the case writes, so it is made when the case is set up.
+      let walk: ModelAdapter | null = null;
+      const model: ModelAdapter = {
+        describe: () => ({
+          provider: 'scripted-test-double',
+          model: 'scripted',
+          endpointHost: 'none',
+          timeoutMs: 0,
+        }),
+        complete: (request) => {
+          if (walk === null) throw new Error('the case was not set up before the first request');
+          return walk.complete(request);
+        },
+      };
+      const { record, violations } = await runEvaluationCase(h, evaluation, model, {
+        arm: 'structured',
+        interference: 'none',
+        pricing: null,
+        leaseTtlSeconds: 60,
+        limits: { maxModelRequests: 40, maxToolCalls: 120 },
+        maxRounds: 10,
+        driver: (setup) => {
+          walk = scripted(standardScript(setup.scriptScenario));
+          return oracleDriver(h, setup);
+        },
+      });
+      expect(violations).toEqual([]);
+      expect(record).toMatchObject({
+        driverKind: 'oracle',
+        escalated: false,
+        matchedExpectation: true,
+        pricesMatch: true,
+        unresolvedAsExpected: true,
+        humanInteractions: 4,
+        analysisCalls: 0,
+        questions: { asked: 4, declined: 0, refusedByTheSystem: 0 },
+      });
+    } finally {
+      await h.close();
+    }
+  });
 });

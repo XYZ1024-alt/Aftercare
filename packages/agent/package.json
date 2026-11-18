@@ -5,7 +5,9 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./testing": "./test/support.ts"
+    "./testing": "./test/support.ts",
+    "./evaluation": "./test/evaluation.ts",
+    "./eval-cases": "./test/eval-cases.ts"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",
