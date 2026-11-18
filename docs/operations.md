@@ -15,6 +15,27 @@
 
 操作台与 worker 都不持有业务写入、授权管理或迁移凭证。
 
+### 数据库角色
+
+| 角色                         | 用途                           | 权限                                                                                                                                                                                                                                           |
+| ---------------------------- | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `postgres`（超级用户）       | 仅 `db:bootstrap`              | 运行时不使用                                                                                                                                                                                                                                   |
+| `aftercare_migrator`         | 仅迁移                         | 拥有全部对象                                                                                                                                                                                                                                   |
+| `aftercare_business_writer`  | 业务模拟器                     | 读商品/订单；执行五个入口函数。不能直接写任何表，不能读写审计、控制面或快照                                                                                                                                                                    |
+| `aftercare_investigator`     | 只读调查；web 与 worker 使用   | **只能读已发布的快照 schema**。不能读源库、控制面，不能执行任何函数                                                                                                                                                                            |
+| `aftercare_snapshot_manager` | 创建与清理快照                 | 只能执行 `create_snapshot` / `drop_snapshot`。没有任何表权限；服务器端设有超时上限                                                                                                                                                             |
+| `aftercare_runtime`          | Runtime 侧控制面存储           | 读控制表；经固定函数追加案例、覆盖清单、凭证、证据、策略版本、事故集合与编译计划；**只能经 `execute_case_command()` 改变案例状态、确认、声明、假设与依赖图**。不能读源库或快照，不能管理快照，对确认授权表没有任何权限                         |
+| `aftercare_authority_admin`  | 登记能力、操作台账号与自主章程 | 只能执行固定的管理函数：授予/撤销能力（三项 confirm_* 与十一项案例能力，共 14 项，见 `packages/contracts/src/confirmation.ts`）、登记/停用操作台账号、登记/退役自主章程（同一事务内授予/撤销被委托的能力）。没有任何表权限；Runtime 不能使用它 |
+| `aftercare_executor`         | 修复执行器                     | 只能执行 `aftercare_execution.*`（租约、意图、应用、失败、对账、释放）                                                                                                                                                                         |
+| `aftercare_verifier`         | 独立验证器                     | 读验证所需控制表、快照与分支（继承调查角色）；只能执行 `aftercare_verification.*`（租约、开始、错误登记、发布/封存、描述、释放）；不能写任何表                                                                                                 |
+| `aftercare_promoter`         | 写回源库（只在 worker 进程）   | 只能执行 `aftercare_promotion.promote`；不能直接读写任何表；守卫入口 `guarded_batch_set_price` 不授予任何角色，只在该函数内部调用                                                                                                              |
+| `aftercare_test_admin`       | **仅测试**：构造被破坏的历史   | 可切换为 owner，但只能连接测试库                                                                                                                                                                                                               |
+
+所有 `SECURITY DEFINER` 函数固定 `search_path = pg_catalog, pg_temp`，对象全部带 schema 限定，`PUBLIC` 的执行权限已撤销，
+不接受 SQL 文本、schema 名或表名参数。快照与分支 schema 名由数据库生成并校验。
+
+调查角色不读源库：业务事实只能从登记过的不可变快照读取，取证结果因此不可能混入当前源库数据。`aftercare_business_writer` 属于业务模拟器，不是 Agent 凭证，也不得交给 Agent。
+
 ## 2. 从干净环境安装
 
 ```bash
@@ -48,7 +69,35 @@ pnpm ops status     # 数据库、schema、部署绑定、worker、模型的就�
 - worker 收到 SIGINT/SIGTERM 后，让当前一步按各自协议完成或失败，在步边界停止，交还租约、写最终心跳、关闭连接池后自行退出。被中断的运行保持 running，任何 worker 再次启动后按记录继续；用同一个 `AFTERCARE_WORKER_ID` 重启的 worker 直接续用自己的租约，换 id 的 worker 要等租约过期（`AFTERCARE_WORKER_LEASE_TTL_SECONDS`）。
 - 外呼后、记录前被中断的模型请求，下次领取时记为“结果不明”（可能已计费，用量记为未知）；写操作结果不明时按原 repairId 对账，不会重复应用。
 
-## 4. 升级（模板、schema、适配器、检查器）
+## 4. Docker 部署
+
+需要 Docker（含 Compose）。完整部署栈在 `docker-compose.yml`（Compose 项目名 `aftercare-deploy`，独立数据卷，不碰本地开发库）；
+本地开发数据库仍在 `docker-compose.dev.yml`，`pnpm db:up` 与宿主机上的 `pnpm ops ...` 继续使用它。
+一个镜像同时运行操作台与 worker；`init` 是一次性容器，负责建角色/库、迁移、登记覆盖声明，并在首次启动时写入演示数据。
+
+```bash
+cp .env.example .env        # 修改密码；模型与演示密码见 .env.example
+docker compose up -d --build
+docker compose logs init    # 首次启动：bootstrap → migrate → coverage → demo:init
+```
+
+- 操作台：<http://127.0.0.1:3100>。`AFTERCARE_WEB_PORT` 与 `AFTERCARE_WEB_BIND` 控制宿主机端口和绑定地址（默认只绑回环）。
+- `init` 只在**没有操作台账号**时执行 `demo:init`：三个演示账号、一个策略、一个演示章程、五个商品、一笔订单。
+  再次 `up` 不会重复写入。演示密码只显示一次，用 `docker compose logs init` 查看；也可以提前在 `.env` 设置 `AFTERCARE_DEMO_PASSWORD`。
+- 启动后自检：`docker compose exec web pnpm ops status`，应显示 database ok、schema current、deployment ready、worker 在工作、model 已配置。
+- 初始化还会创建 `superadmin`（显示名 Super Admin），持有全部 14 项能力；它只在不存在时创建，不会重置密码或重复授权。
+  密码优先取 `AFTERCARE_SUPERADMIN_PASSWORD`，否则取 `AFTERCARE_DEMO_PASSWORD`，都没有则由 `init` 随机生成并打印一次。
+- 只要结构、不要演示数据：`AFTERCARE_DEMO_INIT=0`（`superadmin` 仍会创建），之后用
+  `docker compose exec web pnpm ops account:set <principal> --name <名字> --grant <能力,...>` 建其他账号。
+- 数据库不映射到宿主机，避免与本地开发库的 55432 冲突；需要客户端时用 `docker compose exec postgres psql -U postgres -d aftercare_dev`。
+- 产物与备份保存在命名卷 `aftercare-data`（容器内 `/data`），web 与 worker 共享；数据库在 `aftercare-pgdata`。
+- 升级：`git pull && docker compose up -d --build`。`init` 会应用新迁移，不会重复 seed。
+- 重置 Docker 部署（**只删除部署栈的数据库与产物卷，不影响 `pnpm db:up` 的本地开发库**）：`docker compose down -v && docker compose up -d --build`。
+- 局域网/公网：设置 `AFTERCARE_WEB_BIND=0.0.0.0`，并把 `AFTERCARE_CONSOLE_ORIGIN` 设为浏览器实际访问的地址；
+  HTTPS 时设 `AFTERCARE_CONSOLE_SECURE_COOKIES=1`。放在反向代理后面时，`/api/*` 的 SSE 需要关闭响应缓冲。
+- 镜像不包含 `.env`；所有密钥经 Compose 注入。数据库端口仍只绑定宿主机回环。
+
+## 5. 升级（模板、schema、适配器、检查器）
 
 ```bash
 pnpm ops upgrade:check          # 待应用的迁移、阻碍（在途运行、持有的租约、账本不一致）与注意事项
@@ -63,7 +112,7 @@ pnpm ops coverage:declare --as <principal>   # 覆盖声明针对一个 schema �
 - 快照、证据、计划、契约与报告记录了产生它们时的版本（schema、审计格式、适配器、模板与语义版本、编译器与验证器版本），升级不会重写或重新解释它们。语义变化需要让已有结论按新版本重算时，用第四阶段的 `activate_semantics_version` 命令进入依赖失效，受影响的计划与报告转为 stale 并保留原文。
 - 兼容测试：`pnpm test` 中的迁移测试检查账本前缀与校验和，快照协议测试检查 schema 版本，第一至七阶段全部集成测试在新 schema 上运行。
 
-## 5. 备份
+## 6. 备份
 
 ```bash
 pnpm ops backup
@@ -73,7 +122,7 @@ pnpm ops backup
 - 输出在 `<AFTERCARE_DATA_DIR>/<target>/backups/`：`aftercare-<库名>-<UTC 时间>.dump`、清单 `.dump.json`（字节数、sha256、最新迁移、源环境标识、耗时）与产物文件副本 `.dump.artefacts/`。产物文件可由记录重新推导，获取时总会与登记摘要核对，不一致即拒绝提供。
 - 这是逻辑备份，没有 WAL 归档：数据可能丢失的范围就是距上一次备份的时间。备份频率由部署决定，本仓库不提供定时器。
 
-## 6. 恢复演练（隔离环境）
+## 7. 恢复演练（隔离环境）
 
 ```bash
 pnpm ops restore:drill <dump 文件> [--keep]
@@ -86,7 +135,7 @@ pnpm ops restore:drill <dump 文件> [--keep]
 5. 核验：重新读取每个快照的全部表并用 TypeScript 实现重算内容摘要；读取每条证据、计划、报告时重算并比对摘要；比对契约正文与 executionDigest；由数据库重算每个有数据的分支的内容摘要，并与登记和账本中最后一次应用后的摘要比较；
 6. 输出报告（含实测耗时）；不带 `--keep` 时删除演练库（只删除带演练标记的库）。原数据库不受影响。
 
-## 7. 真实恢复（替换损坏的数据库）
+## 8. 真实恢复（替换损坏的数据库）
 
 > 以下流程由本仓库的组件组成，但**没有**在本仓库中对开发库原地执行过；演练只在隔离库中做过。执行前先在隔离库演练同一个备份。
 
@@ -97,7 +146,7 @@ pnpm ops restore:drill <dump 文件> [--keep]
 5. 阅读核验结果。`pnpm ops restore:release --as <持 administer_local 的主体>`（或在管理页“核验并放行”）：重新核验，没有问题才解除保持。
 6. 启动 worker 与操作台，逐个检查并恢复被暂停的运行。恢复前的批准不会重新生效：运行会重新请求批准，需要审批人重新审核。
 
-## 8. 故障处置
+## 9. 故障处置
 
 | 现象                | 诊断                                                                                                                                                                                  | 处置                                                                                                                                                    |
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -111,11 +160,11 @@ pnpm ops restore:drill <dump 文件> [--keep]
 | 一直“正在暂停/取消” | 当前一步（通常是一次模型请求）尚未结束                                                                                                                                                | 等待它结束或超时（`AFTERCARE_MODEL_TIMEOUT_MS`）；不要强行改数据库                                                                                      |
 | 事件流断开          | 页面显示“正在重连”或“改为轮询”                                                                                                                                                        | 无需处理；恢复后从最后的事件继续，事件被清理时页面会说明并重新读取状态                                                                                  |
 
-## 9. 保留
+## 10. 保留
 
 在 `.env` 中按类别配置天数（`AFTERCARE_RETENTION_*_DAYS`），未配置的类别不清理。清理先演练、再由 `administer_local` 持有人确认执行；只处理已结束且不再被引用的案例数据；登记记录、账本、报告与证据保留。详见 console-protocol.md §14。
 
-## 10. 演示数据
+## 11. 演示数据
 
 ```bash
 pnpm ops demo:register --confirm aftercare_dev     # 只能登记当前开发库
@@ -127,7 +176,7 @@ pnpm ops demo:reset --confirm aftercare_dev        # 只对已登记的演示库
 
 `demo:init` 建三个账号（定价负责人、发布审批人、本地管理员）、给 agent 主体两项能力、登记覆盖声明与一个回放策略，并写入五个商品的普通业务活动（导入批次、一次增量、一次后续绝对写、一笔订单），输出建议的事故描述。数据中没有事故标签或期望答案。
 
-## 11. 实测数字
+## 12. 实测数字
 
 以下数字在本机测得，只适用于当时的数据规模，不是目标或承诺：
 

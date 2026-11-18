@@ -174,12 +174,12 @@ HTTP 状态：`invalid_request` 400，`unauthenticated` 401，`not_authorized` /
 
 ## 17. 测试分层
 
-| 层           | 位置                                                            | 说明                                                                                          |
-| ------------ | --------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
-| 服务端集成   | [packages/console/test](../packages/console/test)               | 真实 PostgreSQL，经 HTTP 面（Cookie、Origin、CSRF 头）调用，worker 在测试进程内由测试替身驱动 |
-| 浏览器端到端 | [e2e](../e2e)                                                   | Playwright + Chromium，访问构建后的 Next.js 操作台与真实测试库                                |
-| 对照评测     | [comparison.test.ts](../packages/agent/test/comparison.test.ts) | 脚本化自检证明两组只差上下文；真实模型对照显式 opt-in，无凭证时只记录“未运行”                 |
-| 真实模型     | [live-model.test.ts](../packages/agent/test/live-model.test.ts) | 显式 opt-in；本次交付未运行（无凭证）                                                         |
+| 层           | 位置                                                            | 说明                                                                                                          |
+| ------------ | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| 服务端集成   | [packages/console/test](../packages/console/test)               | 真实 PostgreSQL，经 HTTP 面（Cookie、Origin、CSRF 头）调用，worker 在测试进程内由测试替身驱动                 |
+| 浏览器端到端 | [e2e](../e2e)                                                   | Playwright + Chromium，访问构建后的 Next.js 操作台与真实测试库                                                |
+| 对照评测     | [comparison.test.ts](../packages/agent/test/comparison.test.ts) | 脚本化自检证明两组只差上下文；真实模型对照显式 opt-in，无凭证时只记录“未运行”                                 |
+| 真实模型     | [live-model.test.ts](../packages/agent/test/live-model.test.ts) | 显式 opt-in；以 deepseek-flash 实际运行过，结果见 [testing.md](testing.md) §6（每个案例一次，是样本不是比率） |
 
 ## 18. 不能证明的事
 
