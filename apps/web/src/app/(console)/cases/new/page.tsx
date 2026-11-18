@@ -22,11 +22,13 @@ import {
   INPUT_CLASS,
   Loading,
   Notice,
+  OPTION_CLASS,
   PageHead,
   RefusalNote,
   Technical,
 } from '../../../../components/ui.tsx';
 import { getJson } from '../../../../lib/api.ts';
+import { charterEnvelope, useAutonomyStatus } from '../../../../lib/autonomy.ts';
 import type { Tone } from '../../../../lib/labels.ts';
 import { useAction, useSession } from '../../../../lib/session.tsx';
 
@@ -47,7 +49,10 @@ export default function SubmitIncidentPage() {
   const router = useRouter();
   const { modelMode } = useSession();
   const { data: environment } = useSWR<EnvironmentView>('/api/environment', getJson);
+  const autonomy = useAutonomyStatus();
+  const charter = autonomy.data?.switch.enabled === true ? autonomy.data.charters[0] : undefined;
   const [description, setDescription] = useState('');
+  const [autonomous, setAutonomous] = useState(false);
   const [chosen, setChosen] = useState('');
   const [egress, setEgress] = useState(false);
   const [limits, setLimits] = useState<Record<string, string>>({});
@@ -87,6 +92,7 @@ export default function SubmitIncidentPage() {
             description,
             environment: chosen,
             acknowledgeDataEgress: egress,
+            autonomous: charter !== undefined && autonomous,
             limits: Object.fromEntries(
               Object.entries(limits).flatMap(([name, text]) =>
                 /^\d+$/.test(text) ? [[name, Number(text)]] : [],
@@ -147,6 +153,23 @@ export default function SubmitIncidentPage() {
                 留空使用默认值。启动后只有持预算权限的人可以调整。
               </p>
             </fieldset>
+            {charter !== undefined && (
+              <label className={OPTION_CLASS}>
+                <input
+                  type="checkbox"
+                  name="autonomous"
+                  className={CHECK_CLASS}
+                  checked={autonomous}
+                  onChange={(event) => setAutonomous(event.target.checked)}
+                />
+                <span className="min-w-0">
+                  <span className="block font-medium">按章程自主处理</span>
+                  <span className="mt-1 block text-xs text-muted">
+                    {charter.name} r{charter.revision}：{charterEnvelope(charter)}
+                  </span>
+                </span>
+              </label>
+            )}
             <div className="flex flex-wrap items-center gap-3 border-line border-t pt-5">
               <Button tone="primary" type="submit" pending={submit.pending} disabled={!ready}>
                 <Send aria-hidden className="size-4" />

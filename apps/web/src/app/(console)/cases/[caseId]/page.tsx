@@ -58,9 +58,11 @@ function Sections() {
       contract.status === 'bound' &&
       !contract.approvals.some((approval) => approval.state === 'active'),
   );
+  const waitingOnPerson = view.autonomy.escalations.filter((escalation) => escalation.open).length;
   const badge: Partial<Record<Tab, string>> = {
     ...(open > 0 ? { questions: String(open) } : {}),
     ...(awaitingApproval ? { plan: '待批准' } : {}),
+    ...(waitingOnPerson > 0 ? { process: '待人处理' } : {}),
   };
   const Panel = PANELS[tab];
   return (

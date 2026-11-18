@@ -12,6 +12,7 @@ import {
 } from '../../lib/labels.ts';
 import { Card, Dot, Empty, Json, Notice, Pill, Technical } from '../ui.tsx';
 import { UntrustedMarkdown, UntrustedText } from '../untrusted-text.tsx';
+import { AutonomyDecisions } from './autonomy.tsx';
 import { useCase } from './case-context.tsx';
 
 /** The tone of an event; anything not listed is an ordinary step of the investigation (sky). */
@@ -124,36 +125,39 @@ export function Timeline() {
   const waiting =
     view.run !== null && ['queued', 'running'].includes(view.run.status) && feed.items.length > 0;
   return (
-    <Card
-      title="调查过程"
-      icon={History}
-      tone="sky"
-      description={feed.items.length === 0 ? undefined : `${feed.items.length} 个事件`}
-      testId="timeline"
-    >
-      <div className="space-y-4">
-        {feed.resynced !== null && (
-          <Notice tone="apricot" testId="feed-resync">
-            {feed.resynced === 'events_truncated'
-              ? '较早的事件已按保留策略清理，以下从保留的最早事件开始；当前状态已重新读取。'
-              : feed.resynced === 'run_changed'
-                ? '案例开始了新的运行，以下是新运行的事件；当前状态已重新读取。'
-                : '事件位置已重新同步；当前状态已重新读取。'}
-          </Notice>
-        )}
-        {feed.items.length === 0 ? (
-          <Empty>还没有事件。</Empty>
-        ) : (
-          <ol className="relative pl-6 before:absolute before:top-2 before:bottom-2 before:left-[3px] before:w-0.5 before:rounded-full before:bg-line">
-            {feed.items.map((item) => (
-              <Item key={`${item.origin}:${item.agentRunId ?? ''}:${item.seq}`} item={item} />
-            ))}
-          </ol>
-        )}
-        {waiting && view.stage.stage === 'queued' && (
-          <p className="text-meta text-muted">运行在排队，等待 worker 领取。</p>
-        )}
-      </div>
-    </Card>
+    <>
+      <AutonomyDecisions />
+      <Card
+        title="调查过程"
+        icon={History}
+        tone="sky"
+        description={feed.items.length === 0 ? undefined : `${feed.items.length} 个事件`}
+        testId="timeline"
+      >
+        <div className="space-y-4">
+          {feed.resynced !== null && (
+            <Notice tone="apricot" testId="feed-resync">
+              {feed.resynced === 'events_truncated'
+                ? '较早的事件已按保留策略清理，以下从保留的最早事件开始；当前状态已重新读取。'
+                : feed.resynced === 'run_changed'
+                  ? '案例开始了新的运行，以下是新运行的事件；当前状态已重新读取。'
+                  : '事件位置已重新同步；当前状态已重新读取。'}
+            </Notice>
+          )}
+          {feed.items.length === 0 ? (
+            <Empty>还没有事件。</Empty>
+          ) : (
+            <ol className="relative pl-6 before:absolute before:top-2 before:bottom-2 before:left-[3px] before:w-0.5 before:rounded-full before:bg-line">
+              {feed.items.map((item) => (
+                <Item key={`${item.origin}:${item.agentRunId ?? ''}:${item.seq}`} item={item} />
+              ))}
+            </ol>
+          )}
+          {waiting && view.stage.stage === 'queued' && (
+            <p className="text-meta text-muted">运行在排队，等待 worker 领取。</p>
+          )}
+        </div>
+      </Card>
+    </>
   );
 }

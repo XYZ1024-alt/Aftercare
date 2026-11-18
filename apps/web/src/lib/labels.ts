@@ -1,4 +1,4 @@
-import type { Stage } from '@aftercare/console/client';
+import type { AutonomyDecisionAction, Stage } from '@aftercare/console/client';
 
 // Display wording. Codes of the records stay as they are recorded; these
 // tables only say what a code means to an operator.
@@ -243,3 +243,75 @@ const SHORT_TIME = new Intl.DateTimeFormat('zh-CN', {
 /** Month, day and minute: for rows and lists, where the year is noise. */
 export const whenShort = (instant: string | null | undefined): string =>
   instant === null || instant === undefined ? '—' : SHORT_TIME.format(new Date(instant));
+
+export const AUTONOMY_ACTION_LABEL: Readonly<Record<AutonomyDecisionAction, string>> = {
+  answer: '代为回答',
+  approve: '批准',
+  decline: '否定',
+  escalate: '升级人工',
+  resume: '恢复运行',
+  top_up: '追加预算',
+  deliver: '交付',
+  promote: '写回源库',
+  reopen: '重开调查',
+};
+
+export const AUTONOMY_RULE_LABEL: Readonly<Record<string, string>> = {
+  incidentRule: '事故判定',
+  baselineRule: '基线',
+  replayPolicy: '回放策略',
+  clarification: '澄清',
+  approval: '批准包络',
+  recovery: '恢复',
+  promotion: '写回',
+  delivery: '交付',
+};
+
+export const AUTONOMY_TRIGGER_LABEL: Readonly<Record<'console' | 'intake' | 'sentinel', string>> = {
+  console: '操作台',
+  intake: '告警接入',
+  sentinel: '哨兵',
+};
+
+export const AUTONOMY_STATUS_LABEL: Readonly<Record<'intent' | 'applied' | 'refused', string>> = {
+  intent: '进行中',
+  applied: '已执行',
+  refused: '被拒',
+};
+
+/** The subject of an autonomy decision, in words: a question, a pause or a record id. */
+export const subjectLabel = (subject: string): string => {
+  const separator = subject.indexOf(':');
+  if (separator < 0) return subject;
+  const kind = subject.slice(0, separator);
+  const value = subject.slice(separator + 1);
+  switch (kind) {
+    case 'question':
+      return `问题 ${shortId(value)}`;
+    case 'pause':
+      return `暂停 #${value}`;
+    case 'report':
+      return `报告 ${shortId(value)}`;
+    case 'promotion':
+      return `写回 ${shortId(value)}`;
+    case 'reopen':
+      return `重开 ${shortId(value)}`;
+    case 'run':
+      return `运行 ${shortId(value)}`;
+    default:
+      return subject;
+  }
+};
+
+export const PROMOTION_STATUS_LABEL: Readonly<Record<'applied' | 'drift_refused', string>> = {
+  applied: '已写回源库',
+  drift_refused: '源库已变化，未写入',
+};
+
+export const PROMOTION_CHECK_LABEL: Readonly<
+  Record<'matches' | 'superseded_by_later_write' | 'mismatch', string>
+> = {
+  matches: '源库与写回一致',
+  superseded_by_later_write: '写回后源库又有合法变更',
+  mismatch: '不一致',
+};

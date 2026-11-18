@@ -27,6 +27,7 @@ import {
   Technical,
 } from '../ui.tsx';
 import { UntrustedText } from '../untrusted-text.tsx';
+import { AutonomyBadge } from './autonomy.tsx';
 import { type FeedConnection, useCase, useCaseAction } from './case-context.tsx';
 
 const ENDED = ['completed', 'partially_resolved', 'unresolved', 'failed', 'cancelled'];
@@ -413,6 +414,7 @@ export function CaseHeader() {
             <span data-testid="stage" data-stage={stage.stage}>
               <Pill tone={stageTone(stage.stage)}>{STAGE_LABEL[stage.stage]}</Pill>
             </span>
+            <AutonomyBadge />
             {stage.waitingOnOperator && <Pill tone="apricot">等待操作员</Pill>}
             {stage.reason !== null && (
               <span className="text-meta text-muted">{reasonLabel(stage.reason)}</span>
