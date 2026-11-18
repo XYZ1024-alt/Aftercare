@@ -1,5 +1,10 @@
+import { createHash } from 'node:crypto';
 import { fiveProducts } from '@aftercare/agent/testing';
-import { AUTONOMY_IDENTITY_SOURCE, ENDED_AGENT_RUN_STATUSES } from '@aftercare/contracts';
+import {
+  AUTONOMY_IDENTITY_SOURCE,
+  type AutonomyDecision,
+  ENDED_AGENT_RUN_STATUSES,
+} from '@aftercare/contracts';
 import {
   batchSetPrice,
   createProduct,
@@ -9,11 +14,22 @@ import {
 } from '@aftercare/repair/testing';
 import { recreateTestDatabase } from '@aftercare/storage/testing';
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { createAutopilot, startAutonomousRun, startDaemon } from '../src/index.ts';
+import {
+  type Autopilot,
+  createAutopilot,
+  type PromotionInput,
+  type PromotionStep,
+  SIGNATURE_HEADER,
+  signBody,
+  startAutonomousRun,
+  startDaemon,
+} from '../src/index.ts';
 import {
   APPROVER,
   CHARTER_OWNER,
   type ConsoleHarness,
+  OPERATOR,
+  ORIGIN,
   openConsoleHarness,
   registerCharter,
   until,
@@ -156,8 +172,9 @@ describe('a pricing incident carried through by the autopilot, with no person an
       'the delivery',
     );
     const incident = view.decisions.find((entry) => entry.rule === 'incidentRule');
-    expect([...(incident?.input.confirmed as string[])].sort()).toEqual(
-      [batch.operations.p1, batch.operations.p2].sort(),
+    expect(incident?.input.confirmed).toHaveLength(2);
+    expect(incident?.input.confirmed).toEqual(
+      expect.arrayContaining([batch.operations.p1, batch.operations.p2]),
     );
     expect(incident?.input.rejected).toHaveLength(2);
   });
@@ -278,5 +295,331 @@ describe('outside the envelope: a person decides, and the database refuses the a
     );
     expect(status.body.switch.enabled).toBe(false);
     expect(status.body.charters).toHaveLength(1);
+  });
+});
+
+const INTAKE_SECRET = 'intake-secret-for-the-tests-0123456789';
+const DELIVERY_SECRET = 'delivery-secret-for-the-tests-0123456789';
+
+/** A worker of this process whose autopilot the test chooses (promotion step, webhook transport). */
+function startWorkerWith(autopilot: Autopilot) {
+  const daemon = startDaemon(c.context, c.gate.model, { autopilot });
+  return daemon;
+}
+
+const runEnds = (agentRunId: string, what: string) =>
+  until(
+    () => c.h.agentStore.findRun(agentRunId),
+    (entry) => entry !== null && ended(entry.status),
+    what,
+    40_000,
+  );
+
+describe('signed intake', () => {
+  it('opens one case per dedupe key, refuses unsigned requests, and does not exist without a secret', async () => {
+    const unconfigured = await c.api.handle(
+      new Request(`${ORIGIN}/api/intake`, { method: 'POST', body: '{}' }),
+    );
+    expect(unconfigured.status).toBe(404);
+    await c.close();
+    c = await openConsoleHarness({ AFTERCARE_INTAKE_SECRET: INTAKE_SECRET });
+    const scenario = await fiveProducts(c.h);
+    await registerCharter(c, scenario.policy.policyVersionId);
+
+    const send = (body: string, signature: string | null) =>
+      c.api.handle(
+        new Request(`${ORIGIN}/api/intake`, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            ...(signature === null ? {} : { [SIGNATURE_HEADER]: signature }),
+          },
+          body,
+        }),
+      );
+    const body = JSON.stringify({
+      dedupeKey: 'alert-42',
+      source: 'alertmanager',
+      description: '告警：导入后商品价格异常',
+    });
+    expect((await send(body, null)).status).toBe(401);
+    expect((await send(body, signBody('another-secret-of-enough-length', body))).status).toBe(401);
+
+    const first = await send(body, signBody(INTAKE_SECRET, body));
+    expect(first.status).toBe(202);
+    const started = (await first.json()) as {
+      value: { outcome: string; caseId: string; agentRunId: string; intakeId: string };
+    };
+    expect(started.value.outcome).toBe('started');
+    const again = (await (await send(body, signBody(INTAKE_SECRET, body))).json()) as {
+      value: { outcome: string; caseId: string };
+    };
+    expect(again.value).toMatchObject({ outcome: 'duplicate', caseId: started.value.caseId });
+    const other = JSON.stringify({ dedupeKey: 'alert-42', description: '另一条告警' });
+    expect((await send(other, signBody(INTAKE_SECRET, other))).status).toBe(409);
+
+    const [enrollment] = await c.context.autonomy.enrollmentsOfCase(started.value.caseId);
+    expect(enrollment).toMatchObject({
+      trigger: 'intake',
+      requestedBy: 'intake:alertmanager',
+      intakeId: started.value.intakeId,
+    });
+    c.startWorker();
+    expect((await runEnds(started.value.agentRunId, 'the intake run to end'))?.status).toBe(
+      'partially_resolved',
+    );
+  });
+});
+
+describe('recovery and delivery', () => {
+  it('resumes a run the model service failed, as often as the charter allows, then hands it to a person', async () => {
+    const scenario = await fiveProducts(c.h);
+    await registerCharter(c, scenario.policy.policyVersionId, (body) => ({
+      ...body,
+      recovery: { ...body.recovery, maxResumesPerRun: 2 },
+    }));
+    c.gate.failWith('timeout');
+    const { caseId, agentRunId } = await startUnderCharter();
+    c.startWorker();
+    const view = await settledView(
+      caseId,
+      (actions) => actions.includes('escalate'),
+      'the autopilot to give up resuming',
+    );
+    expect(view.decisions.map((entry) => [entry.action, entry.rule])).toEqual([
+      ['resume', 'recovery'],
+      ['resume', 'recovery'],
+      ['escalate', 'recovery'],
+    ]);
+    expect(view.escalations[0]?.reason).toContain('the charter allows 2');
+
+    // A person resumes once the service is back; the autopilot carries the rest.
+    c.gate.failWith(null);
+    const resumed = await c.context.environment.service
+      .forIdentity(OPERATOR)
+      .resume(agentRunId, 'the model service is back');
+    expect(resumed.ok).toBe(true);
+    expect((await runEnds(agentRunId, 'the run to end after the person resumed'))?.status).toBe(
+      'partially_resolved',
+    );
+  });
+
+  it('delivers a signed webhook, retrying a failed attempt', async () => {
+    await c.close();
+    c = await openConsoleHarness({ AFTERCARE_DELIVERY_SECRET: DELIVERY_SECRET });
+    const scenario = await fiveProducts(c.h);
+    await registerCharter(c, scenario.policy.policyVersionId, (body) => ({
+      ...body,
+      delivery: { produceReport: true, webhookUrl: 'https://hooks.example.test/aftercare' },
+    }));
+    const received: { body: string; signature: string | null; delivery: string | null }[] = [];
+    const transport: typeof fetch = async (_url, init) => {
+      const headers = new Headers(init?.headers);
+      received.push({
+        body: String(init?.body),
+        signature: headers.get(SIGNATURE_HEADER),
+        delivery: headers.get('x-aftercare-delivery'),
+      });
+      return new Response(null, { status: received.length === 1 ? 503 : 204 });
+    };
+    const { caseId } = await startUnderCharter();
+    const daemon = startWorkerWith(createAutopilot(c.context, { fetch: transport }));
+    try {
+      const view = await settledView(
+        caseId,
+        (actions) => actions.includes('deliver'),
+        'the delivery',
+      );
+      const delivered = view.decisions.find((entry) => entry.action === 'deliver');
+      expect(delivered).toMatchObject({
+        status: 'applied',
+        outcome: { webhook: { ok: true, attempts: 2 } },
+      });
+      expect(received).toHaveLength(2);
+      for (const entry of received) {
+        expect(entry.signature).toBe(signBody(DELIVERY_SECRET, entry.body));
+      }
+      const payload = JSON.parse(received[1]?.body ?? '{}') as Record<string, string | string[]>;
+      expect(payload).toMatchObject({
+        caseId,
+        status: 'partially_resolved',
+        verdict: 'partially_resolved',
+        unresolved: ['product/c.price_cents'],
+      });
+      expect(received[1]?.delivery).toBe(payload.reportId);
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  it('reopens on a new snapshot when promotion reports drift, within the charter, and delivers the new result', async () => {
+    const scenario = await fiveProducts(c.h);
+    await registerCharter(c, scenario.policy.policyVersionId);
+    const seen: PromotionInput[] = [];
+    const promote = async (input: PromotionInput): Promise<PromotionStep> => {
+      seen.push(input);
+      return input.enrollment.reopenOf === null
+        ? { kind: 'drift', reason: 'product/a moved on in the source', detail: { objectId: 'a' } }
+        : { kind: 'promoted', detail: { promotedObjects: 3 } };
+    };
+    const { caseId, agentRunId } = await startUnderCharter();
+    const firstSnapshot = (await c.context.environment.caseStore.readCaseState(caseId))
+      ?.currentSnapshotId;
+    const daemon = startWorkerWith(createAutopilot(c.context, { promote }));
+    try {
+      const view = await settledView(
+        caseId,
+        (actions) => actions.filter((action) => action === 'deliver').length === 2,
+        'both deliveries',
+      );
+      expect(view.enrollments).toHaveLength(2);
+      const [first, second] = view.enrollments;
+      expect(second).toMatchObject({ reopenOf: first?.enrollmentId, caseId });
+      expect(first?.agentRunId).toBe(agentRunId);
+      const actions = view.decisions.map((entry: AutonomyDecision) => [entry.action, entry.status]);
+      expect(actions).toEqual(
+        expect.arrayContaining([
+          ['reopen', 'applied'],
+          ['deliver', 'refused'],
+          ['promote', 'applied'],
+          ['deliver', 'applied'],
+        ]),
+      );
+      const state = await c.context.environment.caseStore.readCaseState(caseId);
+      expect(state?.currentSnapshotId).not.toBe(firstSnapshot);
+      expect(seen.map((entry) => entry.run.agentRunId)).toContain(second?.agentRunId);
+    } finally {
+      await daemon.stop();
+    }
+  });
+});
+
+describe('who may act under a charter', () => {
+  it('only a holder of everything delegated registers a charter; no person signs in as, or acts as, an autopilot; retiring revokes', async () => {
+    const scenario = await fiveProducts(c.h);
+    const body = (await registerCharter(c, scenario.policy.policyVersionId)).body;
+    // OPERATOR holds the confirmations but not delegate_autonomy.
+    await expect(
+      c.h.db.authorities.registerCharter({
+        registeredBy: OPERATOR,
+        charterId: crypto.randomUUID(),
+        body,
+        digest: createHash('sha256').update('x').digest('hex'),
+      }),
+    ).rejects.toThrow(/authority administration statement "registerCharter" failed/);
+    await expect(
+      c.h.db.authorities.setOperatorAccount({
+        principal: body.autopilotPrincipal,
+        displayName: 'impostor',
+        credential: {
+          salt: 'aa',
+          derivedKey: 'bb',
+          cost: 16_384,
+          blockSize: 8,
+          parallelization: 1,
+        },
+      }),
+    ).rejects.toThrow();
+
+    const { agentRunId } = await startUnderCharter();
+    const daemon = startWorkerWith({
+      round: async () => ({ switchedOff: false, enrollments: 0, decisions: [] }),
+    });
+    try {
+      await until(
+        () => c.h.agentStore.findRun(agentRunId),
+        (run) => run?.status === 'awaiting_input',
+        'the first question',
+      );
+    } finally {
+      await daemon.stop();
+    }
+    const [question] = (await c.h.agentStore.listQuestions(agentRunId)).filter(
+      (entry) => entry.state === 'open',
+    );
+    if (question === undefined || question.body.kind !== 'incident_scope') {
+      throw new Error('the first question is not about the incident scope');
+    }
+    const confirm = {
+      decision: 'confirm_operations',
+      questionId: question.questionId,
+      operationIds: question.body.candidates.map((entry) => entry.operationId),
+      statement: 'not a charter decision',
+      source: { kind: 'operations_review', reference: 'impersonation attempt' },
+    };
+    // A person under the charter's identity source is refused.
+    const impersonated = await c.context.environment.service
+      .forIdentity({ principal: OPERATOR.principal, source: AUTONOMY_IDENTITY_SOURCE })
+      .answer(confirm);
+    expect(impersonated.ok).toBe(false);
+
+    const [charter] = await c.context.autonomy.chartersInForce();
+    await c.h.db.authorities.retireCharter(
+      charter?.charterId ?? '',
+      { principal: CHARTER_OWNER, source: 'integration-test' },
+      'the owner withdraws the delegation',
+    );
+    expect(await c.context.autonomy.chartersInForce()).toEqual([]);
+    const afterRetirement = await c.context.environment.service
+      .forIdentity({ principal: body.autopilotPrincipal, source: AUTONOMY_IDENTITY_SOURCE })
+      .answer(confirm);
+    expect(afterRetirement.ok).toBe(false);
+    expect(await createAutopilot(c.context).round()).toMatchObject({ decisions: [] });
+  });
+
+  it('an intent written before a worker stopped is settled by the next round without acting twice', async () => {
+    const scenario = await fiveProducts(c.h);
+    const charter = await registerCharter(c, scenario.policy.policyVersionId);
+    const { agentRunId } = await startUnderCharter();
+    const daemon = startWorkerWith({
+      round: async () => ({ switchedOff: false, enrollments: 0, decisions: [] }),
+    });
+    try {
+      await until(
+        () => c.h.agentStore.findRun(agentRunId),
+        (run) => run?.status === 'awaiting_input',
+        'the first question',
+      );
+    } finally {
+      await daemon.stop();
+    }
+    const [question] = (await c.h.agentStore.listQuestions(agentRunId)).filter(
+      (entry) => entry.state === 'open',
+    );
+    if (question === undefined || question.body.kind !== 'incident_scope') {
+      throw new Error('the first question is not about the incident scope');
+    }
+    const enrollment = await c.context.autonomy.enrollmentOfRun(agentRunId);
+    if (enrollment === null) throw new Error('the run is not enrolled');
+    // The worker wrote its intent and answered, then stopped before settling.
+    const intent = await c.context.autonomy.recordDecision({
+      enrollmentId: enrollment.enrollmentId,
+      subject: `question:${question.questionId}`,
+      action: 'answer',
+      rule: 'incidentRule',
+      input: { kind: 'incident_scope' },
+    });
+    expect(intent.ok && intent.value.decision.status).toBe('intent');
+    const answered = await c.context.environment.service
+      .forIdentity({ principal: charter.autopilotPrincipal, source: AUTONOMY_IDENTITY_SOURCE })
+      .answer({
+        decision: 'confirm_operations',
+        questionId: question.questionId,
+        operationIds: question.body.candidates.map((entry) => entry.operationId),
+        statement: 'answered before the worker stopped',
+        source: { kind: 'business_decision_record', reference: `charter:${charter.charterId}@1` },
+      });
+    expect(answered.ok).toBe(true);
+
+    const round = await createAutopilot(c.context).round();
+    const settled = round.decisions.find(
+      (entry) => entry.subject === `question:${question.questionId}`,
+    );
+    expect(settled).toMatchObject({ status: 'applied', outcome: { replayed: true } });
+    const confirmations = await c.context.environment.repairStore.listConfirmations(
+      question.caseId,
+      'incident',
+    );
+    expect(confirmations).toHaveLength(1);
   });
 });

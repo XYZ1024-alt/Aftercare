@@ -608,16 +608,49 @@ export function createAutopilot(
     };
   }
 
+  /**
+   * An intent whose subject this round does not plan for any more: the act
+   * may have happened before the worker stopped. What is on record says
+   * whether it did; an intent the records cannot settle yet stays.
+   */
+  async function reconcile(
+    intent: AutonomyDecision,
+    run: AgentRun,
+  ): Promise<AutonomyDecision | null> {
+    const separator = intent.subject.indexOf(':');
+    const kind = intent.subject.slice(0, separator);
+    const id = intent.subject.slice(separator + 1);
+    let settled: { readonly applied: boolean; readonly outcome: JsonObject } | null = null;
+    if (kind === 'question') {
+      const question = await agentStore.findQuestion(id);
+      if (question?.state === 'answered') {
+        settled = {
+          applied: question.answeredBy?.startsWith('autopilot:') === true,
+          outcome: { replayed: true, answeredBy: question.answeredBy ?? '' },
+        };
+      } else if (question === null || question.state === 'superseded') {
+        settled = { applied: false, outcome: { reason: 'the question is no longer open' } };
+      }
+    } else if (
+      (kind === 'pause' || kind === 'budget') &&
+      (run.status !== 'paused' || id !== run.updatedAt)
+    ) {
+      settled = { applied: true, outcome: { replayed: true, runStatus: run.status } };
+    }
+    return settled === null
+      ? null
+      : autonomy.settleDecision(
+          intent.decisionId,
+          settled.applied ? 'applied' : 'refused',
+          settled.outcome,
+        );
+  }
+
   async function plansFor(
     enrollment: AutonomyEnrollment,
     charter: AutonomyCharterRecord,
+    run: AgentRun,
   ): Promise<Plan[] | null> {
-    const run = await agentStore.findRun(enrollment.agentRunId);
-    if (run === null) {
-      throw new Error(
-        `enrollment ${enrollment.enrollmentId} names run ${enrollment.agentRunId}, which does not exist`,
-      );
-    }
     if (run.status === 'awaiting_input') return answerQuestions(charter, run);
     if (run.status === 'paused') return recover(enrollment, charter, run);
     if (run.status === 'completed' || run.status === 'partially_resolved') {
@@ -651,8 +684,23 @@ export function createAutopilot(
         );
         if (charter === undefined) continue;
         try {
-          for (const plan of (await plansFor(enrollment, charter)) ?? []) {
+          const run = await agentStore.findRun(enrollment.agentRunId);
+          if (run === null) {
+            throw new Error(
+              `enrollment ${enrollment.enrollmentId} names run ${enrollment.agentRunId}, which does not exist`,
+            );
+          }
+          const plans = (await plansFor(enrollment, charter, run)) ?? [];
+          for (const plan of plans) {
             const settled = await decide(enrollment, plan);
+            if (settled !== null) decisions.push(settled);
+          }
+          const intents = (await autonomy.decisionsOfEnrollment(enrollment.enrollmentId)).filter(
+            (entry) =>
+              entry.status === 'intent' && !plans.some((plan) => plan.subject === entry.subject),
+          );
+          for (const intent of intents) {
+            const settled = await reconcile(intent, run);
             if (settled !== null) decisions.push(settled);
           }
         } catch (error) {
