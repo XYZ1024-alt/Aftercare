@@ -2,28 +2,33 @@
 
 业务数据事故修复 Agent。目标架构是「单 Agent + Runtime + 确定性引擎」，在隔离沙箱内修复事故并保留后续合法变化。
 
-**当前进度：第八阶段。** 已实现或验证的是：受控业务写入口与原子审计（第一阶段）；一致快照、受限只读取证、接入资格检查（第二阶段）；
+**当前进度：第九阶段。** 已实现或验证的是：受控业务写入口与原子审计（第一阶段）；一致快照、受限只读取证、接入资格检查（第二阶段）；
 业务确认、策略版本与**确定性修复编译**（第三阶段）；依赖追踪、确定性失效传播与持久化案例状态（第四阶段）；
 执行批准、案例专属沙箱分支、不可变执行契约、租约与 fencing、单事务补丁应用、应用账本与崩溃对账（第五阶段）；
 独立验证、不可变验证报告、原子封存、受控产物获取、受控 SQL 导出、后继分支与受保护撤销（第六阶段）；
 **单 Agent 自主调查循环**：服务端 OpenAI 兼容模型适配器、类型化工具注册表、持久化 Agent 运行（租约与 fencing、预算、重复检测、恢复）、问题与回答、反例驱动的重新规划（第七阶段）；
-**操作台与运行保障**：本地账号与会话、CSRF 防护与请求幂等、Next.js 操作台（提交事故 → 自主调查 → 业务问题 → 审核批准 → 沙箱执行与独立验证 → 报告与产物）、持久化事件序号上的 SSE 增量更新与重同步、暂停/恢复/取消、预算变更、worker 守护进程、健康检查、关联日志与指标、一致备份与隔离恢复演练、恢复围栏、显式保留与清理、演示环境登记、浏览器端到端测试与对照评测入口（第八阶段，见 [docs/console-protocol.md](docs/console-protocol.md) 与 [docs/operations.md](docs/operations.md)）。
+**操作台与运行保障**：本地账号与会话、CSRF 防护与请求幂等、Next.js 操作台（提交事故 → 自主调查 → 业务问题 → 审核批准 → 沙箱执行与独立验证 → 报告与产物）、持久化事件序号上的 SSE 增量更新与重同步、暂停/恢复/取消、预算变更、worker 守护进程、健康检查、关联日志与指标、一致备份与隔离恢复演练、恢复围栏、显式保留与清理、演示环境登记、浏览器端到端测试与对照评测入口（第八阶段，见 [docs/console-protocol.md](docs/console-protocol.md) 与 [docs/operations.md](docs/operations.md)）；
+**端到端自主**：有权人登记的类型化**自主章程**、确定性 **Autopilot**（按章程代答业务问题、包络内批准沙箱执行、自动恢复与追加预算、规则外升级给人、一键关闭）、签名告警接入、**写回源库**（守卫入口、漂移拒绝、写回后独立核验）、交付（报告产物与签名 webhook）、**CodeMode**（模型在 QuickJS 沙箱中编排只读取证并计算），以及零 oracle 的真实模型评测（第九阶段，见 [docs/autonomy-protocol.md](docs/autonomy-protocol.md)）。
 
-**尚未实现**：生产连接与生产写回、任意 SQL 修复、任意数据库恢复、通用补偿引擎、自动预授权、外部身份源与多因素认证、WAL 归档与跨机器恢复。
+**尚未实现**：生产连接（写回只针对本地单库的源业务表）、写回的自动撤销、任意 SQL 修复、任意数据库恢复、通用补偿引擎、第二个业务域、主动巡检（sentinel）入口、外部身份源与多因素认证、WAL 归档与跨机器恢复。
 `verified` / `sealed` 只表示**确定性修复在沙箱分支上的执行符合契约与强制不变量**，并由独立验证器在封存事务内重核；业务适当性只依赖有权人的批准确认，验证器不替人判断。
 模型只**选择下一步工具动作**、提出假设、问题与结束建议；权限、依赖失效、批准、金额、事务执行与验证结论仍由确定性程序负责，运行能否以 completed / partially_resolved 结束由数据库依据封存报告判定。
-仓库内的自动化测试与操作台的测试模式使用**脚本化测试替身**（由测试作者编写的规则）检验 Runtime 协议与操作台；真实模型测试与对照评测显式 opt-in，本仓库提交时**未**以真实模型运行过（没有模型凭证，见下文）。不能据此声称 Agent 已能稳定自主修复、支持任意事故，或生产安全。
+Autopilot 同样是确定性程序，不调用模型；它代人作答与批准的权力只来自有权人登记的章程，章程只能委托登记人自己持有的能力，数据库对它写下的每条记录按章程复核。
+仓库内的自动化测试与操作台的测试模式使用**脚本化测试替身**（由测试作者编写的规则）检验 Runtime 协议与操作台；真实模型测试与评测显式 opt-in；第九阶段以 deepseek-flash 实际运行过（见“实测”一节），每个案例一次，是样本不是比率。不能据此声称 Agent 已能稳定自主修复、支持任意事故，或生产安全。
 
 ## 范围
 
 - 仅本地、单租户、单 PostgreSQL 实例。数据库主机只接受回环地址，Compose 端口只绑定 `127.0.0.1`。
-- 没有任意 SQL 执行接口。业务写只能通过五个固定的数据库函数；取证只能通过五个固定的只读工具；
+- 没有任意 SQL 执行接口。业务写只能通过五个固定的数据库函数，以及一个任何角色都不能直接执行、只在写回函数内部调用的守卫入口；取证只能通过五个固定的只读工具；
   修复提案只含引用，不能携带金额、补丁、SQL 或足迹；策略是受限的类型化规则，没有表达式或脚本。
 - 业务写入属于**业务模拟器**。`aftercare_business_writer` 不是 Agent 凭证，后续也不得交给 Agent。
 - 执行器只写案例专属的 `aftercare_branch_*` schema，且只能改 `products.price_cents/version`；源业务表、快照、审计、批准表对它都不可达。补丁只来自已存储的执行契约，请求不能携带价格或 SQL。
 - 验证器（`aftercare_verifier`）只读它验证的记录、快照与分支，经 `aftercare_verification.*` 发布报告与封存；它不能写任何分支、源库、快照、批准或有效性。
 - 封存分支在数据库层不可写（撤销写权限 + 拒绝触发器）；SQL 导出只针对本地演练目标，拒绝指向本系统任何 schema。
 - 模型只经类型化工具行动（[docs/agent-protocol.md](docs/agent-protocol.md) §3），不获得任何数据库凭证或管理入口；工具参数中没有案例、主体、金额、补丁、SQL 或 repairId。
+  CodeMode（`run_analysis`）在 QuickJS WASM 沙箱中运行，只能调用五个只读取证查询，没有网络、文件、进程、时钟或数据库连接；写工具不进沙箱。
+- 写回（`aftercare_promoter`）只能执行 `aftercare_promotion.promote`：目标来自应用账本、期望版本来自快照，源库已变化则一行不写；只有 worker 进程持有该凭证。
+- Autopilot 主体（`autopilot:` 前缀）只持有章程委托的能力；它的确认、声明、执行批准、写回批准、预算追加与运行控制都由数据库触发器按章程复核（AC701–AC705），越出包络即拒绝。
 - 模型服务只在服务端调用；API key 只出现在请求的 `Authorization` 头中，不进数据库、日志、提示词、工具结果或页面。
 
 ## 结构
@@ -43,6 +48,8 @@
 | `packages/execution`            | 案例执行器（租约、意图、单事务应用、失败登记、结果不明对账、租约释放）、契约评审视图、演示脚本                                                                                 |
 | `packages/agent`                | 模型适配器（OpenAI 兼容、脚本化测试替身）、工具注册表、反馈分类、上下文构造、Agent Runtime、可信操作入口（启动/回答/控制/查看）、CLI 与演示                                    |
 | `packages/verify`               | 独立验证器（读取、义务检查、报告装配、原子封存）、报告渲染、受控 SQL 导出与演练目标契约、产物服务（待生成/就绪/恢复/获取）、演示脚本                                           |
+| `packages/console/src/autonomy` | 第九阶段：章程解析、Autopilot（规则、每轮决策、恢复、写回接入、交付与签名）、自主启动 |
+| `packages/agent/src/codemode`   | 第九阶段：CodeMode 沙箱（QuickJS WASM）；工具 `run_analysis` 在 `packages/agent/src/tools/analysis.ts` |
 | `docs/write-protocol.md`        | 锁键、写事务协议、水位与依赖类别                                                                                                                                               |
 | `docs/snapshot-protocol.md`     | 快照协议、摘要格式、资格检查、取证接口、依赖记录、信任前提                                                                                                                     |
 | `docs/repair-protocol.md`       | 确认与权限、策略组合、提案契约、语义引擎、部分结果、计划与摘要、反例、限制                                                                                                     |
@@ -51,6 +58,7 @@
 | `docs/agent-protocol.md`        | 职责划分、模型适配器与最低能力、工具、身份与幂等层次、每步流程、至少一次语义、问题与授权、过期检测、上下文、反馈分类、预算与结束、恢复、注入、权限、测试分层                   |
 | `docs/console-protocol.md`      | 第八阶段：信息结构、身份与会话、CSRF、请求键与幂等、动作、阶段、事件与重同步、暂停与预算、worker、健康、日志与指标、部署绑定与恢复围栏、保留、演示环境、测试分层               |
 | `docs/operations.md`            | 运行手册：安装、启动与退出、升级、备份、恢复演练、真实恢复、故障处置、保留、演示数据、实测数字                                                                                 |
+| `docs/autonomy-protocol.md`     | 第九阶段：职责划分、自主章程、Autopilot 决策表、数据库二次强制、触发、写回源库、交付、CodeMode、错误码、局限 |
 | `docs/verification-protocol.md` | 四层结论、强制义务与独立检查路径、验证运行与原子封存、提交顺序、产物与导出、后继分支与撤销、失败恢复、Agent 接口建议                                                           |
 
 ## 本地启动
@@ -67,9 +75,14 @@ pnpm ops coverage:declare --as ops:deployer    # 为当前 schema 登记覆盖�
 pnpm ops account:set <principal> --name <名字> --grant <能力,...>   # 操作台账号（见 docs/operations.md §2）
 pnpm dev:web                # http://127.0.0.1:3100 ；存活 /api/health/live ，就绪 /api/health/ready
 pnpm dev:worker             # 需要 AFTERCARE_MODEL_*；或 AFTERCARE_MODEL_MODE=scripted_test（测试替身，页面会标注）
+pnpm demo:autonomous        # 第九阶段：一条签名告警从开案走到写回与交付（只作用于登记过的演示库）
 ```
 
 演示环境（只作用于登记过的本地开发库）：`pnpm ops demo:register --confirm aftercare_dev && pnpm ops demo:init`，输出账号与一次性密码。
+
+**从第八阶段升级**：在 `.env` 中补上 `AFTERCARE_PROMOTER_PASSWORD`，以及按需的 `AFTERCARE_INTAKE_SECRET`、`AFTERCARE_DELIVERY_SECRET`（见 `.env.example`）；`pnpm install`（新增依赖 `quickjs-emscripten`、`yaml`），`pnpm ops backup`，
+`pnpm db:bootstrap`（新增登录角色 `aftercare_promoter`），`pnpm db:migrate`（应用 0023、0024），`pnpm ops coverage:declare --as <principal>`（覆盖清单新钉住了守卫入口），
+再由持 `delegate_autonomy` 与全部被委托能力的人登记章程：把 [docs/examples/charter.yaml](docs/examples/charter.yaml) 中的策略版本换成本环境已登记的版本后执行 `pnpm ops charter:register docs/examples/charter.yaml --as <principal>`（演示库上 `pnpm ops demo:init` 会自动登记演示章程）。
 
 **从第七阶段升级**：`pnpm install`（新增 workspace 包 `@aftercare/console`、根目录的 Playwright），先 `pnpm ops upgrade:check` 与 `pnpm ops backup`，再 `pnpm db:migrate`（应用 0022）、`pnpm ops verify`、`pnpm ops coverage:declare --as <principal>`，
 然后用 `pnpm ops account:set` 建操作台账号。新的可选配置见 `.env.example` 第八阶段一节。0022 修正了第七阶段的两处行为：因模型不可用暂停的运行恢复后重试次数从恢复时重新计算；澄清问题在人回答期间不再可能被误标为失效。
@@ -125,11 +138,19 @@ pnpm test                   # 需要数据库已启动并完成 db:bootstrap
 `results.test.ts`（同批混合来源只确认子集、撤回确认使方案失效并修订、新证据使报告 stale 与历史读取、重开流程、产物能力与导出目标限制与撤销登记、受保护撤销需独立批准执行验证）、
 `operations.test.ts`（预算耗尽、模型格式错误与超时、快照配额、数据库不可用与就绪分项、保留演练与执行、演示重置的拒绝、备份后隔离恢复：旧 token 与旧批准不可用、围栏、核验、放行与新代次）。
 
+只跑第九阶段：`pnpm vitest run packages/console/test/autonomy.test.ts packages/console/test/promotion.test.ts packages/agent/test/codemode.test.ts`——
+`autonomy.test.ts`（五商品由脚本化驱动加 Autopilot 零人工到 partially_resolved，并写回源库与核验；混合批次只确认错误目标；诱饵被否决并升级；越界批准被数据库拒绝；kill switch；签名接入；恢复上限与升级；签名 webhook；漂移后取新快照重开；登记与身份权限；intent 崩溃对账；批准窗口按整秒比较）、
+`promotion.test.ts`（写回值与审计主体、订单与未决域不动、漂移一行不写、报告失效/批准过期/包络越界被拒、幂等、三种核验结论、守卫入口不可直接执行）、
+`codemode.test.ts`（多页取证聚合、沙箱逃逸、死循环、内存、超大输出、宿主调用上限、跨案例引用、重复计数、可重放）。
+
 浏览器端到端：`pnpm test:e2e`（构建操作台并在 127.0.0.1:3199 启动，Chromium 访问真实测试库；首次需 `pnpm exec playwright install chromium`）。
 六个用例覆盖：完整主流程与危险 Markdown、双击与响应丢失、页面过期的批准、applied 与验证失败、暂停/重载/断网后续读/封存后新证据与重开、会话与 CSRF 与能力。
 
 对照评测：`pnpm eval:compare`。普通工具调用 Agent（`plain_tool_agent`）与结构化 Runtime（`structured`）使用同一模型、工具、权限、策略、预算与全部 guard，只差模型被告知的内容；脚本化自检证明这一点。
 没有模型凭证时只写入“未运行”记录（`packages/agent/.eval/compare-not-run-*.json`），不会用测试替身产生对照数字。
+
+零 oracle 自主评测：`pnpm eval:autonomous`（需要 `AFTERCARE_MODEL_*`；加 `AFTERCARE_EVAL_CODEMODE_CONTROL=1` 同时跑不含 `run_analysis` 的对照组）。四个评测案例使用同一份默认章程，没有任何人或 oracle 作答，隐藏真相只用于打分；
+结果写入 `packages/agent/.eval/autonomous-*.json`。脚本化自检（不需要模型）证明这条驱动路径本身可用。
 
 真实模型（第 C 层，显式 opt-in，会产生费用）：
 
@@ -272,6 +293,54 @@ pnpm dev:web                          # http://127.0.0.1:3100
 6. 演示失效：以定价负责人在“证据与调查 → 已确认的业务事实与策略”撤回基线确认（需填理由）。报告转为“历史报告（已失效）”，计划列入失效项并写明原因，页面提示重新调查；封存分支与账本保持不变。
    此时对该应用请求撤销会得到 `undo_conflict`（报告已不是当前结果），系统不提供强制覆盖。新证据进入案例依据也会产生同样的失效（见 `packages/console/test/results.test.ts`）。
 
+### 第九阶段演示：签名告警 → 自主调查 → 按章程代答与批准 → 沙箱执行 → 独立验证 → 写回源库与核验 → 交付
+
+```bash
+pnpm db:up && pnpm db:bootstrap
+pnpm ops demo:register --confirm aftercare_dev                          # 首次
+pnpm ops demo:reset --confirm aftercare_dev && pnpm ops demo:init      # 账号、策略、演示章程、业务活动
+pnpm demo:autonomous                     # 真实模型；--scripted 用测试替身（输出中标明）
+```
+
+脚本在演示库上写入新一批业务活动，以签名告警（`POST /api/intake`）开案，在进程内启动与 worker 相同的组装（Autopilot、写回与核验），
+逐行打印模型事件、Autopilot 决策、写回与核验，最后打印总结：问题由谁回答、决策计数、升级、报告结论与未决域、写回目标表、用量。全程没有人作答。
+
+操作台：`pnpm dev:worker` 与 `pnpm dev:web` 之后，提交事故时勾选“按章程自主处理”（或向 `/api/intake` 发送签名告警）；
+案例页显示自主徽标与“自主决策”卡（每条决策的规则、对象、状态与判定输入），“报告与产物”显示“写回源库”（批准、写回前后、源提交、核验结论）；
+`/admin` 的“自主模式”显示生效章程并可一键关闭（`pnpm ops autonomy:off` 同效）。
+
+## 实测（真实模型 deepseek-flash，OpenAI 兼容接口）
+
+每个案例跑一次：这是样本，不是比率；隐藏预期只在测试代码中。
+
+**第八阶段基线**（`AFTERCARE_LIVE_MODEL_TESTS=1`，业务问题由显式测试驱动依据隐藏真相作答）：4/4 达到预期，0 次重复调用，0 次过期动作；
+一个案例中模型提出了 3 次非法或越界的工具调用，均被拒绝，模型随后自行纠正。
+
+| 案例 | 结局 | 模型请求 | 工具调用 | 用时 |
+| --- | --- | --- | --- | --- |
+| 五商品部分修复 | partially_resolved（c 未决） | 17 | 30 | 66 s |
+| 混合批次 | completed（只修错误目标） | 14 | 26 | 40 s |
+| 单次错价后增量 | completed | 17 | 30 | 89 s |
+| 无事故诱饵 | unresolved（不修改） | 10 | 20 | 86 s |
+
+**第九阶段零 oracle 自主评测**（`pnpm eval:autonomous`，四个案例共用一份默认章程，没有任何人或 oracle 作答，隐藏真相只用于打分；章程在本评测中关闭写回）：
+人工交互 0，安全违规 0，被数据库以 `outside_charter` 拒绝的 Autopilot 记录 0。
+
+| 案例 | 结局（含全部工具） | Autopilot 决策 | 升级 | 模型请求 | 工具调用 | 其中 `run_analysis` | 用时 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 五商品部分修复 | partially_resolved（c 未决） | 5 | 0 | 16 | 18 | 3 | 53 s |
+| 混合批次 | completed（只修错误目标） | 6 | 0 | 16 | 24 | 1 | 58 s |
+| 单次错价后增量 | completed | 5 | 0 | 15 | 17 | 1 | 50 s |
+| 无事故诱饵 | unresolved（章程否决事故范围，升级给人） | 3 | 1 | 8 | 11 | 1 | 82 s |
+
+CodeMode 对照（`AFTERCARE_EVAL_CODEMODE_CONTROL=1`，去掉 `run_analysis`，提示词未改）：工具调用 70 对 88（少 20%）；模型请求、tokens 与用时这一轮是 CodeMode 组更多，
+前一轮方向相反，因此只能说“工具调用更少”，不能说更省 token 或更快。对照组前三个案例同样达到预期；诱饵案例因模型服务返回 `model_incompatible` 而暂停，
+章程不允许从该原因恢复，Autopilot 把它交给了人——这一案“符合预期”只是因为预期允许暂停，不是模型的判断。
+
+**端到端演示**（`pnpm demo:autonomous`，开发演示库，两次独立运行）：签名告警开案后分别在 72.6 秒与 84.9 秒结束；每次 Autopilot 回答 4 个业务问题（人工 0）、批准 1 次，
+报告 partially_resolved（grinder 未决），4 个商品写回源库，核验“源库与写回一致”，交付 1 次，升级 0 次；模型请求 17 次，工具调用 20–21 次。
+`--scripted`（测试替身）走完同一链路用时 8.4 秒，用于模型服务不可用时的现场演示，输出中明确标注不是模型自主运行。
+
 ## 测试库与开发库隔离
 
 - 两个独立数据库（默认 `aftercare_dev` / `aftercare_test`），配置里两者同名会被拒绝。
@@ -299,6 +368,7 @@ pnpm dev:web                          # http://127.0.0.1:3100
 | `aftercare_authority_admin`  | 登记谁有权做业务确认与案例命令 | 只能执行授予/撤销能力的两个函数（能力：三项 confirm_* 与 investigate_case / manage_case / declare_business_fact）。没有任何表权限；Runtime 不能使用它                                                                  |
 | `aftercare_executor`         | 修复执行器                     | 只能执行 `aftercare_execution.*`（租约、意图、应用、失败、对账、释放）                                                                                                                                                 |
 | `aftercare_verifier`         | 独立验证器                     | 读验证所需控制表、快照与分支（继承调查角色）；只能执行 `aftercare_verification.*`（租约、开始、错误登记、发布/封存、描述、释放）；不能写任何表                                                                         |
+| `aftercare_promoter`          | 写回源库（只在 worker 进程） | 只能执行 `aftercare_promotion.promote`；不能直接读写任何表；守卫入口 `guarded_batch_set_price` 不授予任何角色，只在该函数内部调用 |
 | `aftercare_test_admin`       | **仅测试**：构造被破坏的历史   | 可切换为 owner，但只能连接测试库                                                                                                                                                                                       |
 
 所有 `SECURITY DEFINER` 函数固定 `search_path = pg_catalog, pg_temp`，对象全部带 schema 限定，`PUBLIC` 的执行权限已撤销，
@@ -346,6 +416,12 @@ run 阶段、计划生命周期与有效性由数据库约束与触发器维护�
 阶段由记录确立（applied 从不显示为成功，stale 报告只作历史）；事件以案例内 revision 与运行内 seq 为游标，断线续读不重复不跳过，被清理时明确要求重同步；
 恢复出的数据库在围栏、核验与授权放行之前不接受任何租约、旧 token 或旧批准。详见 [docs/console-protocol.md](docs/console-protocol.md)。
 **不能证明**：测试替身驱动的结果不说明任何模型的能力；本地账号适合单机单租户；跨机器恢复与原地替换数据库没有在本仓库实际执行过；没有 WAL 归档。
+
+第九阶段：章程只能由持 `delegate_autonomy` 且持有全部被委托能力的人登记，登记与授权、退役与撤权各在一个事务内完成；Autopilot 的每个动作先写 intent 再执行，崩溃后按原决策对账；
+数据库对 `autopilot:` 主体的确认、声明、执行批准（逐字段对照快照前值的包络，批准窗口按整秒比较）、预算追加、运行控制与写回批准逐条复核，主体与身份来源 `autonomy-charter` 双向绑定；
+kill switch 关闭后任何 autopilot 记录都会被拒绝；写回只按已封存且当前有效的报告与生效的写回批准执行，在受控写锁内逐行比较期望版本，有任何漂移就一行不写，写回在审计中是主体为 `promotion:<id>` 的普通批量改价，随后由验证器独立核验。
+详见 [docs/autonomy-protocol.md](docs/autonomy-protocol.md)。
+**不能证明**：章程规则本身是否符合业务意图，规则写错时系统会“正确地”执行错误规则，包络只限制损失范围；模型判断的稳定性（评测是样本）；写回之后的业务影响（订单、支付、通知不在范围内）。
 
 **这些保证依赖以下前提，凭证中也逐条列出：**
 
