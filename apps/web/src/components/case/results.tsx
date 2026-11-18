@@ -1,7 +1,7 @@
 'use client';
 
 import type { Artefact, Refusal, VerificationReport } from '@aftercare/console/client';
-import { Download } from 'lucide-react';
+import { Download, FileCheck2, History, RotateCcw } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
 import { downloadFile } from '../../lib/api.ts';
 import { cents, reasonLabel, shortId, type Tone, VERDICT_LABEL, when } from '../../lib/labels.ts';
@@ -17,9 +17,11 @@ import {
   INPUT_CLASS,
   Json,
   Notice,
+  OPTION_CLASS,
   Pill,
   RefusalNote,
   ROWS_CLASS,
+  Table,
   Technical,
 } from '../ui.tsx';
 import { UntrustedText } from '../untrusted-text.tsx';
@@ -43,8 +45,7 @@ const KIND: Readonly<Record<string, string>> = {
   sql_export: 'SQL 导出',
   diff_report: '差异报告',
 };
-const NOT_RECALLABLE =
-  '已下载的文件无法远程撤回；之后的撤销或失效只标记登记，不会改变已下载的副本。';
+const NOT_RECALLABLE = '已下载的文件无法远程撤回；撤销或失效只做登记，不改变已下载的副本。';
 const ENDED = ['completed', 'partially_resolved', 'unresolved', 'failed', 'cancelled'];
 
 const artefactState = (artefact: Artefact): readonly [Tone, string] =>
@@ -87,19 +88,19 @@ function Artefacts({ report }: { readonly report: VerificationReport }) {
   };
 
   return (
-    <section className="space-y-3 border-line border-t pt-5" data-testid="artefacts">
+    <section className="space-y-4 border-line border-t pt-5" data-testid="artefacts">
       <div>
         <h3 className="font-medium">产物</h3>
-        <p className="mt-0.5 text-xs text-muted">{NOT_RECALLABLE}</p>
+        <p className="mt-1 text-meta text-muted">{NOT_RECALLABLE}</p>
       </div>
       {!repair && (
         <Notice tone="rose" testId="no-artefact">
-          这份报告的结论是“{VERDICT_LABEL[report.verdict]}”，不是修复产物：不能生成或下载修复产物。
+          本报告结论为“{VERDICT_LABEL[report.verdict]}”，不是修复产物：不能生成或下载。
         </Notice>
       )}
       {repair && !current && (
         <Notice tone="apricot">
-          报告已失效：不能再生成新产物；已有产物只能由持历史读取权限的人明确作为历史材料读取。
+          报告已失效：不能再生成新产物；已有产物仅供持历史读取权限者作为历史材料读取。
         </Notice>
       )}
       {artefacts.length > 0 && (
@@ -119,9 +120,11 @@ function Artefacts({ report }: { readonly report: VerificationReport }) {
                   {artefact.kind === 'sql_export' && !artefact.executable ? '（不可执行）' : ''}
                 </span>
                 <Pill tone={tone}>{label}</Pill>
-                <span className="text-xs text-muted">有效至 {when(artefact.expiresAt)}</span>
+                <span className="text-meta text-muted tabular-nums">
+                  有效至 {when(artefact.expiresAt)}
+                </span>
                 {downloaded === artefact.artefactId && (
-                  <span className="text-xs text-mint-ink">已下载。</span>
+                  <span className="text-meta text-mint-ink">已下载。</span>
                 )}
                 <span className="ml-auto flex flex-wrap gap-2">
                   {artefact.status === 'ready' && artefact.currency === 'current' && (
@@ -162,7 +165,7 @@ function Artefacts({ report }: { readonly report: VerificationReport }) {
         </ul>
       )}
       {repair && current && (
-        <div className="flex flex-wrap items-end gap-2 rounded-field bg-canvas p-4">
+        <div className="flex flex-wrap items-end gap-3 rounded-field bg-canvas p-4">
           <Button
             tone="primary"
             pending={produce.pending}
@@ -180,7 +183,7 @@ function Artefacts({ report }: { readonly report: VerificationReport }) {
           >
             生成差异报告
           </Button>
-          <div className="flex min-w-64 flex-1 flex-wrap items-end gap-2">
+          <div className="flex min-w-64 flex-1 flex-wrap items-end gap-3">
             <div className="min-w-48 flex-1">
               <Field label="SQL 导出的本地演练目标 schema">
                 <input
@@ -233,11 +236,11 @@ function Undo({ report }: { readonly report: VerificationReport }) {
   const conflict =
     undo.refusal?.code === 'undo_conflict' ? undo.refusal.detail.conflict : undefined;
   return (
-    <section className="space-y-3 border-line border-t pt-5" data-testid="undo">
+    <section className="space-y-4 border-line border-t pt-5" data-testid="undo">
       <div>
         <h3 className="font-medium">受保护撤销</h3>
-        <p className="mt-0.5 text-xs text-muted">
-          撤销在封存分支的后继分支上逆转账本记录的差异，仍需独立的批准、执行和验证。封存分支本身不会被改写。
+        <p className="mt-1 text-meta text-muted">
+          在封存分支的后继分支上逆转账本差异，仍需独立批准、执行和验证；封存分支本身不会被改写。
         </p>
       </div>
       <Button
@@ -253,7 +256,7 @@ function Undo({ report }: { readonly report: VerificationReport }) {
           <RefusalNote refusal={undo.refusal} />
           {conflict !== undefined && (
             <Notice tone="apricot" testId="undo-conflict">
-              存在撤销冲突，系统不会强制覆盖后续变化。请依据冲突内容决定后续处理（例如重新调查）。
+              存在撤销冲突，系统不会强制覆盖后续变化。依据冲突内容决定后续处理，例如重新调查。
               <Json value={conflict} />
             </Notice>
           )}
@@ -276,15 +279,15 @@ function Objects({
 }) {
   return (
     <section data-testid={testId} className="min-w-0 rounded-field bg-canvas p-4">
-      <h3 className="mb-2 flex items-center gap-2 font-medium">
+      <h3 className="mb-2.5 flex items-center gap-2 text-sm font-medium">
         <Dot tone={tone} />
         {title}
-        <span className="text-meta text-muted tabular-nums">{entries.length}</span>
+        <span className="text-meta font-normal text-muted tabular-nums">{entries.length}</span>
       </h3>
       {entries.length === 0 ? (
-        <p className="text-muted">没有。</p>
+        <p className="text-meta text-muted">没有。</p>
       ) : (
-        <ul className="space-y-1 break-words">
+        <ul className="space-y-1.5 break-words tabular-nums">
           {entries.map((entry) => (
             <li key={entry.key}>{entry.text}</li>
           ))}
@@ -309,9 +312,9 @@ function Report({
       data-testid="report"
       data-verdict={report.verdict}
       data-validity={report.validity}
-      className="space-y-5"
+      className="space-y-4"
     >
-      <div className="flex flex-wrap items-center gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
         <Pill
           testId="report-validity"
           tone={
@@ -326,15 +329,15 @@ function Report({
             ? `当前结果：${VERDICT_LABEL[report.verdict]}`
             : `历史报告（已失效）：当时结论为${VERDICT_LABEL[report.verdict]}`}
         </Pill>
-        <span className="text-xs text-muted tabular-nums">发布于 {when(report.publishedAt)}</span>
+        <span className="text-meta text-muted tabular-nums">发布于 {when(report.publishedAt)}</span>
       </div>
       {!current && (
         <Notice tone="apricot" testId="report-stale">
-          这份报告在修订 {report.staleRevision} 因“{reasonLabel(report.staleReason)}
-          ”失效。内容是当时依据下的结论，不代表现在仍然成立。
+          报告在修订 {report.staleRevision} 因“{reasonLabel(report.staleReason)}
+          ”失效；结论只代表当时的依据。
         </Notice>
       )}
-      <div className="grid grid-cols-2 gap-3 text-sm max-md:grid-cols-1">
+      <div className="grid grid-cols-2 gap-4 text-sm max-md:grid-cols-1">
         <Objects
           testId="objects-modified"
           tone="mint"
@@ -370,28 +373,28 @@ function Report({
         />
       </div>
       <section className="text-sm">
-        <h3 className="mb-2 font-medium">四层结论</h3>
-        <ul className="grid grid-cols-4 gap-2 max-lg:grid-cols-2">
+        <h3 className="mb-2.5 font-medium">四层结论</h3>
+        <ul className="grid grid-cols-4 gap-3 max-lg:grid-cols-2">
           {Object.entries(layers).map(([layer, status]) => {
             const [tone, label] = LAYER_STATUS[status] ?? ['neutral', status];
             return (
-              <li key={layer} className="rounded-input border border-line px-3 py-2.5">
-                <span className="block text-xs text-muted">{LAYER[layer] ?? layer}</span>
-                <span className="mt-1 block">
+              <li key={layer} className="rounded-input bg-canvas px-3 py-2.5">
+                <span className="block text-meta text-muted">{LAYER[layer] ?? layer}</span>
+                <span className="mt-1.5 block">
                   <Pill tone={tone}>{label}</Pill>
                 </span>
               </li>
             );
           })}
         </ul>
-        <p className="mt-2 text-xs text-ink-soft">
+        <p className="mt-3 text-meta text-ink-soft">
           适用范围：
           <UntrustedText text={scope.appliesTo} />
         </p>
       </section>
-      <div>
-        <Technical label={`义务检查（${findings.length} 项，${failing} 项未通过）`}>
-          <table className="w-full text-left font-sans [&_td]:py-1 [&_td]:pr-3 [&_th]:pr-3">
+      <Technical label={`义务检查（${findings.length} 项，${failing} 项未通过）`}>
+        <div className="font-sans">
+          <Table>
             <thead>
               <tr>
                 <th>义务</th>
@@ -410,21 +413,21 @@ function Report({
                 </tr>
               ))}
             </tbody>
-          </table>
-        </Technical>
-        <Technical>
-          <p>
-            报告 {report.reportId}，摘要 {report.digest}
-          </p>
-          <p>
-            分支 {report.branchId}，应用 {report.applicationId}，契约摘要{' '}
-            {report.body.executionDigest}
-          </p>
-          <Json
-            value={{ limitations: scope.limitations, counterexamples: report.body.counterexamples }}
-          />
-        </Technical>
-      </div>
+          </Table>
+        </div>
+      </Technical>
+      <Technical>
+        <p>
+          报告 {report.reportId}，摘要 {report.digest}
+        </p>
+        <p>
+          分支 {report.branchId}，应用 {report.applicationId}，契约摘要{' '}
+          {report.body.executionDigest}
+        </p>
+        <Json
+          value={{ limitations: scope.limitations, counterexamples: report.body.counterexamples }}
+        />
+      </Technical>
       <Artefacts report={report} />
       {latest && current && report.verdict !== 'failed' && report.verdict !== 'blocked' && (
         <Undo report={report} />
@@ -447,10 +450,12 @@ function Reopen() {
   return (
     <Card
       title="重新调查"
-      description="在同一案例上开始新的运行。已有的报告、账本和封存分支保留为历史。"
+      description="已有的报告、账本和封存分支保留为历史。"
+      icon={RotateCcw}
+      tone="apricot"
       testId="reopen"
     >
-      <div className="space-y-3 text-sm">
+      <div className="space-y-4 text-sm">
         <Field label="事故描述">
           <textarea
             name="rerun-description"
@@ -461,7 +466,7 @@ function Reopen() {
           />
         </Field>
         {held && (
-          <label className="flex items-start gap-2.5">
+          <label className={OPTION_CLASS}>
             <input
               type="checkbox"
               name="ack-isolation"
@@ -469,11 +474,11 @@ function Reopen() {
               checked={isolation}
               onChange={(event) => setIsolation(event.target.checked)}
             />
-            我知道上一次运行因确定性不变量失败被隔离，仍要开始新的运行。
+            <span>我知道上一次运行因确定性不变量失败被隔离，仍要开始新的运行。</span>
           </label>
         )}
         {modelMode === 'live' && (
-          <label className="flex items-start gap-2.5">
+          <label className={OPTION_CLASS}>
             <input
               type="checkbox"
               name="ack-egress"
@@ -481,7 +486,7 @@ function Reopen() {
               checked={egress}
               onChange={(event) => setEgress(event.target.checked)}
             />
-            我知道案例内容会发送到配置的模型服务。
+            <span>我知道案例内容会发送到配置的模型服务。</span>
           </label>
         )}
         <Button
@@ -515,7 +520,13 @@ export function Results() {
   const reports = [...view.reports].reverse();
   return (
     <>
-      <Card title="验证报告" description="由独立验证器发布并封存。" testId="reports">
+      <Card
+        title="验证报告"
+        description="由独立验证器发布并封存。"
+        icon={FileCheck2}
+        tone="mint"
+        testId="reports"
+      >
         {reports.length === 0 ? (
           <Empty>
             还没有验证报告。
@@ -532,7 +543,7 @@ export function Results() {
         )}
       </Card>
       <Reopen />
-      <Card title="运行与重开记录" testId="runs">
+      <Card title="运行与重开记录" icon={History} tone="sky" testId="runs">
         <ul className={ROWS_CLASS}>
           {view.caseRuns.map((run) => (
             <li key={run.runId} className="flex items-start gap-3 text-sm">

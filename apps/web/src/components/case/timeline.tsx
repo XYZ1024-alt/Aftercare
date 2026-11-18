@@ -1,6 +1,7 @@
 'use client';
 
 import type { FeedItem } from '@aftercare/console/client';
+import { History } from 'lucide-react';
 import {
   eventLabel,
   QUESTION_KIND_LABEL,
@@ -9,7 +10,7 @@ import {
   type Tone,
   when,
 } from '../../lib/labels.ts';
-import { Card, Empty, Json, Notice, SOLID_CLASS, Technical } from '../ui.tsx';
+import { Card, Dot, Empty, Json, Notice, Pill, Technical } from '../ui.tsx';
 import { UntrustedMarkdown, UntrustedText } from '../untrusted-text.tsx';
 import { useCase } from './case-context.tsx';
 
@@ -48,15 +49,6 @@ const EVENT_TONE: Readonly<Record<string, Tone>> = {
   run_unresolved: 'neutral',
 };
 
-const RING_CLASS: Readonly<Record<Tone, string>> = {
-  neutral: 'border-muted',
-  sky: 'border-sky',
-  violet: 'border-violet',
-  apricot: 'border-apricot',
-  mint: 'border-mint',
-  rose: 'border-rose',
-};
-
 function references(item: FeedItem): string[] {
   const refs = item.detail.references;
   if (typeof refs !== 'object' || refs === null || Array.isArray(refs)) return [];
@@ -76,26 +68,21 @@ function Item({ item }: { readonly item: FeedItem }) {
       data-event={item.eventType}
       data-origin={item.origin}
       data-seq={item.seq}
-      className="relative pb-5 last:pb-0"
+      className="t-enter relative pb-5 last:pb-0"
     >
-      {/* Steps of the agent are rings; records of the case are filled. */}
-      <span
-        aria-hidden
-        className={`absolute top-1.5 -left-[22px] size-3 rounded-full border-2 ${item.origin === 'case' ? `${RING_CLASS[tone]} ${SOLID_CLASS[tone]}` : `${RING_CLASS[tone]} bg-card`}`}
-      />
+      {/* A neutral rail with one coloured dot per event; the tone never frames a block. */}
+      <Dot tone={tone} className="absolute top-1.5 -left-[25px]" />
       <p className="text-xs text-muted tabular-nums">
         {when(item.recordedAt)} · {item.origin === 'agent' ? `Agent 步骤 #${item.seq}` : '案例记录'}
       </p>
-      <div className="mt-0.5 flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
+      <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1.5">
         <span className="font-medium">{eventLabel(item.origin, item.eventType)}</span>
         {typeof detail.tool === 'string' && (
-          <code className="rounded-md bg-track px-1.5 py-px font-mono text-xs text-ink-soft">
+          <code className="rounded-bar bg-track px-1.5 py-0.5 font-mono text-xs text-ink-soft">
             {detail.tool}
           </code>
         )}
-        {typeof detail.code === 'string' && (
-          <span className="text-xs text-rose-ink">拒绝原因：{detail.code}</span>
-        )}
+        {typeof detail.code === 'string' && <Pill tone="rose">拒绝原因：{detail.code}</Pill>}
         {typeof detail.kind === 'string' && item.eventType.startsWith('question_') && (
           <span className="text-xs text-ink-soft">
             {QUESTION_KIND_LABEL[detail.kind] ?? detail.kind}
@@ -108,23 +95,23 @@ function Item({ item }: { readonly item: FeedItem }) {
         {typeof detail.reason === 'string' && (
           <span className="text-xs text-ink-soft">{reasonLabel(detail.reason)}</span>
         )}
-        {detail.repeated === true && <span className="text-xs text-apricot-ink">重复请求</span>}
-        {invalidated > 0 && (
-          <span className="text-xs text-apricot-ink">使 {invalidated} 项结论失效</span>
-        )}
+        {detail.repeated === true && <Pill tone="apricot">重复请求</Pill>}
+        {invalidated > 0 && <Pill tone="apricot">使 {invalidated} 项结论失效</Pill>}
       </div>
       {typeof detail.note === 'string' && detail.note !== '' && (
-        <div className="mt-2 rounded-input bg-canvas px-3.5 py-2.5 text-ink-soft">
-          <p className="mb-1 text-xs text-muted">行动说明（模型所写，不是执行结果）</p>
+        <div className="mt-2.5 rounded-field bg-canvas p-4">
+          <p className="mb-1.5 text-meta text-muted">行动说明（模型所写，不是执行结果）</p>
           <UntrustedMarkdown text={detail.note} />
         </div>
       )}
       {typeof detail.proposition === 'string' && (
-        <p className="mt-1.5 text-sm text-ink-soft">
+        <p className="mt-2 text-sm text-ink-soft">
           <UntrustedText text={detail.proposition} />
         </p>
       )}
-      {refs.length > 0 && <p className="mt-1.5 text-xs text-muted">引用：{refs.join('，')}</p>}
+      {refs.length > 0 && (
+        <p className="mt-2 text-meta break-words text-muted">引用：{refs.join('，')}</p>
+      )}
       <Technical label="原始记录">
         <Json value={detail} />
       </Technical>
@@ -139,13 +126,13 @@ export function Timeline() {
   return (
     <Card
       title="调查过程"
-      description={
-        feed.items.length === 0 ? undefined : `${feed.items.length} 个事件，按发生顺序排列`
-      }
+      icon={History}
+      tone="sky"
+      description={feed.items.length === 0 ? undefined : `${feed.items.length} 个事件`}
       testId="timeline"
     >
-      {feed.resynced !== null && (
-        <div className="mb-4">
+      <div className="space-y-4">
+        {feed.resynced !== null && (
           <Notice tone="apricot" testId="feed-resync">
             {feed.resynced === 'events_truncated'
               ? '较早的事件已按保留策略清理，以下从保留的最早事件开始；当前状态已重新读取。'
@@ -153,22 +140,20 @@ export function Timeline() {
                 ? '案例开始了新的运行，以下是新运行的事件；当前状态已重新读取。'
                 : '事件位置已重新同步；当前状态已重新读取。'}
           </Notice>
-        </div>
-      )}
-      {feed.items.length === 0 ? (
-        <Empty>还没有事件。</Empty>
-      ) : (
-        <ol className="relative pl-[22px] before:absolute before:top-2 before:bottom-2 before:left-[5px] before:w-0.5 before:rounded-full before:bg-line">
-          {feed.items.map((item) => (
-            <Item key={`${item.origin}:${item.agentRunId ?? ''}:${item.seq}`} item={item} />
-          ))}
-        </ol>
-      )}
-      {waiting && view.stage.stage === 'queued' && (
-        <p className="mt-3 text-xs text-muted">
-          运行在排队，等待 worker 领取；没有新事件就是没有进展。
-        </p>
-      )}
+        )}
+        {feed.items.length === 0 ? (
+          <Empty>还没有事件。</Empty>
+        ) : (
+          <ol className="relative pl-6 before:absolute before:top-2 before:bottom-2 before:left-[3px] before:w-0.5 before:rounded-full before:bg-line">
+            {feed.items.map((item) => (
+              <Item key={`${item.origin}:${item.agentRunId ?? ''}:${item.seq}`} item={item} />
+            ))}
+          </ol>
+        )}
+        {waiting && view.stage.stage === 'queued' && (
+          <p className="text-meta text-muted">运行在排队，等待 worker 领取。</p>
+        )}
+      </div>
     </Card>
   );
 }

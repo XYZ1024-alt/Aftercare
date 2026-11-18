@@ -1,6 +1,18 @@
 'use client';
 
-import { ArrowRight, Plus } from 'lucide-react';
+import {
+  ArrowRight,
+  History,
+  Hourglass,
+  type LucideIcon,
+  MessageCircleQuestion,
+  OctagonAlert,
+  Pause,
+  Plus,
+  ScanSearch,
+  ShieldCheck,
+  TriangleAlert,
+} from 'lucide-react';
 import Link from 'next/link';
 import type { ReactNode } from 'react';
 import { HBars, Legend, type Slot, StackedBars } from '../../components/charts.tsx';
@@ -9,13 +21,13 @@ import {
   Card,
   Dot,
   Empty,
+  IconTile,
   Loading,
   MetricCard,
   Notice,
   PageHead,
   Pill,
-  ROWS_CLASS,
-  SectionHeading,
+  stagger,
 } from '../../components/ui.tsx';
 import { UntrustedText } from '../../components/untrusted-text.tsx';
 import { type CaseRow, useCases } from '../../lib/cases.ts';
@@ -58,6 +70,7 @@ function openedPerDay(rows: readonly CaseRow[]): Slot[] {
 interface Task {
   readonly key: string;
   readonly tone: Tone;
+  readonly icon: LucideIcon;
   readonly title: string;
   readonly row: CaseRow;
   readonly tab: string;
@@ -72,6 +85,7 @@ function tasksOf(rows: readonly CaseRow[]): Task[] {
         {
           key: `${overview.caseId}:questions`,
           tone: 'violet',
+          icon: MessageCircleQuestion,
           title: `${overview.openQuestions} 个问题等待回答`,
           row,
           tab: 'questions',
@@ -83,6 +97,7 @@ function tasksOf(rows: readonly CaseRow[]): Task[] {
         {
           key: overview.caseId,
           tone: 'apricot',
+          icon: Pause,
           title: '运行已暂停，等待恢复或取消',
           row,
           tab: 'process',
@@ -94,6 +109,7 @@ function tasksOf(rows: readonly CaseRow[]): Task[] {
         {
           key: overview.caseId,
           tone: 'rose',
+          icon: OctagonAlert,
           title: `${STAGE_LABEL[stage]}：${reasonLabel(overview.agentRun?.statusReason) || '需要人工判断'}`,
           row,
           tab: 'results',
@@ -105,6 +121,7 @@ function tasksOf(rows: readonly CaseRow[]): Task[] {
         {
           key: overview.caseId,
           tone: 'apricot',
+          icon: History,
           title: '封存结果已失效，可以重新调查',
           row,
           tab: 'results',
@@ -126,11 +143,16 @@ const ORDER: Readonly<Record<Tone, number>> = {
 const caseHref = (row: CaseRow, tab?: string) =>
   `/cases/${row.overview.caseId}${tab === undefined ? '' : `?tab=${tab}`}`;
 
-function CaseTitle({ row }: { readonly row: CaseRow }) {
+/** A row of a list card: the whole row is the link, the arrow leans in on hover. */
+const LINK_ROW =
+  'group -mx-3 flex items-center gap-3.5 rounded-field px-3 py-3 transition-colors duration-(--duration-quick) ease-smooth-out hover:bg-canvas';
+
+function RowArrow() {
   return (
-    <span className="line-clamp-2 font-medium">
-      <UntrustedText text={row.title} />
-    </span>
+    <ArrowRight
+      aria-hidden
+      className="size-4 shrink-0 text-muted transition-[translate,color] duration-(--duration-fast) ease-smooth-out group-hover:translate-x-0.5 group-hover:text-ink motion-reduce:transition-none"
+    />
   );
 }
 
@@ -138,75 +160,81 @@ function Tasks({ rows }: { readonly rows: readonly CaseRow[] }) {
   const tasks = tasksOf(rows).sort((left, right) => ORDER[left.tone] - ORDER[right.tone]);
   const shown = tasks.slice(0, 6);
   return (
-    <section className="min-w-0">
-      <SectionHeading>待处理</SectionHeading>
-      <Card>
-        {shown.length === 0 ? (
-          <Empty>没有等待处理的事项。</Empty>
-        ) : (
-          <ul className={ROWS_CLASS}>
-            {shown.map((task) => (
-              <li key={task.key}>
-                <Link href={caseHref(task.row, task.tab)} className="group flex items-start gap-3">
-                  <Dot tone={task.tone} className="mt-1.5" />
-                  <span className="min-w-0 flex-1">
-                    <span className="block font-medium group-hover:underline group-hover:underline-offset-2">
-                      {task.title}
-                    </span>
-                    <span className="mt-0.5 line-clamp-1 text-meta text-muted">
-                      <UntrustedText text={task.row.title} />
-                    </span>
-                  </span>
-                  <ArrowRight aria-hidden className="mt-1 size-4 shrink-0 text-muted" />
-                </Link>
-              </li>
-            ))}
-          </ul>
-        )}
-        {tasks.length > shown.length && (
-          <p className="mt-3 text-meta text-muted">
-            另有 {tasks.length - shown.length} 项，
-            <Link href="/cases" className="font-medium text-ink underline underline-offset-2">
-              在案例列表中查看
-            </Link>
-          </p>
-        )}
-      </Card>
-    </section>
-  );
-}
-
-function Recent({ rows }: { readonly rows: readonly CaseRow[] }) {
-  return (
-    <section className="min-w-0">
-      <SectionHeading>近期案例</SectionHeading>
-      {rows.length === 0 ? (
-        <Card>
-          <Empty>还没有案例。</Empty>
-        </Card>
+    <Card title="待处理" aside={tasks.length > 0 && <Pill tone="apricot">{tasks.length} 项</Pill>}>
+      {shown.length === 0 ? (
+        <Empty>没有等待处理的事项。</Empty>
       ) : (
-        <ul className="space-y-2.5">
-          {rows.slice(0, 4).map((row) => (
-            <li key={row.overview.caseId}>
-              <Link
-                href={caseHref(row)}
-                className="block rounded-block bg-card px-4 py-3.5 shadow-soft transition-[translate,box-shadow] duration-160 motion-safe:hover:-translate-y-px hover:shadow-card"
-              >
-                <Pill tone={stageTone(row.stage)}>{STAGE_LABEL[row.stage]}</Pill>
-                <span className="mt-1.5 block">
-                  <CaseTitle row={row} />
+        <ul className="-my-1">
+          {shown.map((task) => (
+            <li key={task.key}>
+              <Link href={caseHref(task.row, task.tab)} className={LINK_ROW}>
+                <IconTile icon={task.icon} tone={task.tone} />
+                <span className="min-w-0 flex-1">
+                  <span className="block font-medium">{task.title}</span>
+                  <span className="mt-0.5 line-clamp-1 text-meta text-muted">
+                    <UntrustedText text={task.row.title} />
+                  </span>
                 </span>
-                <span className="mt-1 block text-meta text-muted">
-                  {row.overview.lastEvent === null
-                    ? `${row.overview.openedBy} 开启于 ${whenShort(row.overview.openedAt)}`
-                    : `最近：${eventLabel(row.overview.lastEvent.origin, row.overview.lastEvent.eventType)} · ${whenShort(row.overview.lastEvent.recordedAt)}`}
-                </span>
+                <RowArrow />
               </Link>
             </li>
           ))}
         </ul>
       )}
-    </section>
+      {tasks.length > shown.length && (
+        <p className="mt-3 text-meta text-muted">
+          另有 {tasks.length - shown.length} 项，
+          <Link href="/cases" className="font-medium text-ink underline underline-offset-2">
+            在案例列表中查看
+          </Link>
+        </p>
+      )}
+    </Card>
+  );
+}
+
+function Recent({ rows }: { readonly rows: readonly CaseRow[] }) {
+  return (
+    <Card
+      title="近期案例"
+      aside={
+        rows.length > 0 && (
+          <Link
+            href="/cases"
+            className="text-meta font-medium text-muted transition-colors duration-(--duration-quick) hover:text-ink"
+          >
+            全部案例
+          </Link>
+        )
+      }
+    >
+      {rows.length === 0 ? (
+        <Empty>还没有案例。</Empty>
+      ) : (
+        <ul className="-my-1">
+          {rows.slice(0, 5).map((row) => (
+            <li key={row.overview.caseId}>
+              <Link href={caseHref(row)} className={LINK_ROW}>
+                <Dot tone={stageTone(row.stage)} />
+                <span className="min-w-0 flex-1">
+                  <span className="line-clamp-1 font-medium">
+                    <UntrustedText text={row.title} />
+                  </span>
+                  <span className="mt-0.5 line-clamp-1 text-meta text-muted">
+                    {STAGE_LABEL[row.stage]}
+                    {' · '}
+                    {row.overview.lastEvent === null
+                      ? whenShort(row.overview.openedAt)
+                      : `${eventLabel(row.overview.lastEvent.origin, row.overview.lastEvent.eventType)} ${whenShort(row.overview.lastEvent.recordedAt)}`}
+                  </span>
+                </span>
+                <RowArrow />
+              </Link>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Card>
   );
 }
 
@@ -216,36 +244,47 @@ function Metrics({ rows }: { readonly rows: readonly CaseRow[] }) {
   const sealed = inGroup('sealed');
   const partial = sealed.filter((row) => row.stage === 'partially_resolved').length;
   const attention = inGroup('attention').length;
-  const metrics: { tone: Tone; label: string; value: number; foot: ReactNode }[] = [
+  const metrics: {
+    tone: Tone;
+    icon: LucideIcon;
+    label: string;
+    value: number;
+    foot?: ReactNode;
+  }[] = [
     {
       tone: 'apricot',
+      icon: Hourglass,
       label: '等待人工处理',
       value: inGroup('confirming', 'waiting').length,
       foot: questions > 0 ? `共 ${questions} 个问题待回答` : '没有待回答的问题',
     },
     {
       tone: 'sky',
+      icon: ScanSearch,
       label: '调查进行中',
       value: inGroup('running').length,
-      foot: '由 worker 推进，可随时暂停',
     },
     {
       tone: 'mint',
+      icon: ShieldCheck,
       label: '已封存结果',
       value: sealed.length,
-      foot: partial > 0 ? `其中 ${partial} 个部分解决` : '经独立验证，只改动沙箱',
+      foot: partial > 0 ? `其中 ${partial} 个部分解决` : undefined,
     },
     {
       tone: 'rose',
+      icon: TriangleAlert,
       label: '需要关注',
       value: attention,
-      foot: attention > 0 ? '已隔离或失败，需要人工判断' : '没有失败或隔离的运行',
+      foot: attention > 0 ? '已隔离或失败，需要人工判断' : undefined,
     },
   ];
   return (
-    <div className="mb-4 grid grid-cols-4 gap-4 max-lg:grid-cols-2 max-sm:grid-cols-1">
-      {metrics.map((metric) => (
-        <MetricCard key={metric.label} unit="个" {...metric} />
+    <div className="mb-5 grid grid-cols-4 gap-4 max-lg:grid-cols-2 max-sm:gap-3">
+      {metrics.map((metric, index) => (
+        <div key={metric.label} className="t-enter" style={stagger(index)}>
+          <MetricCard unit="个" {...metric} />
+        </div>
       ))}
     </div>
   );
@@ -257,7 +296,6 @@ export default function OverviewPage() {
     <>
       <PageHead
         title="概览"
-        description={rows === undefined ? '读取案例…' : `共 ${rows.length} 个案例，每 5 秒刷新`}
         actions={
           <ButtonLink href="/cases/new" tone="primary">
             <Plus aria-hidden className="size-4" />
@@ -277,11 +315,11 @@ export default function OverviewPage() {
       ) : (
         <>
           <Metrics rows={rows} />
-          <div className="mb-4 grid grid-cols-[1.2fr_0.8fr] gap-4 max-lg:grid-cols-1">
-            <Card
-              title={`近 ${DAYS} 天新开案例`}
-              description="按开启日期统计，颜色是案例现在所处的阶段。"
-            >
+          <div
+            style={stagger(4)}
+            className="t-enter mb-5 grid grid-cols-[1.35fr_1fr] gap-5 max-lg:grid-cols-1"
+          >
+            <Card title={`近 ${DAYS} 天新开案例`} description="颜色表示案例当前所处的阶段">
               <StackedBars
                 slots={openedPerDay(rows)}
                 label={`近 ${DAYS} 天新开案例的柱状图`}
@@ -294,7 +332,11 @@ export default function OverviewPage() {
               />
               <Legend items={GROUPS.map((group) => STAGE_GROUPS[group])} />
             </Card>
-            <Card title="阶段分布" description="全部案例按当前阶段统计。">
+            <Card
+              title="阶段分布"
+              aside={<span className="text-meta text-muted">共 {rows.length} 个</span>}
+              className="flex flex-col [&>ul]:flex-1"
+            >
               <HBars
                 unit="个"
                 rows={GROUPS.map((group) => ({
@@ -304,7 +346,7 @@ export default function OverviewPage() {
               />
             </Card>
           </div>
-          <div className="grid grid-cols-2 gap-4 max-lg:grid-cols-1">
+          <div style={stagger(5)} className="t-enter grid grid-cols-2 gap-5 max-lg:grid-cols-1">
             <Tasks rows={rows} />
             <Recent rows={rows} />
           </div>

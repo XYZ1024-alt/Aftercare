@@ -1,6 +1,7 @@
 'use client';
 
 import type { ContractView, PlanSummaryView } from '@aftercare/console/client';
+import { ClipboardList, History, ShieldCheck } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
 import { cents, reasonLabel, shortId, type Tone, when } from '../../lib/labels.ts';
 import { useCan } from '../../lib/session.tsx';
@@ -92,7 +93,7 @@ function PlanPreview({ plan }: { readonly plan: PlanSummaryView }) {
           </Table>
         )}
       </section>
-      <div className="grid grid-cols-3 gap-3 max-xl:grid-cols-1">
+      <div className="grid grid-cols-3 gap-4 max-xl:grid-cols-1">
         <Group tone="sky" title="保留的合法后续变化" count={content.preserved.length}>
           <ul className="space-y-2">
             {content.preserved.map((entry) => (
@@ -114,8 +115,8 @@ function PlanPreview({ plan }: { readonly plan: PlanSummaryView }) {
                 订单 <span className="font-medium">{order.orderId}</span>（商品 {order.productId}
                 ）按 <span className="tabular-nums">{cents(order.struckUnitPriceCents)}</span> 成交
                 {order.replayedUnitPriceCents !== null &&
-                  `，回放价格为 ${cents(order.replayedUnitPriceCents)}`}
-                ：订单是已发生的事实，不修改。
+                  `，回放价格 ${cents(order.replayedUnitPriceCents)}`}
+                ：订单已发生，不修改。
               </li>
             ))}
           </ul>
@@ -138,20 +139,20 @@ function PlanPreview({ plan }: { readonly plan: PlanSummaryView }) {
             <p className="mt-2 text-xs text-ink-soft">
               部分解决的适用条件：已修复字段与未决项相互隔离（
               {content.isolation.checks.map((check) => check.check).join('，')}
-              ）。批准时需逐项确认知悉未决项。
+              ）。批准时需逐项确认未决项。
             </p>
           )}
         </Group>
       </div>
-      <section className="text-ink-soft">
-        <h3 className="mb-1 font-medium text-ink">基线与事故范围</h3>
-        <p>
+      <section className="rounded-field bg-canvas p-4">
+        <h3 className="mb-2 font-medium">基线与事故范围</h3>
+        <p className="text-meta text-ink-soft">
           基线：可信水位 {content.baseline.trustedWatermark}，
           {content.baseline.entries
             .map((entry) => `${entry.objectId}@${entry.version}=${cents(entry.priceCents)}`)
             .join('，')}
         </p>
-        <p>
+        <p className="text-meta text-ink-soft">
           事故操作 {content.incident.operationIds.length} 个
           {content.incident.batches
             .map(
@@ -199,45 +200,43 @@ function Approval({ contract }: { readonly contract: ContractView }) {
   const allAcknowledged = contract.untouched.every((domain) => acknowledged.includes(domain));
 
   return (
-    <div
-      className="space-y-4 rounded-block border border-line p-5 max-sm:p-4"
-      data-testid="approval"
-      data-contract={contract.contractId}
-    >
-      <Notice tone="mint" testId="sandbox-only">
-        仅修改沙箱，不修改生产库。目标是本案例专属的沙箱分支 {shortId(contract.branchId)}
-        ；源业务库和快照都不会被写入。
-      </Notice>
-      <section className="text-sm">
-        <h3 className="mb-2 font-medium">批准的内容</h3>
-        <Table>
-          <thead>
-            <tr>
-              <th>字段</th>
-              <th className="num">修改前</th>
-              <th className="num">修改后</th>
-              <th className="num">要求版本</th>
-            </tr>
-          </thead>
-          <tbody>
-            {contract.changes.map((change) => (
-              <tr key={change.field}>
-                <td>{change.field}</td>
-                <td className="num text-muted">{cents(change.fromCents)}</td>
-                <td className="num font-semibold">{cents(change.toCents)}</td>
-                <td className="num">{change.expectedVersion}</td>
+    <div className="space-y-4 text-sm" data-testid="approval" data-contract={contract.contractId}>
+      <div className="space-y-4 rounded-field bg-canvas p-4">
+        <Notice tone="mint" testId="sandbox-only">
+          仅修改沙箱，不修改生产库。目标是本案例专属的沙箱分支 {shortId(contract.branchId)}
+          ；源业务库和快照都不会被写入。
+        </Notice>
+        <section>
+          <h3 className="mb-2 font-medium">批准的内容</h3>
+          <Table>
+            <thead>
+              <tr>
+                <th>字段</th>
+                <th className="num">修改前</th>
+                <th className="num">修改后</th>
+                <th className="num">要求版本</th>
               </tr>
-            ))}
-          </tbody>
-        </Table>
-      </section>
-      <div className="grid grid-cols-2 gap-4 text-sm max-md:grid-cols-1">
-        <Checks title="执行事务内的强制检查" checks={contract.checks.inTransaction} />
-        <Checks title="之后必须由独立验证确认" checks={contract.checks.afterwards} />
+            </thead>
+            <tbody>
+              {contract.changes.map((change) => (
+                <tr key={change.field}>
+                  <td>{change.field}</td>
+                  <td className="num text-muted">{cents(change.fromCents)}</td>
+                  <td className="num font-semibold">{cents(change.toCents)}</td>
+                  <td className="num">{change.expectedVersion}</td>
+                </tr>
+              ))}
+            </tbody>
+          </Table>
+        </section>
+        <div className="grid grid-cols-2 gap-4 max-md:grid-cols-1">
+          <Checks title="执行事务内的强制检查" checks={contract.checks.inTransaction} />
+          <Checks title="之后必须由独立验证确认" checks={contract.checks.afterwards} />
+        </div>
+        <p className="text-meta text-muted">
+          策略修订 {contract.policy.revision}；基于依赖修订 {contract.dependencyRevision} 的输入。
+        </p>
       </div>
-      <p className="text-meta text-muted">
-        策略修订 {contract.policy.revision}；基于依赖修订 {contract.dependencyRevision} 的输入。
-      </p>
       {active !== undefined ? (
         <div className="space-y-3">
           <Notice tone="mint">
@@ -251,16 +250,16 @@ function Approval({ contract }: { readonly contract: ContractView }) {
           <RefusalNote refusal={revoke.refusal} />
         </div>
       ) : (
-        <div className="space-y-4 border-line border-t pt-4">
+        <div className="space-y-4">
           {!mayApprove && (
-            <Notice tone="neutral">
+            <Notice tone="apricot">
               批准执行需要 approve_execution 能力，当前账号没有。业务确认不等于执行批准。
             </Notice>
           )}
           {contract.untouched.length > 0 && (
             <fieldset className="space-y-2">
               <legend className="mb-2 text-meta font-medium text-ink-soft">
-                逐项确认知悉以下未决项不会被修改
+                逐项确认以下未决项不会被修改
               </legend>
               {contract.untouched.map((domain) => (
                 <label key={domain} className={OPTION_CLASS}>
@@ -323,7 +322,7 @@ function Approval({ contract }: { readonly contract: ContractView }) {
           <RefusalNote refusal={approve.refusal ?? decline.refusal} />
         </div>
       )}
-      <Technical label="契约摘要（用于排查，不必据此决定）">
+      <Technical label="契约摘要">
         <p>
           契约 {contract.contractId}（{contract.kind}），executionDigest {contract.executionDigest}
         </p>
@@ -373,6 +372,8 @@ export function Plans() {
     <>
       <Card
         title="当前计划"
+        icon={ClipboardList}
+        tone="sky"
         testId="plan"
         aside={
           current === undefined ? undefined : (
@@ -388,33 +389,31 @@ export function Plans() {
           <PlanPreview plan={current} />
         )}
       </Card>
-      <Card
-        title="执行批准"
-        description="批准只允许把这份契约应用到本案例的沙箱分支。"
-        testId="approvals"
-      >
-        {bound.length === 0 ? (
-          <Empty>没有等待批准的执行契约。</Empty>
-        ) : (
-          <div className="space-y-3">
-            {bound.map((contract) => (
-              <Approval key={contract.contractId} contract={contract} />
-            ))}
-          </div>
-        )}
-        {invalidated.length > 0 && (
-          <div className="mt-3 space-y-2">
-            {invalidated.map((contract) => (
-              <Notice key={contract.contractId} tone="apricot" testId="contract-invalidated">
-                契约 {shortId(contract.contractId)} 已失效（{reasonLabel(contract.statusReason)}
-                ）：对它的批准不再有效，需要重新绑定并重新审核。
-              </Notice>
-            ))}
-          </div>
-        )}
+      <Card title="执行批准" icon={ShieldCheck} tone="apricot" testId="approvals">
+        <div className="space-y-4">
+          {bound.length === 0 ? (
+            <Empty>没有等待批准的执行契约。</Empty>
+          ) : (
+            <div className="space-y-4">
+              {bound.map((contract) => (
+                <Approval key={contract.contractId} contract={contract} />
+              ))}
+            </div>
+          )}
+          {invalidated.length > 0 && (
+            <div className="space-y-2">
+              {invalidated.map((contract) => (
+                <Notice key={contract.contractId} tone="apricot" testId="contract-invalidated">
+                  契约 {shortId(contract.contractId)} 已失效（{reasonLabel(contract.statusReason)}
+                  ）：对它的批准不再有效，需要重新绑定并重新审核。
+                </Notice>
+              ))}
+            </div>
+          )}
+        </div>
       </Card>
       {stale.length > 0 && (
-        <Card title="过期或已被取代的计划" testId="stale-plans">
+        <Card title="过期或已被取代的计划" icon={History} tone="neutral" testId="stale-plans">
           <ul className={ROWS_CLASS}>
             {stale.map((plan) => (
               <li key={plan.planId} data-testid="stale-plan" className="text-sm text-ink-soft">

@@ -1,6 +1,22 @@
 'use client';
 
 import type { ActionResult, AdminView, RetentionReport } from '@aftercare/console/client';
+import {
+  Activity,
+  ArchiveRestore,
+  Camera,
+  ChartLine,
+  Cpu,
+  Database,
+  FolderOpen,
+  GitBranch,
+  HeartPulse,
+  Hourglass,
+  LockOpen,
+  ScanSearch,
+  ShieldCheck,
+  Trash2,
+} from 'lucide-react';
 import { type ReactNode, useState } from 'react';
 import useSWR from 'swr';
 import { HBars } from '../../../components/charts.tsx';
@@ -18,6 +34,7 @@ import {
   Pill,
   RefusalNote,
   ROWS_CLASS,
+  stagger,
   Table,
   Technical,
 } from '../../../components/ui.tsx';
@@ -149,138 +166,159 @@ export default function AdminPage() {
           </Pill>
         }
       />
-      <div className="mb-4 grid grid-cols-4 gap-4 max-lg:grid-cols-2 max-sm:grid-cols-1">
-        <MetricCard
-          tone="sky"
-          label="案例"
-          value={resources.cases}
-          unit="个"
-          foot={`产物登记 ${resources.artefacts} 个`}
-        />
-        <MetricCard
-          tone="apricot"
-          label="未结束的运行"
-          value={resources.agentRuns.active}
-          unit="个"
-          foot={`已结束 ${resources.agentRuns.ended} 个，有效租约 ${resources.activeLeases} 个`}
-        />
-        <MetricCard
-          tone="mint"
-          label="有数据的沙箱分支"
-          value={resources.branches.withData}
-          unit="个"
-          foot={`已清理 ${resources.branches.dataRemoved} 个`}
-        />
-        <MetricCard
-          tone="violet"
-          label="有数据的快照"
-          value={resources.snapshots.published}
-          unit="个"
-          foot={`已清理 ${resources.snapshots.dropped} 个`}
-        />
-      </div>
+      <div className="space-y-4">
+        <div className="grid grid-cols-4 gap-4 max-lg:grid-cols-2 max-sm:grid-cols-1">
+          <div className="t-enter grid" style={stagger(0)}>
+            <MetricCard
+              tone="sky"
+              icon={FolderOpen}
+              label="案例"
+              value={resources.cases}
+              unit="个"
+              foot={`产物登记 ${resources.artefacts} 个`}
+            />
+          </div>
+          <div className="t-enter grid" style={stagger(1)}>
+            <MetricCard
+              tone="apricot"
+              icon={Hourglass}
+              label="未结束的运行"
+              value={resources.agentRuns.active}
+              unit="个"
+              foot={`已结束 ${resources.agentRuns.ended} 个，有效租约 ${resources.activeLeases} 个`}
+            />
+          </div>
+          <div className="t-enter grid" style={stagger(2)}>
+            <MetricCard
+              tone="mint"
+              icon={GitBranch}
+              label="有数据的沙箱分支"
+              value={resources.branches.withData}
+              unit="个"
+              foot={`已清理 ${resources.branches.dataRemoved} 个`}
+            />
+          </div>
+          <div className="t-enter grid" style={stagger(3)}>
+            <MetricCard
+              tone="violet"
+              icon={Camera}
+              label="有数据的快照"
+              value={resources.snapshots.published}
+              unit="个"
+              foot={`已清理 ${resources.snapshots.dropped} 个`}
+            />
+          </div>
+        </div>
 
-      <div className="mb-4 grid grid-cols-2 gap-4 max-lg:grid-cols-1">
-        <Card title="运行状态">
-          <ul className="space-y-3">
-            <StatusRow
-              label="数据库"
-              value={words(DATABASE, health.database)}
-              detail={`目标 ${data.target}`}
-            />
-            <StatusRow
-              label="Schema"
-              value={words(SCHEMA, health.schema)}
-              detail={deployment.latestMigration ?? undefined}
-            />
-            <StatusRow
-              label="部署绑定"
-              value={words(DEPLOYMENT, health.deployment)}
-              testId="deployment-state"
-            />
-            <StatusRow label="Worker" value={words(WORKER, health.worker)} testId="worker-state" />
-            <StatusRow label="模型" value={words(MODEL, health.model)} testId="model-state" />
-          </ul>
-        </Card>
-        <Card title="模型连接" description="凭证只存在于服务端进程环境中，不在此显示。">
-          <dl className="space-y-2 text-sm">
-            <div className="flex gap-3">
-              <dt className="w-16 shrink-0 text-ink-soft">模式</dt>
-              <dd>
-                {model.mode === 'live'
-                  ? '真实模型'
-                  : model.mode === 'scripted_test'
-                    ? '测试模式（脚本化测试替身，不是模型）'
-                    : '未配置'}
-              </dd>
-            </div>
-            {model.mode === 'live' && (
-              <>
-                <div className="flex gap-3">
-                  <dt className="w-16 shrink-0 text-ink-soft">服务</dt>
-                  <dd className="break-all">
-                    {model.endpointHost}，模型 {model.model}，单次超时 {model.timeoutMs} ms
-                  </dd>
-                </div>
-                <div className="flex gap-3">
-                  <dt className="w-16 shrink-0 text-ink-soft">价格</dt>
-                  <dd>
-                    {model.pricingConfigured
-                      ? '已配置；供应商报告用量时显示费用'
-                      : '未配置；费用显示为未知'}
-                  </dd>
-                </div>
-              </>
-            )}
-          </dl>
-        </Card>
-      </div>
-
-      <div className="mb-4 grid grid-cols-2 gap-4 max-lg:grid-cols-1">
-        <Card title="Worker">
-          {workers.length === 0 ? (
-            <Empty>没有 worker 心跳记录。</Empty>
-          ) : (
+        <div className="grid grid-cols-2 gap-4 max-lg:grid-cols-1">
+          <Card title="运行状态" icon={Activity} tone="sky">
             <ul className={ROWS_CLASS}>
-              {workers.map((worker) => (
-                <li key={worker.workerId} className="flex items-start gap-3 text-sm">
-                  <Dot tone={worker.stoppedAt === null ? 'mint' : 'neutral'} className="mt-1.5" />
-                  <span className="min-w-0">
-                    <span className="block break-all font-medium">{worker.workerId}</span>
-                    <span className="block text-xs text-muted">
-                      {worker.stoppedAt !== null
-                        ? `已于 ${when(worker.stoppedAt)} 停止`
-                        : `最近心跳 ${worker.silentSeconds.toFixed(0)} 秒前`}
-                      {typeof worker.detail.lastModelFailure === 'string' &&
-                        `；最近模型故障 ${worker.detail.lastModelFailure}`}
-                      {typeof worker.detail.lastError === 'string' &&
-                        `；最近错误 ${worker.detail.lastError}`}
-                    </span>
-                  </span>
-                </li>
-              ))}
+              <StatusRow label="数据库" value={words(DATABASE, health.database)} />
+              <StatusRow
+                label="Schema"
+                value={words(SCHEMA, health.schema)}
+                detail={deployment.latestMigration ?? undefined}
+              />
+              <StatusRow
+                label="部署绑定"
+                value={words(DEPLOYMENT, health.deployment)}
+                testId="deployment-state"
+              />
+              <StatusRow
+                label="Worker"
+                value={words(WORKER, health.worker)}
+                testId="worker-state"
+              />
+              <StatusRow label="模型" value={words(MODEL, health.model)} testId="model-state" />
             </ul>
-          )}
-        </Card>
-        <Card title="存储">
-          <HBars
-            unit="MB"
-            rows={[
-              { label: '数据库总计', value: megabytes(resources.databaseBytes), tone: 'sky' },
-              { label: '快照数据', value: megabytes(resources.snapshots.bytes), tone: 'violet' },
-            ]}
-          />
-          <p className="mt-3 text-meta text-muted">运行事件 {resources.agentEvents} 条</p>
-        </Card>
-      </div>
+          </Card>
+          <Card
+            title="模型连接"
+            description="凭证只保存在服务端进程环境，不在此显示。"
+            icon={Cpu}
+            tone="violet"
+          >
+            <dl className="space-y-2 rounded-field bg-canvas p-4 text-sm">
+              <div className="flex gap-3">
+                <dt className="w-16 shrink-0 text-ink-soft">模式</dt>
+                <dd>
+                  {model.mode === 'live'
+                    ? '真实模型'
+                    : model.mode === 'scripted_test'
+                      ? '测试模式（脚本化测试替身，不是模型）'
+                      : '未配置'}
+                </dd>
+              </div>
+              {model.mode === 'live' && (
+                <>
+                  <div className="flex gap-3">
+                    <dt className="w-16 shrink-0 text-ink-soft">服务</dt>
+                    <dd className="break-all">
+                      {model.endpointHost}，模型 {model.model}，单次超时 {model.timeoutMs} ms
+                    </dd>
+                  </div>
+                  <div className="flex gap-3">
+                    <dt className="w-16 shrink-0 text-ink-soft">价格</dt>
+                    <dd>
+                      {model.pricingConfigured
+                        ? '已配置；供应商报告用量时显示费用'
+                        : '未配置；费用显示为未知'}
+                    </dd>
+                  </div>
+                </>
+              )}
+            </dl>
+          </Card>
+        </div>
 
-      <div className="mb-4">
-        <Card title="备份恢复">
-          <div className="space-y-3 text-sm">
-            {deployment.lastFence === null ? (
-              <p className="text-ink-soft">这个数据库没有恢复围栏记录。</p>
+        <div className="grid grid-cols-2 gap-4 max-lg:grid-cols-1">
+          <Card title="Worker" icon={HeartPulse} tone="mint">
+            {workers.length === 0 ? (
+              <Empty>没有 Worker 心跳记录。</Empty>
             ) : (
-              <p data-testid="fence" className="text-ink-soft">
+              <ul className={ROWS_CLASS}>
+                {workers.map((worker) => (
+                  <li key={worker.workerId} className="flex items-start gap-3 text-sm">
+                    <Dot tone={worker.stoppedAt === null ? 'mint' : 'neutral'} className="mt-1.5" />
+                    <span className="min-w-0">
+                      <span className="block break-all font-medium">{worker.workerId}</span>
+                      <span className="block text-xs text-muted">
+                        {worker.stoppedAt !== null
+                          ? `已于 ${when(worker.stoppedAt)} 停止`
+                          : `最近心跳 ${worker.silentSeconds.toFixed(0)} 秒前`}
+                        {typeof worker.detail.lastModelFailure === 'string' &&
+                          `；最近模型故障 ${worker.detail.lastModelFailure}`}
+                        {typeof worker.detail.lastError === 'string' &&
+                          `；最近错误 ${worker.detail.lastError}`}
+                      </span>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Card>
+          <Card title="存储" icon={Database} tone="sky">
+            <HBars
+              unit="MB"
+              rows={[
+                { label: '数据库总计', value: megabytes(resources.databaseBytes), tone: 'sky' },
+                {
+                  label: '快照数据',
+                  value: megabytes(resources.snapshots.bytes),
+                  tone: 'violet',
+                },
+              ]}
+            />
+            <p className="mt-4 text-meta text-muted">运行事件 {resources.agentEvents} 条</p>
+          </Card>
+        </div>
+
+        <Card title="备份恢复" icon={ArchiveRestore} tone="apricot">
+          <div className="space-y-4 text-sm">
+            {deployment.lastFence === null ? (
+              <p className="text-muted">数据库没有恢复围栏记录。</p>
+            ) : (
+              <p data-testid="fence" className="rounded-field bg-canvas p-4 text-ink-soft">
                 最近一次恢复围栏：{when(deployment.lastFence.fencedAt)}（
                 {deployment.lastFence.reason}
                 ）；作废租约 {deployment.lastFence.leasesExpired} 个，禁用批准{' '}
@@ -294,7 +332,8 @@ export default function AdminPage() {
             )}
             <div className="flex flex-wrap gap-2">
               <Button pending={verify.pending} onClick={() => void verify.run({})}>
-                核验记录与内容摘要
+                <ShieldCheck aria-hidden className="size-4" />
+                核验记录与摘要
               </Button>
               {deployment.hold && (
                 <Button
@@ -302,6 +341,7 @@ export default function AdminPage() {
                   pending={release.pending}
                   onClick={() => void release.run({})}
                 >
+                  <LockOpen aria-hidden className="size-4" />
                   核验并放行
                 </Button>
               )}
@@ -321,16 +361,16 @@ export default function AdminPage() {
               }
             />
             <p className="text-xs text-muted">
-              放行后，被暂停的运行仍需逐个恢复；恢复前的批准不会重新生效，需要重新批准。
+              放行后，被暂停的运行仍需逐个恢复；旧批准不会重新生效，需重新批准。
             </p>
           </div>
         </Card>
-      </div>
 
-      <div className="mb-4">
         <Card
           title="保留与清理"
-          description="清理是物理删除数据，登记记录保留。只清理已结束且不再被引用的案例数据；记录“已失效”不构成清理理由；已下载的副本不受影响。"
+          description="清理是物理删除数据，登记记录保留；只清理已结束且不再被引用的案例数据；记录“已失效”不构成清理理由；已下载的副本不受影响。"
+          icon={Trash2}
+          tone="rose"
           testId="retention"
         >
           <Table>
@@ -360,6 +400,7 @@ export default function AdminPage() {
               pending={retention.pending}
               onClick={() => void retention.run({ apply: false })}
             >
+              <ScanSearch aria-hidden className="size-4" />
               演练（不删除）
             </Button>
             <Button
@@ -368,6 +409,7 @@ export default function AdminPage() {
               disabled={candidates === 0}
               onClick={() => setConfirmApply(true)}
             >
+              <Trash2 aria-hidden className="size-4" />
               执行清理（{candidates} 项）
             </Button>
           </div>
@@ -397,16 +439,16 @@ export default function AdminPage() {
             </ul>
           </ConfirmDialog>
         </Card>
-      </div>
 
-      <Card title="指标">
-        <Technical label="由记录统计（工具与模型错误、拒绝、批准状态、依赖失效、租约接管、对账、验证、未决域）">
-          <Json value={data.metrics.records} />
-        </Technical>
-        <Technical label="本进程（事件连接、请求重放与拒绝）">
-          <Json value={data.metrics.process} />
-        </Technical>
-      </Card>
+        <Card title="指标" icon={ChartLine} tone="neutral">
+          <Technical label="按记录统计">
+            <Json value={data.metrics.records} />
+          </Technical>
+          <Technical label="本进程">
+            <Json value={data.metrics.process} />
+          </Technical>
+        </Card>
+      </div>
     </>
   );
 }

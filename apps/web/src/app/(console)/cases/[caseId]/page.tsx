@@ -13,7 +13,7 @@ import { Progress } from '../../../../components/case/progress.tsx';
 import { Questions } from '../../../../components/case/questions.tsx';
 import { Results } from '../../../../components/case/results.tsx';
 import { Timeline } from '../../../../components/case/timeline.tsx';
-import { Chip } from '../../../../components/ui.tsx';
+import { SlidingPill, useSlidingPill } from '../../../../components/ui.tsx';
 
 const TABS = [
   ['process', '调查过程'],
@@ -49,6 +49,7 @@ function useTab(): [Tab, (tab: Tab) => void] {
 function Sections() {
   const { view } = useCase();
   const [tab, select] = useTab();
+  const { bar, pill } = useSlidingPill<HTMLDivElement>(tab);
   const open = view.questions.filter(
     (question) => question.state === 'open' && question.kind !== 'execution_approval',
   ).length;
@@ -64,43 +65,49 @@ function Sections() {
   const Panel = PANELS[tab];
   return (
     <>
-      <div
-        role="tablist"
-        aria-label="案例内容"
-        className="mb-4 flex gap-1.5 overflow-x-auto pb-1 max-md:-mx-4 max-md:px-4"
-      >
-        {TABS.map(([id, label]) => (
-          <Chip
-            key={id}
-            role="tab"
-            id={`tab-${id}`}
-            data-testid={`tab-${id}`}
-            aria-selected={tab === id}
-            aria-controls="case-panel"
-            active={tab === id}
-            onClick={() => select(id)}
-          >
-            {label}
-            {badge[id] !== undefined && (
-              <span
-                className={`rounded-full px-1.5 text-xs leading-5 ${tab === id ? 'bg-white/15 text-white' : 'bg-apricot-soft text-apricot-ink'}`}
-              >
-                {badge[id]}
-              </span>
-            )}
-          </Chip>
-        ))}
-      </div>
-      <div className="grid grid-cols-[minmax(0,1fr)_320px] items-start gap-4 max-lg:grid-cols-1">
+      <div className="mb-5 overflow-x-auto pb-1 max-md:-mx-4 max-md:px-4">
         <div
-          role="tabpanel"
-          id="case-panel"
-          aria-labelledby={`tab-${tab}`}
-          className="min-w-0 space-y-4"
+          ref={bar}
+          role="tablist"
+          aria-label="案例内容"
+          className="relative inline-flex gap-0.5 rounded-full bg-card p-1 shadow-soft"
         >
-          <Panel />
+          <SlidingPill pill={pill} className="top-1 h-9 bg-ink" />
+          {TABS.map(([id, label]) => {
+            const selected = tab === id;
+            return (
+              <button
+                key={id}
+                type="button"
+                role="tab"
+                id={`tab-${id}`}
+                data-testid={`tab-${id}`}
+                data-active={selected}
+                aria-selected={selected}
+                aria-controls="case-panel"
+                onClick={() => select(id)}
+                className={`relative z-1 inline-flex h-9 shrink-0 items-center gap-1.5 rounded-full px-4 text-sm font-medium transition-colors duration-(--duration-fast) ease-smooth-out ${selected ? 'text-white' : 'text-ink-soft hover:text-ink'}`}
+              >
+                {label}
+                {badge[id] !== undefined && (
+                  <span
+                    className={`rounded-full px-1.5 text-xs leading-5 transition-colors duration-(--duration-fast) ${selected ? 'bg-white/15 text-white' : 'bg-apricot-wash text-apricot-ink'}`}
+                  >
+                    {badge[id]}
+                  </span>
+                )}
+              </button>
+            );
+          })}
         </div>
-        <aside className="min-w-0 space-y-4" aria-label="运行与资源">
+      </div>
+      <div className="grid grid-cols-[minmax(0,1fr)_340px] items-start gap-5 max-lg:grid-cols-1">
+        <div role="tabpanel" id="case-panel" aria-labelledby={`tab-${tab}`} className="min-w-0">
+          <div key={tab} className="t-enter space-y-5">
+            <Panel />
+          </div>
+        </div>
+        <aside className="min-w-0 space-y-5" aria-label="运行与资源">
           <Controls />
           <Budget />
           <CaseFacts />
@@ -116,14 +123,19 @@ export default function CasePage({ params }: { readonly params: Promise<{ caseId
     <>
       <Link
         href="/cases"
-        className="mb-3 inline-flex items-center gap-1.5 text-sm font-medium text-ink-soft transition-colors duration-160 hover:text-ink"
+        className="group mb-4 inline-flex items-center gap-1.5 text-sm font-medium text-ink-soft transition-colors duration-(--duration-quick) hover:text-ink"
       >
-        <ArrowLeft aria-hidden className="size-4" />
+        <ArrowLeft
+          aria-hidden
+          className="size-4 transition-transform duration-(--duration-fast) ease-smooth-out group-hover:-translate-x-0.5 motion-reduce:transition-none"
+        />
         返回案例列表
       </Link>
       <CaseProvider caseId={caseId}>
-        <CaseHeader />
-        <Progress />
+        <section className="t-enter mb-5 rounded-panel bg-card p-7 shadow-soft max-sm:p-5">
+          <CaseHeader />
+          <Progress />
+        </section>
         <Sections />
       </CaseProvider>
     </>

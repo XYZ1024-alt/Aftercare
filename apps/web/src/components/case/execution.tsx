@@ -1,5 +1,6 @@
 'use client';
 
+import { BookOpen, GitBranch, ShieldCheck } from 'lucide-react';
 import { cents, reasonLabel, shortId, type Tone, when } from '../../lib/labels.ts';
 import { Card, Dot, Empty, Json, Pill, ROWS_CLASS, Table, Technical } from '../ui.tsx';
 import { useCase } from './case-context.tsx';
@@ -40,11 +41,7 @@ export function Execution() {
   const { branches, attempts, applications, verificationRuns, lease, lineage } = view.execution;
   return (
     <>
-      <Card
-        title="沙箱分支"
-        description="每个案例专属的数据副本，修复只写到这里。"
-        testId="branches"
-      >
+      <Card title="沙箱分支" icon={GitBranch} tone="mint" testId="branches">
         {branches.length === 0 ? (
           <Empty>还没有沙箱分支。</Empty>
         ) : (
@@ -86,15 +83,21 @@ export function Execution() {
       <Card
         title="应用记录（账本）"
         description="“已应用”只说明事务提交；是否符合契约由独立验证判断。"
+        icon={BookOpen}
+        tone="sky"
         testId="applications"
       >
         {applications.length === 0 ? (
-          <Empty>还没有任何补丁被应用。</Empty>
+          <Empty>还没有补丁被应用。</Empty>
         ) : (
-          <ul className="space-y-5">
+          <ul className="space-y-4">
             {applications.map((application) => (
-              <li key={application.applicationId} data-testid="application">
-                <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1.5">
+              <li
+                key={application.applicationId}
+                data-testid="application"
+                className="rounded-field bg-canvas p-4"
+              >
+                <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1.5">
                   <Dot tone="mint" />
                   <span className="font-medium">
                     {application.kind === 'undo' ? '撤销' : '修复'}已应用到分支{' '}
@@ -104,7 +107,7 @@ export function Execution() {
                     {when(application.appliedAt)}
                   </span>
                   {!application.stillCurrent && (
-                    <Pill tone="apricot">其契约已是 {application.contractStatus}</Pill>
+                    <Pill tone="apricot">契约状态：{application.contractStatus}</Pill>
                   )}
                 </div>
                 <Table>
@@ -135,53 +138,79 @@ export function Execution() {
           </ul>
         )}
       </Card>
-      <Card title="执行尝试与独立验证" testId="attempts">
+      <Card title="执行尝试与独立验证" icon={ShieldCheck} tone="violet" testId="attempts">
         {attempts.length === 0 && verificationRuns.length === 0 ? (
           <Empty>没有记录。</Empty>
         ) : (
-          <ul className={ROWS_CLASS}>
-            {attempts.map((attempt) => {
-              const [tone, label] = statusOf(ATTEMPT_STATUS, attempt.status);
-              return (
-                <li key={attempt.attemptId} className="flex items-start gap-3 text-sm">
-                  <Dot tone={tone} className="mt-1.5" />
-                  <span className="min-w-0">
-                    <span className="font-medium">执行尝试 {shortId(attempt.attemptId)}</span>：
-                    {label}
-                    {attempt.failure !== null && (
-                      <span className="text-rose-ink">
-                        （{attempt.failure.code}：{attempt.failure.message}）
-                      </span>
-                    )}
-                    <span className="block text-xs text-muted">
-                      {when(attempt.startedAt)}，执行者 {attempt.executorId}，代次{' '}
-                      {attempt.fencingToken}
-                    </span>
-                  </span>
-                </li>
-              );
-            })}
-            {verificationRuns.map((run) => {
-              const [tone, label] = statusOf(VERIFICATION_STATUS, run.status);
-              return (
-                <li
-                  key={run.verificationId}
-                  data-testid="verification-run"
-                  data-status={run.status}
-                  className="flex items-start gap-3 text-sm"
-                >
-                  <Dot tone={tone} className="mt-1.5" />
-                  <span className="min-w-0">
-                    <span className="font-medium">独立验证 {shortId(run.verificationId)}</span>：
-                    {label}
-                    {run.verdict !== null && `，结论 ${run.verdict}`}
-                    {run.statusReason !== null && `（${run.statusReason}）`}
-                    <span className="block text-xs text-muted">{when(run.startedAt)}</span>
-                  </span>
-                </li>
-              );
-            })}
-          </ul>
+          <div className="space-y-4">
+            {attempts.length > 0 && (
+              <div className="rounded-field bg-canvas p-4">
+                <h3 className="mb-2.5 text-meta font-medium text-muted">执行尝试</h3>
+                <ul className={ROWS_CLASS}>
+                  {attempts.map((attempt) => {
+                    const [tone, label] = statusOf(ATTEMPT_STATUS, attempt.status);
+                    return (
+                      <li key={attempt.attemptId} className="flex items-start gap-3 text-sm">
+                        <Dot tone={tone} className="mt-1.5" />
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                            <span className="font-mono font-medium">
+                              {shortId(attempt.attemptId)}
+                            </span>
+                            <Pill tone={tone}>{label}</Pill>
+                          </div>
+                          {attempt.failure !== null && (
+                            <p className="mt-1 text-rose-ink">
+                              {attempt.failure.code}：{attempt.failure.message}
+                            </p>
+                          )}
+                          <p className="mt-1 text-xs text-muted">
+                            {when(attempt.startedAt)}，执行者 {attempt.executorId}，代次{' '}
+                            {attempt.fencingToken}
+                          </p>
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            )}
+            {verificationRuns.length > 0 && (
+              <div className="rounded-field bg-canvas p-4">
+                <h3 className="mb-2.5 text-meta font-medium text-muted">独立验证</h3>
+                <ul className={ROWS_CLASS}>
+                  {verificationRuns.map((run) => {
+                    const [tone, label] = statusOf(VERIFICATION_STATUS, run.status);
+                    return (
+                      <li
+                        key={run.verificationId}
+                        data-testid="verification-run"
+                        data-status={run.status}
+                        className="flex items-start gap-3 text-sm"
+                      >
+                        <Dot tone={tone} className="mt-1.5" />
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                            <span className="font-mono font-medium">
+                              {shortId(run.verificationId)}
+                            </span>
+                            <Pill tone={tone}>{label}</Pill>
+                          </div>
+                          {run.verdict !== null && (
+                            <p className="mt-1 text-xs text-ink-soft">结论：{run.verdict}</p>
+                          )}
+                          {run.statusReason !== null && (
+                            <p className="mt-1 text-xs text-muted">{run.statusReason}</p>
+                          )}
+                          <p className="mt-1 text-xs text-muted">{when(run.startedAt)}</p>
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            )}
+          </div>
         )}
         <Technical label="租约与谱系">
           <Json value={{ lease, lineage }} />

@@ -1,7 +1,7 @@
 'use client';
 
 import type { CaseView, Stage } from '@aftercare/console/client';
-import { Check } from 'lucide-react';
+import { Check, History, type LucideIcon, Minus, X } from 'lucide-react';
 import { STAGE_LABEL } from '../../lib/labels.ts';
 import { useCase } from './case-context.tsx';
 
@@ -90,36 +90,66 @@ function stepsOf(view: CaseView): { label: string; state: StepState; caption: st
   return STEPS.map((label, index) => ({ label, ...decide(index) }));
 }
 
-const STATE_CLASS: Readonly<Record<StepState, string>> = {
-  done: 'bg-mint-soft [&_.caption]:text-mint-ink',
-  current: 'bg-apricot-soft ring-2 ring-apricot [&_.caption]:text-apricot-ink',
-  blocked: 'bg-rose-soft ring-2 ring-rose [&_.caption]:text-rose-ink',
-  stale: 'bg-card shadow-soft [&_.caption]:text-apricot-ink',
-  ended: 'bg-card shadow-soft [&_.caption]:text-ink-soft',
-  todo: 'bg-card opacity-60 shadow-soft [&_.caption]:text-muted',
+/** The marker of a step: its fill, caption colour and icon (the number when there is none). */
+const MARKER: Readonly<
+  Record<StepState, { readonly fill: string; readonly caption: string; readonly icon?: LucideIcon }>
+> = {
+  done: { fill: 'bg-mint text-white', caption: 'text-mint-ink', icon: Check },
+  current: { fill: 'bg-apricot text-white', caption: 'text-apricot-ink' },
+  blocked: { fill: 'bg-rose text-white', caption: 'text-rose-ink', icon: X },
+  stale: { fill: 'bg-apricot-wash text-apricot-ink', caption: 'text-apricot-ink', icon: History },
+  ended: { fill: 'bg-canvas-2 text-ink-soft', caption: 'text-ink-soft', icon: Minus },
+  todo: { fill: 'bg-track text-muted', caption: 'text-muted' },
 };
 
 export function Progress() {
   const { view } = useCase();
+  const steps = stepsOf(view);
   return (
     <ol
       aria-label="案例进度"
-      className="mb-5 grid grid-cols-5 gap-2.5 max-lg:grid-cols-3 max-sm:grid-cols-2"
+      className="mt-7 grid grid-cols-5 gap-x-3 border-line border-t pt-6 max-md:grid-cols-1 max-md:gap-y-4"
     >
-      {stepsOf(view).map((step, index) => (
-        <li
-          key={step.label}
-          aria-current={step.state === 'current' ? 'step' : undefined}
-          className={`rounded-block px-4 py-3.5 ${STATE_CLASS[step.state]}`}
-        >
-          <span className="flex items-center gap-1.5 text-xs text-muted tabular-nums">
-            {String(index + 1).padStart(2, '0')}
-            {step.state === 'done' && <Check aria-hidden className="size-3.5 text-mint-ink" />}
-          </span>
-          <span className="mt-0.5 block font-medium">{step.label}</span>
-          <span className="caption mt-1 block text-xs">{step.caption}</span>
-        </li>
-      ))}
+      {steps.map((step, index) => {
+        const marker = MARKER[step.state];
+        const Icon = marker.icon;
+        const last = index === steps.length - 1;
+        return (
+          <li
+            key={step.label}
+            aria-current={step.state === 'current' ? 'step' : undefined}
+            className="min-w-0 max-md:flex max-md:items-center max-md:gap-3"
+          >
+            <div className="flex items-center gap-3">
+              <span
+                className={`relative grid size-8 shrink-0 place-items-center rounded-full text-meta font-semibold tabular-nums transition-colors duration-(--duration-slow) ease-smooth-out ${marker.fill}`}
+              >
+                {step.state === 'current' && (
+                  <span
+                    aria-hidden
+                    className="absolute -inset-1 rounded-full bg-apricot/20 motion-safe:animate-pulse"
+                  />
+                )}
+                {Icon === undefined ? (
+                  <span className="relative">{index + 1}</span>
+                ) : (
+                  <Icon aria-hidden className="size-4" strokeWidth={2.6} />
+                )}
+              </span>
+              {!last && (
+                <span
+                  aria-hidden
+                  className={`h-0.5 flex-1 rounded-full max-md:hidden ${step.state === 'done' ? 'bg-mint' : 'bg-track'}`}
+                />
+              )}
+            </div>
+            <div className="mt-2.5 min-w-0 max-md:mt-0">
+              <span className="block text-sm font-medium">{step.label}</span>
+              <span className={`mt-0.5 block text-xs ${marker.caption}`}>{step.caption}</span>
+            </div>
+          </li>
+        );
+      })}
     </ol>
   );
 }

@@ -5,18 +5,28 @@ import {
   AlertTriangle,
   Ban,
   CheckCircle2,
-  ChevronRight,
+  ChevronDown,
   Info,
   Loader2,
+  type LucideIcon,
   SearchCheck,
   XCircle,
 } from 'lucide-react';
 import Link from 'next/link';
-import type { ButtonHTMLAttributes, ComponentProps, ReactNode } from 'react';
+import {
+  type ButtonHTMLAttributes,
+  type ComponentProps,
+  type CSSProperties,
+  type ReactNode,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'react';
 import type { Tone } from '../lib/labels.ts';
 
-// The primitives of the console. Colour follows the tone roles of labels.ts;
-// every state is also said in words.
+// The primitives of the console. Colour follows the tone roles of labels.ts and
+// fills a surface from the inside; every state is also said in words.
 
 /** Soft background and dark text of a tone: pills, notices. */
 export const SOFT_CLASS: Readonly<Record<Tone, string>> = {
@@ -26,6 +36,16 @@ export const SOFT_CLASS: Readonly<Record<Tone, string>> = {
   apricot: 'bg-apricot-soft text-apricot-ink',
   mint: 'bg-mint-soft text-mint-ink',
   rose: 'bg-rose-soft text-rose-ink',
+};
+
+/** The stronger tint of a tone with its dark text: icon tiles, tinted cards. */
+export const WASH_CLASS: Readonly<Record<Tone, string>> = {
+  neutral: 'bg-canvas-2 text-ink-soft',
+  sky: 'bg-sky-wash text-sky-ink',
+  violet: 'bg-violet-wash text-violet-ink',
+  apricot: 'bg-apricot-wash text-apricot-ink',
+  mint: 'bg-mint-wash text-mint-ink',
+  rose: 'bg-rose-wash text-rose-ink',
 };
 
 /** The solid colour of a tone: dots, bars, legends. */
@@ -38,16 +58,8 @@ export const SOLID_CLASS: Readonly<Record<Tone, string>> = {
   rose: 'bg-rose',
 };
 
-const WASH_CLASS: Readonly<Record<Tone, string>> = {
-  neutral: 'bg-canvas-2',
-  sky: 'bg-sky-wash',
-  violet: 'bg-violet-wash',
-  apricot: 'bg-apricot-wash',
-  mint: 'bg-mint-wash',
-  rose: 'bg-rose-wash',
-};
-
-const INK_CLASS: Readonly<Record<Tone, string>> = {
+/** The dark text of a tone. */
+export const INK_CLASS: Readonly<Record<Tone, string>> = {
   neutral: 'text-ink-soft',
   sky: 'text-sky-ink',
   violet: 'text-violet-ink',
@@ -65,14 +77,21 @@ const SELECTED_CLASS: Readonly<Record<Tone, string>> = {
   rose: 'bg-rose-ink text-white',
 };
 
-const NOTICE_ICON = {
+const NOTICE_ICON: Readonly<Record<Tone, LucideIcon>> = {
   neutral: Info,
   sky: Info,
   violet: SearchCheck,
   apricot: AlertTriangle,
   mint: CheckCircle2,
   rose: XCircle,
-} as const;
+};
+
+/** Quick, state-change motion shared by the controls (hover, press, select). */
+const MOTION = 'duration-(--duration-quick) ease-smooth-out motion-reduce:transition-none';
+
+/** Style of a `.t-enter` block that enters `index` stagger steps after its first sibling. */
+export const stagger = (index: number): CSSProperties =>
+  ({ '--enter-index': index }) as CSSProperties;
 
 /** A status, in words, on the soft colour of its tone. */
 export function Pill({
@@ -87,7 +106,7 @@ export function Pill({
   return (
     <span
       data-testid={testId}
-      className={`inline-block w-max max-w-full rounded-full px-[9px] py-[3px] text-xs font-medium ${SOFT_CLASS[tone]}`}
+      className={`inline-block w-max max-w-full rounded-full px-2.5 py-[3px] text-xs font-medium ${SOFT_CLASS[tone]}`}
     >
       {children}
     </span>
@@ -109,10 +128,32 @@ export function Dot({
   );
 }
 
+/** A rounded square holding an icon, tinted by its tone. */
+export function IconTile({
+  icon: Icon,
+  tone,
+  size = 'md',
+}: {
+  readonly icon: LucideIcon;
+  readonly tone: Tone;
+  readonly size?: 'sm' | 'md';
+}) {
+  return (
+    <span
+      aria-hidden
+      className={`grid shrink-0 place-items-center ${size === 'md' ? 'size-9 rounded-xl' : 'size-7 rounded-lg'} ${WASH_CLASS[tone]}`}
+    >
+      <Icon className={size === 'md' ? 'size-[18px]' : 'size-4'} strokeWidth={2} />
+    </span>
+  );
+}
+
 export function Card({
   title,
   description,
   aside,
+  icon,
+  tone = 'neutral',
   children,
   testId,
   className = '',
@@ -120,6 +161,9 @@ export function Card({
   readonly title?: ReactNode;
   readonly description?: ReactNode;
   readonly aside?: ReactNode;
+  /** An icon tile before the title, tinted by `tone`. */
+  readonly icon?: LucideIcon;
+  readonly tone?: Tone;
   readonly children: ReactNode;
   readonly testId?: string;
   readonly className?: string;
@@ -127,15 +171,20 @@ export function Card({
   return (
     <section
       data-testid={testId}
-      className={`min-w-0 rounded-panel bg-card px-[22px] py-5 shadow-soft max-sm:px-4 ${className}`}
+      className={`min-w-0 rounded-panel bg-card p-6 shadow-soft max-sm:p-4 ${className}`}
     >
       {(title !== undefined || aside !== undefined) && (
-        <header className="mb-4 flex flex-wrap items-start justify-between gap-x-3 gap-y-2">
-          <div className="min-w-0">
-            {title !== undefined && <h2 className="text-base font-medium">{title}</h2>}
-            {description !== undefined && (
-              <p className="mt-0.5 text-meta text-muted">{description}</p>
-            )}
+        <header className="mb-5 flex flex-wrap items-start justify-between gap-x-3 gap-y-2">
+          <div className="flex min-w-0 items-center gap-3">
+            {icon !== undefined && <IconTile icon={icon} tone={tone} />}
+            <div className="min-w-0">
+              {title !== undefined && (
+                <h2 className="text-[17px] leading-6 font-medium tracking-[-0.01em]">{title}</h2>
+              )}
+              {description !== undefined && (
+                <p className="mt-0.5 text-meta text-muted">{description}</p>
+              )}
+            </div>
           </div>
           {aside}
         </header>
@@ -147,7 +196,7 @@ export function Card({
 
 /** A heading for a group of cards. */
 export function SectionHeading({ children }: { readonly children: ReactNode }) {
-  return <h2 className="mb-3 text-base font-medium">{children}</h2>;
+  return <h2 className="mb-3 px-1 text-[17px] leading-6 font-medium">{children}</h2>;
 }
 
 export function PageHead({
@@ -160,10 +209,10 @@ export function PageHead({
   readonly actions?: ReactNode;
 }) {
   return (
-    <div className="mb-5 flex flex-wrap items-end justify-between gap-4">
+    <div className="t-enter mb-7 flex flex-wrap items-end justify-between gap-4 max-sm:mb-5">
       <div className="min-w-0">
-        <h1 className="text-title font-medium max-sm:text-[24px] max-sm:leading-[30px]">{title}</h1>
-        {description !== undefined && <p className="mt-1 text-sm text-muted">{description}</p>}
+        <h1 className="text-title font-semibold max-sm:text-[26px] max-sm:leading-8">{title}</h1>
+        {description !== undefined && <p className="mt-1.5 text-sm text-muted">{description}</p>}
       </div>
       {actions !== undefined && <div className="flex flex-wrap gap-2">{actions}</div>}
     </div>
@@ -176,21 +225,19 @@ export function PageHead({
  */
 export type ButtonTone = 'primary' | 'secondary' | 'sandbox' | 'approval' | 'danger';
 const BUTTON_TONE: Readonly<Record<ButtonTone, string>> = {
-  primary: 'border-ink bg-ink text-white enabled:hover:border-ink-soft enabled:hover:bg-ink-soft',
-  secondary: 'border-ink/20 bg-card text-ink enabled:hover:border-ink/50',
-  sandbox: 'border-mint-ink bg-mint-ink text-white enabled:hover:border-mint enabled:hover:bg-mint',
-  approval:
-    'border-apricot-ink bg-apricot-ink text-white enabled:hover:border-apricot enabled:hover:bg-apricot',
-  danger:
-    'border-rose/45 bg-card text-rose-ink enabled:hover:border-rose enabled:hover:bg-rose-soft',
+  primary: 'bg-ink text-white shadow-soft enabled:hover:bg-ink-soft',
+  secondary: 'bg-card text-ink shadow-soft ring-1 ring-ink/10 enabled:hover:bg-canvas',
+  sandbox: 'bg-mint-ink text-white shadow-soft enabled:hover:bg-mint-ink/88',
+  approval: 'bg-apricot-ink text-white shadow-soft enabled:hover:bg-apricot-ink/88',
+  danger: 'bg-rose-soft text-rose-ink enabled:hover:bg-rose-wash',
 };
-const BUTTON_SIZE = { md: 'h-10 px-4 text-sm', sm: 'h-8 px-3 text-meta' } as const;
+const BUTTON_SIZE = { md: 'h-10 px-[18px] text-sm', sm: 'h-8 px-3.5 text-meta' } as const;
 
 export const buttonClass = (
   tone: ButtonTone = 'secondary',
   size: keyof typeof BUTTON_SIZE = 'md',
 ) =>
-  `inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-full border font-medium transition-colors duration-160 disabled:cursor-not-allowed disabled:opacity-45 ${BUTTON_TONE[tone]} ${BUTTON_SIZE[size]}`;
+  `inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-full font-medium transition-[background-color,color,scale] ${MOTION} enabled:active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-45 ${BUTTON_TONE[tone]} ${BUTTON_SIZE[size]}`;
 
 export function Button({
   tone = 'secondary',
@@ -223,7 +270,7 @@ export function ButtonLink({
   ...rest
 }: ComponentProps<typeof Link> & { readonly tone?: ButtonTone }) {
   return (
-    <Link {...rest} className={buttonClass(tone)}>
+    <Link {...rest} className={`${buttonClass(tone)} active:scale-[0.97]`}>
       {children}
     </Link>
   );
@@ -245,8 +292,9 @@ export function Chip({
     <button
       type="button"
       {...rest}
-      className={`inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full px-3 text-meta font-medium transition-colors duration-160 ${active ? SELECTED_CLASS[tone] : 'bg-card text-ink-soft shadow-soft hover:text-ink'}`}
+      className={`inline-flex h-9 shrink-0 items-center gap-2 rounded-full px-3.5 text-meta font-medium transition-[background-color,color,scale] ${MOTION} active:scale-[0.97] ${active ? SELECTED_CLASS[tone] : 'bg-card text-ink-soft shadow-soft hover:text-ink'}`}
     >
+      {tone !== 'neutral' && !active && <Dot tone={tone} className="size-2" />}
       {children}
       {count !== undefined && (
         <span className={`tabular-nums ${active ? 'text-white/70' : 'text-muted'}`}>{count}</span>
@@ -255,32 +303,100 @@ export function Chip({
   );
 }
 
-/** An overview figure: a large near-black number on a white card, framed by the wash of its tone. */
+/**
+ * Tabs sliding (transitions.dev): one pill travels to the item marked
+ * data-active="true" inside the bar. The first placement and every resize of
+ * the bar snap without a transition; a change of `active` tweens.
+ */
+export function useSlidingPill<T extends HTMLElement>(active: string | null) {
+  const bar = useRef<T>(null);
+  const pill = useRef<HTMLSpanElement>(null);
+  const shown = useRef(false);
+  useLayoutEffect(() => {
+    const element = pill.current;
+    const container = bar.current;
+    if (element === null || container === null) return;
+    const place = (animate: boolean) => {
+      const target =
+        active === null ? null : container.querySelector<HTMLElement>('[data-active="true"]');
+      if (target === null) {
+        element.style.opacity = '0';
+        shown.current = false;
+        return;
+      }
+      const snap = !animate || !shown.current;
+      if (snap) element.style.transition = 'none';
+      element.style.opacity = '1';
+      element.style.transform = `translateX(${target.offsetLeft}px)`;
+      element.style.width = `${target.offsetWidth}px`;
+      if (snap) {
+        void element.offsetWidth;
+        element.style.transition = '';
+      }
+      shown.current = true;
+    };
+    place(true);
+    const observer = new ResizeObserver(() => place(false));
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [active]);
+  return { bar, pill };
+}
+
+/** The travelling pill of useSlidingPill; `className` gives its colour and height. */
+export function SlidingPill({
+  pill,
+  className,
+}: {
+  readonly pill: ReturnType<typeof useSlidingPill>['pill'];
+  readonly className: string;
+}) {
+  return (
+    <span
+      ref={pill}
+      aria-hidden
+      className={`pointer-events-none absolute left-0 w-0 rounded-full opacity-0 transition-[transform,width] duration-(--duration-fast) ease-smooth-out will-change-[transform,width] motion-reduce:transition-none ${className}`}
+    />
+  );
+}
+
+/** An overview figure: a large number on the tint of its tone, with its icon. */
 export function MetricCard({
   tone,
+  icon,
   label,
   value,
   unit,
   foot,
 }: {
   readonly tone: Tone;
+  readonly icon: LucideIcon;
   readonly label: string;
   readonly value: ReactNode;
   readonly unit?: string;
   readonly foot?: ReactNode;
 }) {
+  const Icon = icon;
   return (
-    <div className={`min-w-0 rounded-panel p-2.5 ${WASH_CLASS[tone]}`}>
-      <div className="flex h-full min-h-33 flex-col rounded-block bg-card px-5 pt-[18px] pb-4 shadow-card">
-        <p className={`mb-2 text-meta font-medium ${INK_CLASS[tone]}`}>{label}</p>
-        <p className="flex items-baseline gap-2">
-          <span className="text-display font-bold tabular-nums lining-nums max-lg:text-[44px] max-sm:text-[40px]">
-            {value}
-          </span>
-          {unit !== undefined && <span className="text-base font-medium text-muted">{unit}</span>}
-        </p>
-        {foot !== undefined && <p className="mt-auto pt-2.5 text-meta text-ink-soft">{foot}</p>}
+    <div
+      className={`flex min-h-40 min-w-0 flex-col rounded-panel px-5 pt-5 pb-4 max-sm:min-h-36 max-sm:px-4 ${SOFT_CLASS[tone]}`}
+    >
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-sm font-medium">{label}</p>
+        <span
+          aria-hidden
+          className={`grid size-9 place-items-center rounded-full text-white ${SOLID_CLASS[tone]}`}
+        >
+          <Icon className="size-[18px]" strokeWidth={2.2} />
+        </span>
       </div>
+      <p className="mt-3 flex items-baseline gap-1.5 text-ink">
+        <span className="text-display font-semibold tabular-nums lining-nums max-sm:text-[38px]">
+          {value}
+        </span>
+        {unit !== undefined && <span className="text-sm font-medium text-muted">{unit}</span>}
+      </p>
+      {foot !== undefined && <p className="mt-auto pt-3 text-meta opacity-85">{foot}</p>}
     </div>
   );
 }
@@ -295,7 +411,7 @@ export function RefusalNote({ refusal }: { readonly refusal: Refusal | null }) {
       role="alert"
       data-testid="refusal"
       data-code={refusal.code}
-      className="mt-3 flex items-start gap-2.5 rounded-input bg-rose-soft px-3.5 py-2.5 text-sm text-rose-ink"
+      className="t-enter mt-3 flex items-start gap-2.5 rounded-input bg-rose-soft px-3.5 py-2.5 text-sm text-rose-ink"
     >
       <Ban aria-hidden className="mt-0.5 size-4 shrink-0" />
       <span>
@@ -320,10 +436,45 @@ export function Notice({
   return (
     <div
       data-testid={testId}
-      className={`flex items-start gap-2.5 rounded-input px-3.5 py-2.5 text-sm ${SOFT_CLASS[tone]}`}
+      className={`flex items-start gap-2.5 rounded-field px-4 py-3 text-sm ${SOFT_CLASS[tone]}`}
     >
       <Icon aria-hidden className="mt-0.5 size-4 shrink-0" />
       <div className="min-w-0">{children}</div>
+    </div>
+  );
+}
+
+/** A header that opens a body below it (accordion expand, transitions.dev). */
+export function Disclosure({
+  summary,
+  children,
+  className = '',
+  summaryClassName = '',
+}: {
+  readonly summary: ReactNode;
+  readonly children: ReactNode;
+  readonly className?: string;
+  readonly summaryClassName?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const panel = useId();
+  return (
+    <div className={`t-acc ${className}`} data-open={open}>
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls={panel}
+        onClick={() => setOpen(!open)}
+        className={`inline-flex cursor-pointer select-none items-center gap-1 rounded-full transition-colors ${MOTION} ${summaryClassName}`}
+      >
+        {summary}
+        <span className="t-acc-chevron">
+          <ChevronDown aria-hidden className="size-3.5" />
+        </span>
+      </button>
+      <div id={panel} className="t-acc-panel" inert={!open}>
+        <div className="t-acc-panel-inner">{children}</div>
+      </div>
     </div>
   );
 }
@@ -337,16 +488,15 @@ export function Technical({
   readonly children: ReactNode;
 }) {
   return (
-    <details className="group mt-3 text-xs text-muted">
-      <summary className="inline-flex cursor-pointer select-none list-none items-center gap-1 rounded-full hover:text-ink-soft [&::-webkit-details-marker]:hidden">
-        <ChevronRight
-          aria-hidden
-          className="size-3.5 group-open:rotate-90 motion-safe:transition-transform motion-safe:duration-160"
-        />
-        {label}
-      </summary>
-      <div className="mt-2 space-y-1 break-all font-mono text-ink-soft">{children}</div>
-    </details>
+    <Disclosure
+      summary={label}
+      className="mt-3 text-xs text-muted"
+      summaryClassName="text-left hover:text-ink-soft"
+    >
+      <div className="mt-2 space-y-1 break-all rounded-input bg-canvas px-3 py-2.5 font-mono text-ink-soft">
+        {children}
+      </div>
+    </Disclosure>
   );
 }
 
@@ -369,18 +519,16 @@ export function Field({
   );
 }
 
-export const INPUT_CLASS =
-  'w-full rounded-input border border-line bg-card px-3 py-2.5 text-body text-ink transition-[border-color,box-shadow] duration-160 placeholder:text-muted/70 focus-visible:border-sky focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-sky-soft disabled:bg-track disabled:text-muted';
+export const INPUT_CLASS = `w-full rounded-input border border-transparent bg-canvas px-3.5 py-2.5 text-body text-ink transition-[background-color,border-color,box-shadow] ${MOTION} placeholder:text-muted/70 hover:bg-canvas-2/60 in-[.bg-canvas]:bg-card focus-visible:border-sky/60 focus-visible:bg-card focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-sky/15 disabled:bg-track disabled:text-muted`;
 
 export const CHECK_CLASS = 'mt-0.5 size-4 shrink-0 accent-ink';
 
 /** A choice among several, as a whole clickable row (a label around a checkbox or radio). */
-export const OPTION_CLASS =
-  'flex cursor-pointer items-start gap-3 rounded-input border border-line px-3.5 py-2.5 text-sm transition-colors duration-160 hover:border-ink/30 has-checked:border-ink/40 has-checked:bg-canvas';
+export const OPTION_CLASS = `flex cursor-pointer items-start gap-3 rounded-input bg-canvas px-3.5 py-3 text-sm transition-colors ${MOTION} hover:bg-canvas-2/70 in-[.bg-canvas]:bg-card has-checked:bg-sky-soft`;
 
 /** Rows separated by a hairline, inside a card. */
 export const ROWS_CLASS =
-  'divide-y divide-line [&>li]:py-3 [&>li:first-child]:pt-0 [&>li:last-child]:pb-0';
+  'divide-y divide-line [&>li]:py-3.5 [&>li:first-child]:pt-0 [&>li:last-child]:pb-0';
 
 export function Table({ children }: { readonly children: ReactNode }) {
   return (
@@ -394,7 +542,7 @@ export function Table({ children }: { readonly children: ReactNode }) {
 
 export function Empty({ children }: { readonly children: ReactNode }) {
   return (
-    <div className="rounded-field bg-canvas/70 px-5 py-6 text-center text-sm text-muted">
+    <div className="rounded-field bg-canvas px-5 py-8 text-center text-sm text-muted">
       {children}
     </div>
   );
@@ -403,11 +551,13 @@ export function Empty({ children }: { readonly children: ReactNode }) {
 export function Loading({ label = '加载中…' }: { readonly label?: string }) {
   return (
     <div role="status" className="space-y-3 py-2">
-      <p className="text-meta text-muted">{label}</p>
+      <span className="t-shimmer text-meta" data-text={label}>
+        {label}
+      </span>
       {['w-3/5', 'w-11/12', 'w-3/4'].map((width) => (
         <div
           key={width}
-          className={`h-3.5 rounded-lg bg-track motion-safe:animate-pulse ${width}`}
+          className={`h-3.5 rounded-full bg-track motion-safe:animate-pulse ${width}`}
         />
       ))}
     </div>
@@ -416,7 +566,7 @@ export function Loading({ label = '加载中…' }: { readonly label?: string })
 
 export function Json({ value }: { readonly value: object | string | number | boolean | null }) {
   return (
-    <pre className="max-h-96 overflow-auto rounded-input bg-canvas p-3 font-mono text-xs leading-5 text-ink-soft">
+    <pre className="max-h-96 overflow-auto rounded-input bg-canvas p-3.5 font-mono text-xs leading-5 text-ink-soft">
       {JSON.stringify(value, null, 2)}
     </pre>
   );

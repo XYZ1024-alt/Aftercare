@@ -7,9 +7,11 @@ import { getJson, sendJson } from './api.ts';
 
 const SessionContext = createContext<SessionView | null>(null);
 
-const GateNote = ({ children }: { readonly children: ReactNode }) => (
-  <p role="status" className="mx-auto max-w-[1240px] px-6 py-10 text-meta text-muted">
-    {children}
+const GateNote = ({ children }: { readonly children: string }) => (
+  <p role="status" className="mx-auto max-w-[1240px] px-6 py-10 text-meta">
+    <span className="t-shimmer" data-text={children}>
+      {children}
+    </span>
   </p>
 );
 

@@ -1,5 +1,6 @@
 'use client';
 
+import { FileText, Gauge, Power } from 'lucide-react';
 import { useState } from 'react';
 import {
   EVENT_LABEL,
@@ -9,17 +10,19 @@ import {
   type Tone,
   when,
 } from '../../lib/labels.ts';
-import { useCan } from '../../lib/session.tsx';
+import { useCan, useSession } from '../../lib/session.tsx';
 import { ConfirmDialog } from '../overlay.tsx';
 import {
   Button,
   Card,
+  Disclosure,
   Dot,
   Field,
   INPUT_CLASS,
   Notice,
   Pill,
   RefusalNote,
+  SOFT_CLASS,
   SOLID_CLASS,
   Technical,
 } from '../ui.tsx';
@@ -54,13 +57,12 @@ export function Controls() {
     });
   const stopping = run.controlRequest !== null;
   return (
-    <Card title="运行控制" testId="controls">
+    <Card title="运行控制" icon={Power} tone="apricot" testId="controls">
       {last !== undefined && ['queued', 'running'].includes(run.status) && (
-        <p className="mb-3 text-meta text-ink-soft" data-testid="current-action">
-          最近动作：{EVENT_LABEL[last.eventType] ?? last.eventType}
-          {typeof last.detail.tool === 'string' ? `（${last.detail.tool}）` : ''}，
-          {when(last.recordedAt)}
-        </p>
+        <CurrentAction
+          text={`${EVENT_LABEL[last.eventType] ?? last.eventType}${typeof last.detail.tool === 'string' ? `（${last.detail.tool}）` : ''}`}
+          at={when(last.recordedAt)}
+        />
       )}
       <Field label="原因（记入事件）">
         <input
@@ -99,9 +101,7 @@ export function Controls() {
           取消运行
         </Button>
       </div>
-      <p className="mt-3 text-xs text-muted">
-        暂停与取消在下一个工具边界生效，在途的短事务会先完成或回滚。恢复后会重新检查计划、批准、依赖与预算。
-      </p>
+      <p className="mt-3 text-xs text-muted">暂停与取消在下一个工具边界生效。</p>
       {!manage && <p className="mt-1 text-xs text-muted">需要 manage_case 能力。</p>}
       <RefusalNote refusal={control.refusal} />
       <ConfirmDialog
@@ -117,6 +117,24 @@ export function Controls() {
         <p>运行会在下一个工具边界停止。已记录的事件、证据与报告都会保留。</p>
       </ConfirmDialog>
     </Card>
+  );
+}
+
+/** What the run is doing now: a live, shimmering line. */
+function CurrentAction({ text, at }: { readonly text: string; readonly at: string }) {
+  return (
+    <p
+      className="mb-4 flex items-start gap-2.5 rounded-field bg-canvas px-3.5 py-3 text-meta"
+      data-testid="current-action"
+    >
+      <Dot tone="sky" className="mt-1 size-2 motion-safe:animate-pulse" />
+      <span className="min-w-0">
+        <span className="t-shimmer font-medium" data-text={text}>
+          {text}
+        </span>
+        <span className="mt-0.5 block text-xs text-muted">{at}</span>
+      </span>
+    </p>
   );
 }
 
@@ -141,10 +159,10 @@ function Usage({
           {text}
         </span>
       </div>
-      <div className="mt-1.5 h-2.5 overflow-hidden rounded-full bg-track">
+      <div className="mt-1.5 h-2 overflow-hidden rounded-full bg-track">
         {used > 0 && (
           <div
-            className={`h-full min-w-2 rounded-full ${SOLID_CLASS[tone]}`}
+            className={`h-full min-w-2 rounded-full transition-[width,background-color] duration-(--duration-slow) ease-smooth-out motion-reduce:transition-none ${SOLID_CLASS[tone]}`}
             style={{ width: `${ratio * 100}%` }}
           />
         )}
@@ -167,7 +185,7 @@ export function Budget() {
   const activeSeconds = Number(usage.activeMs) / 1000;
   const ended = ENDED.includes(run.status);
   return (
-    <Card title="预算与资源" testId="budget">
+    <Card title="预算与资源" icon={Gauge} tone="sky" testId="budget">
       <ul className="space-y-3">
         <Usage
           label="模型轮次"
@@ -243,10 +261,11 @@ export function Budget() {
         </ul>
       )}
       {mayAmend && !ended && (
-        <details className="group mt-4 border-line border-t pt-3">
-          <summary className="cursor-pointer select-none text-meta font-medium text-ink-soft hover:text-ink">
-            调整预算
-          </summary>
+        <Disclosure
+          summary="调整预算"
+          className="mt-4 border-line border-t pt-3"
+          summaryClassName="text-meta font-medium text-ink-soft hover:text-ink"
+        >
           <form
             className="mt-3 space-y-3"
             onSubmit={(event) => {
@@ -296,7 +315,7 @@ export function Budget() {
               调整预算
             </Button>
           </form>
-        </details>
+        </Disclosure>
       )}
       <RefusalNote refusal={amend.refusal} />
     </Card>
@@ -308,7 +327,7 @@ export function CaseFacts() {
   const { view } = useCase();
   const { overview, run, snapshot } = view;
   return (
-    <Card title="案例记录">
+    <Card title="案例记录" icon={FileText}>
       <dl className="space-y-1.5 text-meta">
         <div className="flex justify-between gap-3">
           <dt className="shrink-0 text-ink-soft">开启</dt>
@@ -355,19 +374,24 @@ export function CaseFacts() {
   );
 }
 
+/** A count of the case's records, on the tint of its tone. */
 function Figure({
+  tone,
   label,
   value,
   unit,
 }: {
+  readonly tone: Tone;
   readonly label: string;
   readonly value: number | string;
   readonly unit: string;
 }) {
   return (
-    <div className="min-w-16">
-      <dt className="text-xs text-muted">{label}</dt>
-      <dd className="mt-1 flex items-baseline gap-1">
+    <div
+      className={`min-w-24 rounded-field px-4 py-3 max-sm:min-w-0 max-sm:px-3 ${SOFT_CLASS[tone]}`}
+    >
+      <dt className="text-xs font-medium">{label}</dt>
+      <dd className="mt-1 flex items-baseline gap-1 text-ink">
         <span className="text-figure font-semibold tabular-nums lining-nums">{value}</span>
         <span className="text-meta text-muted">{unit}</span>
       </dd>
@@ -377,12 +401,13 @@ function Figure({
 
 export function CaseHeader() {
   const { view, feed } = useCase();
+  const { modelMode } = useSession();
   const { stage, run, overview, knowledge } = view;
   const [connectionTone, connectionText] = CONNECTION[feed.connection];
   const plan = view.plans.findLast((candidate) => candidate.status.validity === 'valid');
   return (
-    <header className="mb-5">
-      <div className="flex flex-wrap items-start justify-between gap-x-10 gap-y-4">
+    <header>
+      <div className="flex flex-wrap items-start justify-between gap-x-10 gap-y-5">
         <div className="min-w-0 flex-1 basis-[28rem]">
           <div className="flex flex-wrap items-center gap-2">
             <span data-testid="stage" data-stage={stage.stage}>
@@ -393,10 +418,10 @@ export function CaseHeader() {
               <span className="text-meta text-muted">{reasonLabel(stage.reason)}</span>
             )}
           </div>
-          <h1 className="mt-2.5 max-w-[46em] text-title font-medium max-sm:text-[24px] max-sm:leading-[30px]">
+          <h1 className="mt-3 max-w-[46em] text-title font-semibold max-sm:text-[24px] max-sm:leading-[30px]">
             <UntrustedText text={run?.description ?? overview.title} />
           </h1>
-          <p className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-meta text-muted">
+          <p className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-meta text-muted">
             <span>
               {overview.openedBy} 开启于 {when(overview.openedAt)}
             </span>
@@ -405,25 +430,34 @@ export function CaseHeader() {
               data-testid="feed-connection"
               data-connection={feed.connection}
             >
-              <Dot tone={connectionTone} className="size-2" />
+              <Dot
+                tone={connectionTone}
+                className={`size-2 ${feed.connection === 'live' ? 'motion-safe:animate-pulse' : ''}`}
+              />
               {connectionText}
             </span>
           </p>
         </div>
-        <dl className="flex gap-8 max-sm:gap-6">
-          <Figure label="证据" value={knowledge.evidence.length} unit="条" />
+        <dl className="flex flex-wrap gap-2.5 max-sm:grid max-sm:w-full max-sm:grid-cols-3">
+          <Figure tone="sky" label="证据" value={knowledge.evidence.length} unit="条" />
           <Figure
+            tone="violet"
             label="业务确认"
             value={
               knowledge.confirmations.filter((entry) => entry.record.revocation === null).length
             }
             unit="项"
           />
-          <Figure label="计划修改" value={plan?.content?.patch.length ?? '—'} unit="项" />
+          <Figure
+            tone="mint"
+            label="计划修改"
+            value={plan?.content?.patch.length ?? '—'}
+            unit="项"
+          />
         </dl>
       </div>
-      <div className="mt-4 space-y-2 empty:hidden">
-        {run?.model?.testDouble === true && (
+      <div className="mt-5 space-y-2 empty:hidden">
+        {run?.model?.testDouble === true && modelMode !== 'scripted_test' && (
           <Notice tone="apricot">
             本次运行的步骤由脚本化测试替身决定，不能作为模型自主能力的证据。
           </Notice>

@@ -6,7 +6,15 @@ import type {
   NodeDependencies,
   StatusOfRecord,
 } from '@aftercare/console/client';
-import { ChevronRight } from 'lucide-react';
+import {
+  Archive,
+  BadgeCheck,
+  ChevronRight,
+  Database,
+  Lightbulb,
+  PenLine,
+  ShieldCheck,
+} from 'lucide-react';
 import { type ReactNode, useState } from 'react';
 import useSWR from 'swr';
 import { getJson } from '../../lib/api.ts';
@@ -16,6 +24,7 @@ import { ConfirmDialog, Drawer } from '../overlay.tsx';
 import {
   Button,
   Card,
+  Disclosure,
   Dot,
   Empty,
   INPUT_CLASS,
@@ -55,6 +64,7 @@ function Status({ status }: { readonly status: StatusOfRecord }) {
   );
 }
 
+/** What a node rests on, and what rests on it. */
 function Basis({ nodeId }: { readonly nodeId: string }) {
   const { caseId } = useCase();
   const { data } = useSWR<NodeDependencies>(`/api/cases/${caseId}/nodes/${nodeId}`, getJson);
@@ -69,17 +79,17 @@ function Basis({ nodeId }: { readonly nodeId: string }) {
     </li>
   );
   const column = (title: string, entries: NodeDependencies['dependsOn']) => (
-    <div>
-      <p className="mb-1 font-medium text-ink">{title}</p>
+    <div className="min-w-0">
+      <p className="mb-1.5 font-medium text-ink">{title}</p>
       {entries.length === 0 ? (
         <p>（无）</p>
       ) : (
-        <ul className="list-disc pl-4">{entries.map(line)}</ul>
+        <ul className="list-disc space-y-1 pl-4">{entries.map(line)}</ul>
       )}
     </div>
   );
   return (
-    <div className="mt-2 grid grid-cols-2 gap-4 rounded-input bg-canvas p-3 text-xs text-ink-soft max-md:grid-cols-1">
+    <div className="mt-2 grid grid-cols-2 gap-4 rounded-field bg-canvas p-4 text-xs text-ink-soft max-md:grid-cols-1">
       {column('它依据什么', data.dependsOn)}
       {column('什么依据它', data.dependents)}
     </div>
@@ -87,20 +97,15 @@ function Basis({ nodeId }: { readonly nodeId: string }) {
 }
 
 function BasisToggle({ nodeId }: { readonly nodeId: string | null }) {
-  const [open, setOpen] = useState(false);
   if (nodeId === null) return null;
   return (
-    <div className="mt-1.5">
-      <button
-        type="button"
-        aria-expanded={open}
-        className="text-xs font-medium text-ink-soft underline underline-offset-2 hover:text-ink"
-        onClick={() => setOpen(!open)}
-      >
-        {open ? '收起依据' : '依据与影响'}
-      </button>
-      {open && <Basis nodeId={nodeId} />}
-    </div>
+    <Disclosure
+      summary="依据与影响"
+      className="mt-1.5 text-xs"
+      summaryClassName="font-medium text-ink-soft hover:text-ink"
+    >
+      <Basis nodeId={nodeId} />
+    </Disclosure>
   );
 }
 
@@ -108,7 +113,7 @@ function Fact({ label, children }: { readonly label: string; readonly children: 
   return (
     <div>
       <dt className="text-xs text-muted">{label}</dt>
-      <dd className="mt-0.5 text-sm">{children}</dd>
+      <dd className="mt-0.5 text-sm text-ink">{children}</dd>
     </div>
   );
 }
@@ -132,7 +137,7 @@ function EvidenceDetail({ evidenceId }: { readonly evidenceId: string }) {
   };
   return (
     <div data-testid="evidence-detail" className="space-y-4">
-      <dl className="space-y-3">
+      <dl className="space-y-3 rounded-field bg-canvas p-4">
         <Fact label="记录时间">{when(data.recordedAt)}</Fact>
         <Fact label="来源">冻结快照（不是当前源库），水位 {source.baseWatermark}</Fact>
         <Fact label="完整性">记录摘要与读取时重算一致</Fact>
@@ -153,7 +158,7 @@ function EvidenceDetail({ evidenceId }: { readonly evidenceId: string }) {
         </Fact>
       </dl>
       <div>
-        <p className="mb-2 text-xs text-muted">观察内容（快照中的原始记录，操作者已替换为假名）</p>
+        <p className="mb-2 text-xs text-muted">观察内容（快照原始记录，操作者已替换为假名）</p>
         <Json value={data.observations} />
       </div>
       <Technical>
@@ -193,7 +198,7 @@ function Evidence() {
   ] as const;
   return (
     <>
-      <div className="mb-4 grid grid-cols-3 gap-2 max-md:grid-cols-1">
+      <div className="mb-4 grid grid-cols-3 gap-2.5 max-md:grid-cols-1">
         {filters.map(([name, placeholder, value, set]) => (
           <input
             key={name}
@@ -207,7 +212,7 @@ function Evidence() {
         ))}
       </div>
       {filtered.error !== undefined && (
-        <div className="mb-3">
+        <div className="mb-4">
           <Notice tone="rose">筛选条件无效：{filtered.error.message}</Notice>
         </div>
       )}
@@ -281,7 +286,7 @@ function Confirmations() {
       <ul className={ROWS_CLASS}>
         {view.knowledge.confirmations.map(({ record, status }) => (
           <li key={record.confirmationId} data-testid="confirmation">
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
               <Dot tone="violet" />
               <span className="font-medium">
                 {record.body.kind === 'incident'
@@ -343,22 +348,22 @@ export function Knowledge() {
   const { knowledge, certificate, invalidated } = view;
   return (
     <>
-      <Card title="接入资格与信任前提">
+      <Card title="接入资格与信任前提" icon={ShieldCheck} tone="mint">
         {certificate === null ? (
           <Empty>当前快照还没有完整性凭证。</Empty>
         ) : (
-          <div className="space-y-1.5 text-sm">
-            <p className="flex flex-wrap items-center gap-2">
-              <span className="text-ink-soft">快照资格</span>
+          <div className="space-y-4 text-sm">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-meta text-muted">快照资格</span>
               <Pill tone={certificate.failedChecks.length === 0 ? 'mint' : 'apricot'}>
                 {certificate.eligibility.snapshot}
               </Pill>
               {certificate.eligibility.objects.length > 0 && (
-                <span className="text-ink-soft">
+                <span className="text-meta text-muted">
                   {certificate.eligibility.objects.length} 个对象降级
                 </span>
               )}
-            </p>
+            </div>
             {certificate.failedChecks.length > 0 && (
               <p className="text-apricot-ink">
                 未通过的检查：{certificate.failedChecks.join('，')}
@@ -378,12 +383,20 @@ export function Knowledge() {
       </Card>
       <Card
         title="原始观察（证据）"
-        description="取自冻结快照的记录。点击一条在侧栏查看全文。"
+        description="取自冻结快照的记录；点开一条看全文。"
+        icon={Database}
+        tone="sky"
         testId="evidence"
       >
         <Evidence />
       </Card>
-      <Card title="候选假设" description="模型提出，不是事实，也不是确认。" testId="hypotheses">
+      <Card
+        title="候选假设"
+        description="由模型提出，不是事实或确认。"
+        icon={Lightbulb}
+        tone="violet"
+        testId="hypotheses"
+      >
         {knowledge.hypotheses.length === 0 ? (
           <Empty>没有登记假设。</Empty>
         ) : (
@@ -417,7 +430,13 @@ export function Knowledge() {
           </ul>
         )}
       </Card>
-      <Card title="人工声明" description="按原文记录，不被解释为数值。" testId="declarations">
+      <Card
+        title="人工声明"
+        description="按原文记录，不解释为数值。"
+        icon={PenLine}
+        tone="neutral"
+        testId="declarations"
+      >
         {knowledge.declarations.length === 0 ? (
           <Empty>没有声明。</Empty>
         ) : (
@@ -442,12 +461,14 @@ export function Knowledge() {
           </ul>
         )}
       </Card>
-      <Card title="已确认的业务事实与策略" testId="confirmations">
+      <Card title="已确认的业务事实与策略" icon={BadgeCheck} tone="mint" testId="confirmations">
         <Confirmations />
       </Card>
       <Card
         title="已失效或不再适用的结论与材料"
-        description="失效只改变当前能否使用；记录本身保留，仍可作为历史阅读。"
+        description="失效只影响当前能否使用；记录仍可作历史阅读。"
+        icon={Archive}
+        tone="apricot"
         testId="invalidated"
       >
         {invalidated.length === 0 ? (

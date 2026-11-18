@@ -1,35 +1,59 @@
 'use client';
 
-import { type AnimationParams, animate } from 'animejs';
 import { X } from 'lucide-react';
 import { type ReactNode, type RefObject, useEffect, useId, useRef, useState } from 'react';
 import { Button, type ButtonTone, Field, INPUT_CLASS } from './ui.tsx';
 
 // Modal surfaces on the native <dialog>: focus stays inside, Esc and a click
-// on the backdrop close it. They enter with a short motion, none when the
-// operator asked for reduced motion.
+// on the backdrop close it. The dialog scales in (modal open / close) and the
+// drawer slides in from the right (panel reveal); closing waits for the exit
+// transition before the dialog leaves the top layer.
 
 type SurfaceKind = 'drawer' | 'modal';
-const ENTER: Readonly<Record<SurfaceKind, AnimationParams>> = {
-  drawer: { translateX: ['32px', '0px'], opacity: [0, 1] },
-  modal: { scale: [0.97, 1], opacity: [0, 1] },
-};
 
-function useModal(open: boolean, kind: SurfaceKind): RefObject<HTMLDialogElement | null> {
+/** The exit duration of a surface in milliseconds, read from its :root token (written as ms or s). */
+function closeDuration(kind: SurfaceKind): number {
+  const token = kind === 'modal' ? '--modal-close-dur' : '--panel-close-dur';
+  const value = getComputedStyle(document.documentElement).getPropertyValue(token).trim();
+  const amount = Number.parseFloat(value);
+  if (Number.isNaN(amount)) return 0;
+  return value.endsWith('ms') ? amount : amount * 1000;
+}
+
+/** Opens and closes the dialog with its transition; `shown` stays true until the exit has finished. */
+function useModal(
+  open: boolean,
+  kind: SurfaceKind,
+): { ref: RefObject<HTMLDialogElement | null>; entered: boolean; shown: boolean } {
   const ref = useRef<HTMLDialogElement>(null);
+  const [entered, setEntered] = useState(false);
+  const [shown, setShown] = useState(open);
   useEffect(() => {
     const dialog = ref.current;
     if (dialog === null) return;
-    if (open && !dialog.open) {
-      dialog.showModal();
-      if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
-        animate(dialog, { ...ENTER[kind], duration: 200, ease: 'outQuad' });
+    if (open) {
+      setShown(true);
+      if (!dialog.open) {
+        dialog.showModal();
+        // The closed styles must be computed before they change, or nothing transitions.
+        void dialog.offsetWidth;
       }
-    } else if (!open && dialog.open) {
-      dialog.close();
+      const frame = requestAnimationFrame(() => setEntered(true));
+      return () => cancelAnimationFrame(frame);
     }
+    setEntered(false);
+    if (!dialog.open) return;
+    const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const timer = setTimeout(
+      () => {
+        dialog.close();
+        setShown(false);
+      },
+      reduced ? 0 : closeDuration(kind),
+    );
+    return () => clearTimeout(timer);
   }, [open, kind]);
-  return ref;
+  return { ref, entered, shown };
 }
 
 interface SurfaceProps {
@@ -52,14 +76,21 @@ function Surface({
   readonly kicker?: ReactNode;
   readonly className: string;
 }) {
-  const ref = useModal(open, kind);
+  const { ref, entered, shown } = useModal(open, kind);
   const titleId = useId();
+  // Leaving starts on the render that closes, not one effect later.
+  const visible = open && entered;
+  const state =
+    kind === 'modal'
+      ? { className: `t-modal ${visible ? 'is-open' : shown ? 'is-closing' : ''}` }
+      : { className: 't-panel-slide', 'data-open': visible };
   return (
     // biome-ignore lint/a11y/useKeyWithClickEvents: a click on the backdrop closes; the keyboard closes with Esc (the cancel event).
     <dialog
       ref={ref}
       aria-labelledby={titleId}
-      className={`bg-card p-0 text-ink backdrop:bg-ink/35 ${className}`}
+      {...state}
+      className={`bg-card p-0 text-ink ${state.className} ${className}`}
       onCancel={(event) => {
         event.preventDefault();
         onClose();
@@ -68,13 +99,13 @@ function Surface({
         if (event.target === event.currentTarget) onClose();
       }}
     >
-      <div className="flex max-h-full flex-col p-6 max-sm:p-5">
-        <header className="mb-4 flex items-start justify-between gap-3">
+      <div className="flex max-h-full flex-col p-7 max-sm:p-5">
+        <header className="mb-5 flex items-start justify-between gap-3">
           <div className="min-w-0">
             {kicker}
             <h2
               id={titleId}
-              className={`text-[22px] leading-7 font-medium ${kicker === undefined ? '' : 'mt-2'}`}
+              className={`text-[22px] leading-7 font-semibold tracking-[-0.015em] ${kicker === undefined ? '' : 'mt-2'}`}
             >
               {title}
             </h2>
@@ -83,12 +114,12 @@ function Surface({
             type="button"
             aria-label="关闭"
             onClick={onClose}
-            className="-mt-1 -mr-1 grid size-9 shrink-0 place-items-center rounded-full text-muted transition-colors duration-160 hover:bg-track hover:text-ink"
+            className="-mt-1 -mr-1 grid size-9 shrink-0 place-items-center rounded-full bg-canvas text-muted transition-colors duration-(--duration-quick) hover:bg-canvas-2 hover:text-ink"
           >
-            <X aria-hidden className="size-5" />
+            <X aria-hidden className="size-[18px]" />
           </button>
         </header>
-        <div className="min-h-0 flex-1 overflow-y-auto">{open && children}</div>
+        <div className="min-h-0 flex-1 overflow-y-auto">{(open || shown) && children}</div>
       </div>
     </dialog>
   );
@@ -100,7 +131,7 @@ export function Drawer(props: SurfaceProps & { readonly kicker?: ReactNode }) {
     <Surface
       kind="drawer"
       {...props}
-      className="fixed inset-y-0 right-0 left-auto m-0 h-dvh max-h-none w-[min(420px,100%)] max-w-none rounded-l-drawer shadow-drawer [&>div]:h-full"
+      className="fixed inset-y-3 right-3 left-auto m-0 h-[calc(100dvh-24px)] max-h-none w-[min(440px,calc(100%-24px))] max-w-none rounded-drawer shadow-drawer [&>div]:h-full"
     />
   );
 }
@@ -129,7 +160,7 @@ export function ConfirmDialog({
       open={open}
       onClose={onClose}
       title={title}
-      className="m-auto w-[min(460px,calc(100%-32px))] rounded-panel shadow-card"
+      className="m-auto w-[min(480px,calc(100%-32px))] rounded-panel shadow-lift"
     >
       <ConfirmBody
         {...options}
@@ -167,7 +198,7 @@ function ConfirmBody({
       }}
     >
       {warning !== undefined && (
-        <p className="rounded-input bg-apricot-soft px-3.5 py-2.5 text-meta text-apricot-ink">
+        <p className="rounded-field bg-apricot-soft px-4 py-3 text-meta text-apricot-ink">
           {warning}
         </p>
       )}
@@ -183,7 +214,7 @@ function ConfirmBody({
           />
         </Field>
       )}
-      <div className="flex flex-wrap justify-end gap-2 pt-1">
+      <div className="flex flex-wrap justify-end gap-2 pt-2">
         <Button onClick={onCancel}>{dismissLabel}</Button>
         <Button type="submit" tone={tone} disabled={!ready}>
           {confirmLabel}
