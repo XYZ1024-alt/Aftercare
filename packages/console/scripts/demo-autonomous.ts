@@ -11,6 +11,7 @@ import {
   signBody,
   startAutonomousDaemon,
 } from '../src/index.ts';
+import { createLogger, secretsOf } from '../src/log.ts';
 
 // The competition demo: one signed alert walks the whole deployment by itself
 // — intake, charter-bound investigation, the autopilot's answers and
@@ -113,7 +114,16 @@ const report = await initialiseDemo(process.env);
 console.log(`演示库：${report.database}（${report.products.length} 个商品）`);
 console.log(`建议告警描述：${report.suggestedDescription}`);
 
-const context = openConsoleContext(process.env, 'demo');
+// The demo prints the records itself; the worker's structured log keeps only warnings and errors.
+const context = openConsoleContext(process.env, 'demo', {
+  logger: createLogger('demo', {
+    secrets: secretsOf(process.env),
+    write: (line) => {
+      const { level } = z.object({ level: z.string() }).parse(JSON.parse(line));
+      if (level !== 'info') console.error(line);
+    },
+  }),
+});
 const model = modelOf(context, process.env);
 if (model === null) {
   await context.environment.close();
