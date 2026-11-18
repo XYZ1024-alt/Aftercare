@@ -30,6 +30,7 @@
     "ops": "pnpm --filter @aftercare/console run ops",
     "test:e2e": "playwright test",
     "eval:compare": "AFTERCARE_EVAL_COMPARE=1 vitest run packages/agent/test/comparison.test.ts",
+    "eval:autonomous": "AFTERCARE_EVAL_AUTONOMOUS=1 vitest run packages/console/test/autonomous-eval.test.ts",
     "build:web": "pnpm --filter @aftercare/web run build",
     "start:web": "pnpm --filter @aftercare/web run start"
   },
