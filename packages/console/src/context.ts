@@ -11,7 +11,9 @@ import {
   type OperatorSession,
 } from '@aftercare/contracts';
 import {
+  type AssistantStore,
   type AutonomyStore,
+  createAssistantStore,
   createAutonomyStore,
   createPromotionStore,
   type PromotionStore,
@@ -37,6 +39,8 @@ export interface ConsoleContext {
   readonly autonomy: AutonomyStore;
   /** Promotion approvals and the promotion record of each case (runtime role); the promoter login is not here. */
   readonly promotions: PromotionStore;
+  /** The assistant conversations of each principal, stored message by message (runtime role). */
+  readonly assistant: AssistantStore;
   readonly logger: Logger;
   readonly metrics: ProcessMetrics;
   readonly model: ModelStatusView;
@@ -99,6 +103,7 @@ export function openConsoleContext(
     }),
     autonomy: createAutonomyStore(environment.runtimePool),
     promotions: createPromotionStore(environment.runtimePool),
+    assistant: createAssistantStore(environment.runtimePool),
     logger: overrides.logger ?? createLogger(component, { secrets: secretsOf(env) }),
     metrics: createProcessMetrics(),
     model: model.status,

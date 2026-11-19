@@ -6,6 +6,7 @@ import {
   approveInBrowser,
   expect,
   OPERATOR,
+  reportToAssistant,
   signIn,
   stage,
   submitIncident,
@@ -117,6 +118,81 @@ test('from a vague report to a sealed partial result: real events, business answ
   await expect(page.getByTestId('case-row')).toContainText('当前有效');
 });
 
+test('a case is done without leaving the agent page: answers in the workspace, the approval from another agent page, the conversation kept in history', async ({
+  page,
+  browser,
+  harness,
+}) => {
+  await signIn(page, OPERATOR.principal);
+  harness.startWorker();
+  const caseId = await reportToAssistant(page, '导入后商品价格异常，帮我处理');
+
+  // The workspace shows the case the assistant opened; the page stays on the conversation.
+  const workspace = page.getByTestId('case-workspace');
+  await expect(page).toHaveURL(/\/agent\?c=[0-9a-f-]{36}$/);
+  await expect(workspace.getByTestId('open-case-page')).toHaveAttribute('href', `/cases/${caseId}`);
+  await untilStage(page, 'awaiting_answer');
+
+  // What waits on the person is offered beside the composer; the source is picked in the custom dropdown.
+  await page
+    .locator('[data-testid=attention-item][data-tab=questions]')
+    .getByRole('button')
+    .click();
+  const first = workspace.locator('[data-testid=question][data-state=open]').first();
+  await first.getByRole('combobox').click();
+  await page.getByRole('option', { name: '业务决策记录' }).click();
+  await expect(first.locator('input[name=source-kind]')).toHaveValue('business_decision_record');
+  const kinds = await answerUntilApproval(page);
+  expect(kinds).toEqual(['incident_scope', 'baseline', 'replay_policy', 'clarification']);
+
+  // The approver reaches the case from an agent page of their own, through the case switcher.
+  const approverContext = await browser.newContext();
+  const approverPage = await approverContext.newPage();
+  await signIn(approverPage, APPROVER.principal);
+  await approverPage.goto('/agent');
+  await approverPage.getByTestId('case-switcher').click();
+  await approverPage.getByRole('option').first().click();
+  await expect(stage(approverPage)).toHaveAttribute('data-stage', 'awaiting_approval');
+  await Promise.all([
+    approverPage.waitForResponse((response) => response.url().endsWith('/approve')),
+    approveInBrowser(approverPage),
+  ]);
+  await approverContext.close();
+
+  // The operator's workspace follows to the sealed result and produces the report file there.
+  await untilStage(page, 'partially_resolved');
+  await page.locator('[data-testid=attention-item][data-tab=results]').getByRole('button').click();
+  const report = workspace.getByTestId('report');
+  await expect(report).toHaveAttribute('data-verdict', 'partially_resolved');
+  await report.getByRole('button', { name: '生成报告文件' }).click();
+  await expect(report.locator('[data-testid=artefact][data-status=ready]')).toBeVisible();
+
+  // The conversation is stored: a reload shows it again, and the history lists it as the open one.
+  const conversationId = new URL(page.url()).searchParams.get('c') ?? '';
+  await page.reload();
+  const userMessage = page.locator('[data-testid=assistant-message][data-role=user]').first();
+  await expect(userMessage).toContainText('导入后商品价格异常');
+  const item = page.locator(
+    `[data-testid=conversation-item][data-conversation="${conversationId}"]`,
+  );
+  await expect(item).toHaveAttribute('data-active', 'true');
+
+  // A new conversation starts empty; the stored one opens again from the history.
+  await page.locator('[data-testid=new-conversation]:visible').click();
+  await expect(page).toHaveURL(/\/agent$/);
+  await expect(page.locator('[data-testid=assistant-message]')).toHaveCount(0);
+  await item.getByRole('button', { name: /导入后商品价格异常/ }).click();
+  await expect(userMessage).toContainText('导入后商品价格异常');
+
+  // Deleting the conversation removes what was said, not the case it opened.
+  await item.hover();
+  await item.getByRole('button', { name: '删除对话' }).click();
+  await page.getByRole('dialog').getByRole('button', { name: '删除对话' }).click();
+  await expect(page.locator('[data-testid=conversation-item]')).toHaveCount(0);
+  expect(await harness.context.assistant.read(OPERATOR.principal, conversationId)).toBeNull();
+  expect(await harness.context.environment.operations.findCase(caseId)).not.toBeNull();
+});
+
 test('a double click on send opens one case, and an answer whose response is lost is not recorded twice', async ({
   page,
   harness,
@@ -126,14 +202,20 @@ test('a double click on send opens one case, and an answer whose response is los
   await page.goto('/agent');
   await page.locator('textarea[name=message]').fill('导入后商品价格异常');
   await page.getByRole('button', { name: '发送' }).dblclick();
-  // The conversation is kept in the browser: the newest case link is the one this report opened.
   const opened = page.locator('[data-testid=opened-case]').last();
   await expect(opened).toBeVisible();
-  await opened.click();
-  await page.waitForURL(/\/cases\/[0-9a-f-]{36}$/);
-  const caseId = page.url().split('/').at(-1) ?? '';
+  const caseId = (await opened.getAttribute('data-case-id')) ?? '';
   expect(await harness.context.environment.operations.listCases(10)).toHaveLength(1);
   expect(await harness.h.agentStore.listRunsOfCase(caseId)).toHaveLength(1);
+  // One conversation with one turn: the second click neither sent nor stored a second message.
+  const [conversation, ...others] = await harness.context.assistant.list(OPERATOR.principal, 10);
+  expect(others).toEqual([]);
+  const stored = await harness.context.assistant.read(
+    OPERATOR.principal,
+    conversation?.conversationId ?? '',
+  );
+  expect(stored?.entries.filter((entry) => entry.message.role === 'user')).toHaveLength(1);
+  await page.goto(`/cases/${caseId}`);
 
   await untilStage(page, 'awaiting_answer');
   // The server records the answer; the response never reaches the browser.

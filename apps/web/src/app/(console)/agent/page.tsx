@@ -1,137 +1,116 @@
 'use client';
 
-import type { AssistantMessage } from '@aftercare/console/client';
-import { Bot, RotateCcw } from 'lucide-react';
-import Link from 'next/link';
+import { History, Plus } from 'lucide-react';
+import { useSearchParams } from 'next/navigation';
+import { Suspense, useState } from 'react';
+import { z } from 'zod';
 import { Composer } from '../../../components/assistant/composer.tsx';
+import { ConversationHistory } from '../../../components/assistant/history.tsx';
 import { Transcript } from '../../../components/assistant/transcript.tsx';
 import {
-  Button,
-  Card,
-  Dot,
-  Empty,
-  Notice,
-  PageHead,
-  Pill,
-  RefusalNote,
-} from '../../../components/ui.tsx';
+  AttentionBar,
+  CaseWorkspace,
+  WorkspaceProvider,
+} from '../../../components/assistant/workspace.tsx';
+import { Drawer } from '../../../components/overlay.tsx';
+import { Button, Loading, RefusalNote } from '../../../components/ui.tsx';
 import { UntrustedText } from '../../../components/untrusted-text.tsx';
-import { AssistantProvider, useAssistant } from '../../../lib/assistant.tsx';
-import { type CaseRow, useCases } from '../../../lib/cases.ts';
-import { STAGE_LABEL, shortId, stageTone } from '../../../lib/labels.ts';
+import { AssistantProvider, useAssistant, useConversations } from '../../../lib/assistant.tsx';
 
-/** The cases the conversation opened, read or acted on, newest first, without repeats. */
-const followedCaseIds = (messages: readonly AssistantMessage[]): readonly string[] => {
-  const seen = new Set<string>();
-  const ids: string[] = [];
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (message?.role !== 'tool') continue;
-    for (const caseId of message.caseIds) {
-      if (seen.has(caseId)) continue;
-      seen.add(caseId);
-      ids.push(caseId);
-    }
-  }
-  return ids;
-};
+const CONVERSATION_ID = z.uuid();
 
-function NewConversationButton() {
-  const { pending, reset } = useAssistant();
-  return (
-    <Button size="sm" onClick={reset} disabled={pending}>
-      <RotateCcw aria-hidden className="size-3.5" />
-      新对话
-    </Button>
-  );
-}
-
-function ConversationCard() {
-  const { refusal } = useAssistant();
-  return (
-    <Card title="对话" icon={Bot} tone="sky" aside={<NewConversationButton />} className="t-enter">
-      <Transcript />
-      <RefusalNote refusal={refusal} />
-      <Composer />
-    </Card>
-  );
-}
-
-function FollowedCase({
-  caseId,
-  row,
-}: {
-  readonly caseId: string;
-  readonly row: CaseRow | undefined;
-}) {
-  return (
-    <li>
-      <Link
-        href={`/cases/${caseId}`}
-        data-testid="followed-case"
-        className="flex items-center gap-3 rounded-field px-2 py-2.5 transition-colors duration-(--duration-quick) ease-smooth-out hover:bg-canvas"
-      >
-        <Dot tone={row === undefined ? 'neutral' : stageTone(row.stage)} />
-        <span className="min-w-0 flex-1">
-          <span className="line-clamp-1 font-medium">
-            <UntrustedText text={row?.title ?? shortId(caseId)} />
-          </span>
-          <span className="mt-0.5 block text-meta text-muted">
-            {row === undefined ? '读取中…' : STAGE_LABEL[row.stage]}
-          </span>
-        </span>
-        {row !== undefined && row.overview.openQuestions > 0 && (
-          <Pill tone="violet">{row.overview.openQuestions} 个问题</Pill>
-        )}
-      </Link>
-    </li>
-  );
-}
-
-function FollowedCases() {
-  const { messages } = useAssistant();
-  const { rows, error } = useCases();
-  const ids = followedCaseIds(messages);
-  return (
-    <Card title="跟进的案例" className="t-enter">
-      {error !== undefined && (
-        <div className="mb-3">
-          <Notice tone="rose">案例读取失败：{error.message}</Notice>
-        </div>
-      )}
-      {ids.length === 0 ? (
-        <Empty>对话中创建或查看的案例会显示在这里。</Empty>
-      ) : (
-        <ul className="-my-1">
-          {ids.map((caseId) => (
-            <FollowedCase
-              key={caseId}
-              caseId={caseId}
-              row={rows?.find((row) => row.overview.caseId === caseId)}
-            />
-          ))}
-        </ul>
-      )}
-    </Card>
-  );
-}
-
-function AgentConsole() {
+function AgentLayout() {
+  const { conversationId, pending, refusal, select } = useAssistant();
+  const { conversations } = useConversations();
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const title =
+    conversations?.find((conversation) => conversation.conversationId === conversationId)?.title ??
+    '新对话';
   return (
     <>
-      <PageHead title="Agent 对话" />
-      <div className="grid grid-cols-[minmax(0,1fr)_320px] gap-5 max-lg:grid-cols-1">
-        <ConversationCard />
-        <FollowedCases />
+      <div className="flex gap-5 max-lg:flex-col lg:min-h-[600px] lg:flex-1">
+        <aside className="hidden w-64 shrink-0 flex-col rounded-panel bg-card p-4 shadow-soft xl:flex xl:min-h-0">
+          <ConversationHistory />
+        </aside>
+        <section className="flex min-w-0 flex-1 flex-col rounded-panel bg-card p-5 shadow-soft lg:min-h-0">
+          <header className="mb-3 flex items-center justify-between gap-3">
+            <h1 className="line-clamp-1 min-w-0 flex-1 text-[17px] leading-6 font-medium">
+              <UntrustedText text={title} />
+            </h1>
+            <div className="flex shrink-0 items-center gap-2">
+              <Button size="sm" className="xl:hidden" onClick={() => setHistoryOpen(true)}>
+                <History aria-hidden className="size-3.5" />
+                <span className="max-sm:sr-only">历史对话</span>
+              </Button>
+              {/* From xl on, the history column beside the conversation has this button. */}
+              <Button
+                size="sm"
+                className="xl:hidden"
+                disabled={pending}
+                onClick={() => select(null)}
+              >
+                <Plus aria-hidden className="size-3.5" />
+                <span className="max-sm:sr-only">新对话</span>
+              </Button>
+            </div>
+          </header>
+          <Transcript />
+          <RefusalNote refusal={refusal} />
+          <AttentionBar />
+          <Composer />
+        </section>
+        <div className="flex shrink-0 flex-col lg:min-h-0 lg:w-[440px] 2xl:w-[500px]">
+          <CaseWorkspace />
+        </div>
       </div>
+      <Drawer open={historyOpen} onClose={() => setHistoryOpen(false)} title="历史对话">
+        <ConversationHistory titled={false} onPicked={() => setHistoryOpen(false)} />
+      </Drawer>
     </>
   );
 }
 
+/**
+ * The workspace starts afresh with every conversation the person opens, and
+ * then follows its newest case. The id a new conversation receives on its
+ * first turn is no new selection: a case picked before sending stays.
+ */
+function AgentWorkspace() {
+  const { selection } = useAssistant();
+  return (
+    <WorkspaceProvider key={selection}>
+      <AgentLayout />
+    </WorkspaceProvider>
+  );
+}
+
+function AgentConsole({ conversationId }: { readonly conversationId: string | null }) {
+  return (
+    <AssistantProvider initialConversationId={conversationId}>
+      <AgentWorkspace />
+    </AssistantProvider>
+  );
+}
+
+/** The conversation of the address, once the query parameters are readable in the browser. */
+function ConversationPage() {
+  const params = useSearchParams();
+  const raw = params.get('c');
+  const parsed = raw === null ? null : CONVERSATION_ID.safeParse(raw);
+  const conversationId = parsed?.success === true ? parsed.data : null;
+  return <AgentConsole conversationId={conversationId} />;
+}
+
 export default function AgentPage() {
   return (
-    <AssistantProvider>
-      <AgentConsole />
-    </AssistantProvider>
+    <Suspense
+      fallback={
+        <div className="rounded-panel bg-card p-5 shadow-soft">
+          <Loading label="正在读取对话…" />
+        </div>
+      }
+    >
+      <ConversationPage />
+    </Suspense>
   );
 }

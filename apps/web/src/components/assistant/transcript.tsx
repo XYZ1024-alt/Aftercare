@@ -1,8 +1,11 @@
 'use client';
 
-import type { AssistantMessage, AssistantToolCall } from '@aftercare/console/client';
+import type {
+  AssistantEntry,
+  AssistantMessage,
+  AssistantToolCall,
+} from '@aftercare/console/client';
 import {
-  ArrowUpRight,
   Bot,
   Clock,
   FileSearch,
@@ -14,13 +17,13 @@ import {
   SlidersHorizontal,
   Wrench,
 } from 'lucide-react';
-import Link from 'next/link';
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { useAssistant } from '../../lib/assistant.tsx';
-import { useCases } from '../../lib/cases.ts';
-import { shortId } from '../../lib/labels.ts';
-import { Chip, IconTile, Json, Technical } from '../ui.tsx';
+import { type CaseRow, useCases } from '../../lib/cases.ts';
+import { shortId, stageTone, whenShort } from '../../lib/labels.ts';
+import { Chip, Dot, IconTile, Json, Loading, Notice, Technical } from '../ui.tsx';
 import { UntrustedMarkdown, UntrustedText } from '../untrusted-text.tsx';
+import { useWorkspace } from './workspace.tsx';
 
 type ToolMessage = Extract<AssistantMessage, { role: 'tool' }>;
 
@@ -60,31 +63,70 @@ const refusalOfResult = (
   return typeof code === 'string' && typeof message === 'string' ? { code, message } : null;
 };
 
+interface AssistantItem {
+  readonly kind: 'assistant';
+  readonly seq: number;
+  readonly message: Extract<AssistantMessage, { role: 'assistant' }>;
+  /** Results of this message's calls: the tool messages that directly follow it. */
+  readonly results: ReadonlyMap<string, ToolMessage>;
+}
+
+interface UserItem {
+  readonly kind: 'user';
+  readonly seq: number;
+  readonly message: Extract<AssistantMessage, { role: 'user' }>;
+  readonly recordedAt: string;
+}
+
+type Item = AssistantItem | UserItem;
+
 /**
- * Keys of the transcript: derived from the message and its occurrence, so an
- * appended message never renumbers the ones before it.
+ * One item per message the reader sees: an assistant message carries the tool
+ * results that directly follow it, and those tool messages are not drawn again.
  */
-const keyed = (
-  messages: readonly AssistantMessage[],
-): readonly { readonly key: string; readonly message: AssistantMessage }[] => {
-  const occurrences = new Map<string, number>();
-  return messages.map((message) => {
-    const base =
-      message.role === 'user'
-        ? `user:${message.content}`
-        : message.role === 'assistant'
-          ? `assistant:${message.content ?? ''}:${message.toolCalls.map((call) => call.id).join(',')}`
-          : `tool:${message.toolCallId}`;
-    const occurrence = occurrences.get(base) ?? 0;
-    occurrences.set(base, occurrence + 1);
-    return { key: `${base}#${occurrence}`, message };
-  });
+const itemsOf = (entries: readonly AssistantEntry[]): readonly Item[] => {
+  const items: Item[] = [];
+  for (let index = 0; index < entries.length; index += 1) {
+    const entry = entries[index];
+    if (entry === undefined) continue;
+    const { message } = entry;
+    if (message.role === 'user') {
+      items.push({ kind: 'user', seq: entry.seq, message, recordedAt: entry.recordedAt });
+      continue;
+    }
+    if (message.role !== 'assistant') continue;
+    const results = new Map<string, ToolMessage>();
+    let next = index + 1;
+    while (next < entries.length) {
+      const result = entries[next]?.message;
+      if (result?.role !== 'tool') break;
+      results.set(result.toolCallId, result);
+      next += 1;
+    }
+    items.push({ kind: 'assistant', seq: entry.seq, message, results });
+  }
+  return items;
 };
 
-function UserMessage({ text }: { readonly text: string }) {
+const BUBBLE_CLASS =
+  'max-w-[85%] rounded-2xl rounded-br-md bg-ink px-4 py-2.5 text-sm leading-[22px] text-white';
+
+function UserMessageView({ item }: { readonly item: UserItem }) {
+  return (
+    <div data-testid="assistant-message" data-role="user" className="flex flex-col items-end gap-1">
+      <div className={BUBBLE_CLASS}>
+        <UntrustedText text={item.message.content} />
+      </div>
+      <span className="text-xs text-muted">{whenShort(item.recordedAt)}</span>
+    </div>
+  );
+}
+
+/** The user message of the running turn, shown before its stored entry arrived. */
+function PendingUserMessage({ text }: { readonly text: string }) {
   return (
     <div data-testid="assistant-message" data-role="user" className="flex justify-end">
-      <div className="max-w-[85%] rounded-2xl rounded-br-md bg-ink px-4 py-2.5 text-sm leading-[22px] text-white">
+      <div className={BUBBLE_CLASS}>
         <UntrustedText text={text} />
       </div>
     </div>
@@ -94,15 +136,20 @@ function UserMessage({ text }: { readonly text: string }) {
 function ToolCallRow({
   call,
   tool,
-  titleOf,
+  running,
+  rowOf,
 }: {
   readonly call: AssistantToolCall;
   readonly tool: ToolMessage | undefined;
-  readonly titleOf: (caseId: string) => string;
+  /** The call is the tail of a running turn: its result may still come. */
+  readonly running: boolean;
+  readonly rowOf: (caseId: string) => CaseRow | undefined;
 }) {
+  const { focus } = useWorkspace();
   const Icon = TOOL_ICON[call.name] ?? Wrench;
   const label = TOOL_LABEL[call.name] ?? call.name;
-  const state = tool === undefined ? 'pending' : tool.ok ? 'ok' : 'refused';
+  const state =
+    tool === undefined ? (running ? 'pending' : 'unanswered') : tool.ok ? 'ok' : 'refused';
   const refusal = tool === undefined || tool.ok ? null : refusalOfResult(tool.result);
   return (
     <div className="rounded-field bg-canvas px-3 py-2">
@@ -112,12 +159,13 @@ function ToolCallRow({
         data-state={state}
         className="flex flex-wrap items-center gap-x-2 gap-y-1 text-meta"
       >
-        {tool === undefined ? (
+        {tool === undefined && running ? (
           <Loader2 aria-hidden className="size-3.5 shrink-0 text-muted motion-safe:animate-spin" />
         ) : (
           <Icon aria-hidden className="size-3.5 shrink-0 text-muted" />
         )}
         <span className="font-medium text-ink-soft">{label}</span>
+        {tool === undefined && !running && <span className="text-muted">未完成</span>}
         {refusal !== null && (
           <span className="text-rose-ink">
             未执行（{refusal.code}）：{refusal.message}
@@ -126,17 +174,25 @@ function ToolCallRow({
       </div>
       {tool !== undefined && tool.caseIds.length > 0 && (
         <div className="mt-1.5 flex flex-wrap gap-1.5">
-          {tool.caseIds.map((caseId) => (
-            <Link
-              key={caseId}
-              href={`/cases/${caseId}`}
-              data-testid={call.name === 'open_case' ? 'opened-case' : undefined}
-              className="inline-flex max-w-64 items-center gap-1 rounded-full bg-card px-2.5 py-1 text-xs text-ink-soft shadow-soft transition-colors duration-(--duration-quick) ease-smooth-out hover:text-ink"
-            >
-              <ArrowUpRight aria-hidden className="size-3 shrink-0" />
-              <span className="truncate">{titleOf(caseId)}</span>
-            </Link>
-          ))}
+          {tool.caseIds.map((caseId) => {
+            const row = rowOf(caseId);
+            return (
+              <button
+                type="button"
+                key={caseId}
+                data-testid={call.name === 'open_case' ? 'opened-case' : undefined}
+                data-case-id={caseId}
+                onClick={() => focus(caseId)}
+                className="inline-flex max-w-64 cursor-pointer items-center gap-1.5 rounded-full bg-card px-2.5 py-1 text-xs text-ink-soft shadow-soft transition-colors duration-(--duration-quick) ease-smooth-out hover:text-ink"
+              >
+                <Dot
+                  tone={row === undefined ? 'neutral' : stageTone(row.stage)}
+                  className="size-2"
+                />
+                <span className="truncate">{row?.title ?? shortId(caseId)}</span>
+              </button>
+            );
+          })}
         </div>
       )}
       <Technical>
@@ -154,22 +210,28 @@ function ToolCallRow({
 }
 
 function AssistantMessageView({
-  message,
-  results,
-  titleOf,
+  item,
+  running,
+  rowOf,
 }: {
-  readonly message: Extract<AssistantMessage, { role: 'assistant' }>;
-  readonly results: ReadonlyMap<string, ToolMessage>;
-  readonly titleOf: (caseId: string) => string;
+  readonly item: AssistantItem;
+  readonly running: boolean;
+  readonly rowOf: (caseId: string) => CaseRow | undefined;
 }) {
-  const content = message.content?.trim() ?? '';
+  const content = item.message.content?.trim() ?? '';
   return (
     <div data-testid="assistant-message" data-role="assistant" className="flex gap-2.5">
       <IconTile icon={Bot} tone="sky" size="sm" />
       <div className="min-w-0 flex-1 space-y-2">
         {content !== '' && <UntrustedMarkdown text={content} />}
-        {message.toolCalls.map((call) => (
-          <ToolCallRow key={call.id} call={call} tool={results.get(call.id)} titleOf={titleOf} />
+        {item.message.toolCalls.map((call) => (
+          <ToolCallRow
+            key={call.id}
+            call={call}
+            tool={item.results.get(call.id)}
+            running={running}
+            rowOf={rowOf}
+          />
         ))}
       </div>
     </div>
@@ -177,32 +239,34 @@ function AssistantMessageView({
 }
 
 export function Transcript() {
-  const { messages, pending, setDraft } = useAssistant();
+  const { entries, pending, pendingText, loading, runningElsewhere, setDraft } = useAssistant();
   const { rows } = useCases();
   const scroller = useRef<HTMLDivElement>(null);
-  const results = new Map<string, ToolMessage>();
-  for (const message of messages) {
-    if (message.role === 'tool') results.set(message.toolCallId, message);
-  }
-  const toolRunning = messages.some(
-    (message) =>
-      message.role === 'assistant' && message.toolCalls.some((call) => !results.has(call.id)),
-  );
-  const titleOf = (caseId: string): string =>
-    rows?.find((row) => row.overview.caseId === caseId)?.title ?? shortId(caseId);
+  const items = useMemo(() => itemsOf(entries), [entries]);
+  const rowOf = (caseId: string): CaseRow | undefined =>
+    rows?.find((row) => row.overview.caseId === caseId);
+  // A call with no result is still running only at the tail of a pending turn;
+  // anywhere else the turn was interrupted and the call will never be answered.
+  const last = items.at(-1);
+  const tailUnanswered =
+    last !== undefined &&
+    last.kind === 'assistant' &&
+    last.message.toolCalls.some((call) => !last.results.has(call.id));
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: the transcript is scrolled after a message or the running turn changed, not read here.
   useEffect(() => {
     const element = scroller.current;
     if (element !== null) element.scrollTop = element.scrollHeight;
-  }, [messages, pending]);
+  }, [entries, pending, pendingText]);
 
   return (
     <div
       ref={scroller}
-      className="h-[calc(100dvh-500px)] min-h-[360px] space-y-4 overflow-y-auto pr-1"
+      className="h-[60dvh] min-h-0 flex-1 space-y-4 overflow-y-auto pr-1 lg:h-auto"
     >
-      {messages.length === 0 ? (
+      {loading ? (
+        <Loading />
+      ) : items.length === 0 && pendingText === null ? (
         <div className="flex h-full flex-col items-center justify-center gap-3">
           <p className="text-meta text-muted">可以这样开始：</p>
           <div className="flex flex-wrap justify-center gap-2">
@@ -215,23 +279,20 @@ export function Transcript() {
         </div>
       ) : (
         <>
-          {keyed(messages).map(({ key, message }) => {
-            if (message.role === 'user') {
-              return <UserMessage key={key} text={message.content} />;
-            }
-            if (message.role === 'assistant') {
-              return (
-                <AssistantMessageView
-                  key={key}
-                  message={message}
-                  results={results}
-                  titleOf={titleOf}
-                />
-              );
-            }
-            return null;
-          })}
-          {pending && !toolRunning && (
+          {items.map((item, index) =>
+            item.kind === 'user' ? (
+              <UserMessageView key={item.seq} item={item} />
+            ) : (
+              <AssistantMessageView
+                key={item.seq}
+                item={item}
+                running={pending && tailUnanswered && index === items.length - 1}
+                rowOf={rowOf}
+              />
+            ),
+          )}
+          {pendingText !== null && <PendingUserMessage text={pendingText} />}
+          {pending && !tailUnanswered && (
             <p role="status" className="pl-9 text-meta">
               <span className="t-shimmer" data-text="思考中…">
                 思考中…
@@ -239,6 +300,9 @@ export function Transcript() {
             </p>
           )}
         </>
+      )}
+      {runningElsewhere && (
+        <Notice tone="sky">这段对话正在另一个页面进行，完成后会自动更新。</Notice>
       )}
     </div>
   );

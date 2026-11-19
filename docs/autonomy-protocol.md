@@ -456,7 +456,7 @@ Autopilot 只处理**已登记**的运行——开案与启动由 `startAutonomo
 
 1. 补 `.env`（或环境）：三个新变量，密钥各 ≥16 字符；
 2. `pnpm db:bootstrap`：创建 `aftercare_promoter` 登录角色与相应权限；
-3. `pnpm db:migrate`：应用 `0023_autonomy.sql`、`0024_promotion.sql`（`EXPECTED_LATEST_MIGRATION = '0024_promotion.sql'`）；
+3. `pnpm db:migrate`：应用 `0023_autonomy.sql`、`0024_promotion.sql` 及之后的迁移（就绪检查比对 `EXPECTED_LATEST_MIGRATION`）；
 4. `pnpm ops coverage:declare --as <principal>`：覆盖清单新增了一个钉住的入口，必须重新声明；
 5. `pnpm ops charter:register docs/examples/charter.yaml --as ops:demo-owner` 登记真实章程；
    演示环境可改用 `pnpm demo:init`，它在登记演示策略后自动登记演示章程，并创建持 `delegate_autonomy`、`administer_local`

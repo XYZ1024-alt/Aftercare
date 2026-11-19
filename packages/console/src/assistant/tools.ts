@@ -108,7 +108,8 @@ const listCasesTool = defineAssistantTool({
     return {
       ok: true,
       result: { total: matched.length, shown: shown.length, cases: shown.map(view) },
-      caseIds: [],
+      // The cases a person can now pick in the workspace: exactly the ones this answer listed.
+      caseIds: shown.map((row) => row.caseId),
     };
   },
 });

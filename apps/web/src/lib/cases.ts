@@ -23,8 +23,11 @@ const toRow = (overview: CaseOverview): CaseRow => {
   };
 };
 
+/** The cache key of the case list: whoever changes or opens a case revalidates it. */
+export const CASES_KEY = '/api/cases';
+
 /** Every case the operator may see, newest first, refreshed while the page is open. */
 export function useCases() {
-  const { data, error } = useSWR<CaseOverview[]>('/api/cases', getJson, { refreshInterval: 5000 });
+  const { data, error } = useSWR<CaseOverview[]>(CASES_KEY, getJson, { refreshInterval: 5000 });
   return { rows: data?.map(toRow), error };
 }

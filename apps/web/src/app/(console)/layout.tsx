@@ -19,7 +19,7 @@ const ADMIN_LINK = {
   current: (path: string) => path.startsWith('/admin'),
 } as const;
 
-function TopNav() {
+function TopNav({ wide }: { readonly wide: boolean }) {
   const { session, displayName, csrfToken } = useSession();
   const admin = useCan('administer_local');
   const path = usePathname();
@@ -32,7 +32,9 @@ function TopNav() {
   };
   return (
     <header className="sticky top-0 z-20 bg-canvas/70 backdrop-blur-xl">
-      <div className="mx-auto grid min-h-16 max-w-[1240px] grid-cols-[1fr_auto_1fr] items-center gap-x-5 gap-y-2 px-6 max-md:grid-cols-[1fr_auto] max-md:px-4 max-md:py-2.5">
+      <div
+        className={`mx-auto grid min-h-16 ${wide ? 'max-w-[1600px]' : 'max-w-[1240px]'} grid-cols-[1fr_auto_1fr] items-center gap-x-5 gap-y-2 px-6 max-md:grid-cols-[1fr_auto] max-md:px-4 max-md:py-2.5`}
+      >
         <Link
           href="/"
           className="inline-flex items-center gap-2.5 justify-self-start text-base font-semibold tracking-[-0.02em]"
@@ -116,10 +118,16 @@ function ModeBanner() {
 }
 
 export default function ConsoleLayout({ children }: { readonly children: ReactNode }) {
+  const path = usePathname();
+  // The assistant page holds three columns: it uses the width of the screen, and from lg on the
+  // height below the navigation, so each column scrolls inside instead of the page.
+  const wide = path.startsWith('/agent');
   return (
     <SessionGate>
-      <TopNav />
-      <main className="mx-auto max-w-[1240px] px-6 pt-6 pb-16 max-md:px-4 max-md:pt-4">
+      <TopNav wide={wide} />
+      <main
+        className={`mx-auto px-6 pt-6 max-md:px-4 max-md:pt-4 ${wide ? 'max-w-[1600px] pb-6 lg:flex lg:h-[calc(100dvh-4rem)] lg:flex-col' : 'max-w-[1240px] pb-16'}`}
+      >
         <ModeBanner />
         {children}
       </main>

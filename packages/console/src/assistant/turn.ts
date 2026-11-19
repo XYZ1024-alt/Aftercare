@@ -4,19 +4,25 @@ import {
   type ModelMessage,
   readModelConfig,
 } from '@aftercare/agent';
+import {
+  ASSISTANT_MESSAGE_LIMIT,
+  type AssistantOutcome,
+  type AssistantRejection,
+} from '@aftercare/contracts';
 import { z } from 'zod';
 import { refuse } from '../admission.ts';
 import type { ConsoleContext } from '../context.ts';
-import type { AssistantMessage, AssistantStreamEvent } from '../view-model.ts';
+import type { AssistantEntry, AssistantMessage, AssistantStreamEvent } from '../view-model.ts';
 import { assistantSystemPrompt } from './prompt.ts';
 import { type AssistantScope, type AssistantToolOutcome, refusedOutcome } from './registry.ts';
 import { createScriptedAssistantModel } from './scripted.ts';
 import { assistantTools } from './tools.ts';
 
-// One turn of the console assistant: the transcript the browser sent, the
-// model requests it takes, and the tool calls those requests ask for. The
-// browser is the client of this loop; every message it causes goes out as one
-// line, so a turn interrupted halfway leaves a transcript that is honest.
+// One turn of the console assistant: the stored conversation that ends with
+// the new user message, the model requests the turn takes, and the tool calls
+// those requests ask for. Every message is stored before the browser is sent
+// it, so a turn interrupted halfway leaves a transcript that is honest about
+// what happened: no message exists that the database does not hold.
 
 const MAX_STEPS = 8;
 const MAX_OUTPUT_TOKENS = 2048;
@@ -25,84 +31,20 @@ const MAX_CONTEXT_MESSAGES = 40;
 /** Kept calls per answer: a service that floods requests must not spend the whole turn on one answer. */
 const MAX_TOOL_CALLS = 8;
 
-const callSchema = z.strictObject({
-  id: z.string().min(1).max(200),
-  name: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/),
-  argumentsText: z.string().max(20_000),
-});
-
-const messageSchema = z.discriminatedUnion('role', [
-  z.strictObject({
-    role: z.literal('user'),
-    content: z.string().trim().min(1).max(4000),
-  }),
-  z.strictObject({
-    role: z.literal('assistant'),
-    content: z.string().max(16_000).nullable(),
-    toolCalls: z.array(callSchema).max(16),
-  }),
-  z.strictObject({
-    role: z.literal('tool'),
-    toolCallId: z.string().min(1).max(200),
-    name: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/),
-    ok: z.boolean(),
-    result: z.record(z.string(), z.json()),
-    caseIds: z.array(z.uuid()).max(50),
-  }),
-]);
-
-export const assistantRequestSchema = z.strictObject({
-  messages: z.array(messageSchema).min(1).max(120),
+/** The body of one turn: the message of the user and the egress acknowledgement of the deployment. */
+export const assistantTurnRequestSchema = z.strictObject({
+  content: z.string().trim().min(1).max(ASSISTANT_MESSAGE_LIMIT),
   acknowledgeDataEgress: z.boolean().default(false),
 });
 
 /**
- * What is wrong with the shape of a transcript, if anything. The browser
- * keeps the transcript and sends it whole with every turn: it is trusted for
- * what was said, never for what was done, and a turn is only started from a
- * transcript the model can read as a conversation.
+ * Stores one message of the turn. Only a stored message is sent to the
+ * browser; a refused write ends the turn, because the conversation moved on
+ * without it (its lease ran out and another turn took it over).
  */
-export function transcriptProblem(messages: readonly AssistantMessage[]): string | null {
-  if (messages.at(-1)?.role !== 'user') {
-    return 'the last message must come from the user: it is the new message of this turn';
-  }
-  let index = 0;
-  while (index < messages.length) {
-    const message = messages[index];
-    if (message === undefined) break;
-    if (message.role === 'tool') {
-      return `message ${index + 1} is a tool result without a tool call before it`;
-    }
-    if (message.role !== 'assistant' || message.toolCalls.length === 0) {
-      index += 1;
-      continue;
-    }
-    const ids = new Set(message.toolCalls.map((call) => call.id));
-    if (ids.size !== message.toolCalls.length) {
-      return `message ${index + 1} requests the same tool call id more than once`;
-    }
-    const answered = new Set<string>();
-    let next = index + 1;
-    for (;;) {
-      const following = messages[next];
-      if (following === undefined || following.role !== 'tool') break;
-      if (!ids.has(following.toolCallId)) {
-        return `message ${next + 1} is a tool result for a call that message ${index + 1} did not make`;
-      }
-      if (answered.has(following.toolCallId)) {
-        return `the call ${following.toolCallId} has more than one tool result`;
-      }
-      answered.add(following.toolCallId);
-      next += 1;
-    }
-    const missing = [...ids].filter((id) => !answered.has(id));
-    if (missing.length > 0) {
-      return `the calls ${missing.join(', ')} of message ${index + 1} have no tool result`;
-    }
-    index = next;
-  }
-  return null;
-}
+export type RecordAssistantMessage = (
+  message: AssistantMessage,
+) => Promise<AssistantOutcome<AssistantEntry>>;
 
 /** The model of the assistant of this deployment, or null when none is configured. */
 export function assistantModelOf(
@@ -125,6 +67,11 @@ export function assistantModelOf(
  * messages of it. The turn in progress can outgrow the window; it is then
  * shown whole, from its user message on, because a tool result without its
  * call would be unreadable.
+ *
+ * A call whose result never arrived (the turn was interrupted) is removed
+ * together with the results that do not answer any kept call, and an answer
+ * without text and without a kept call is dropped entirely: a model cannot
+ * continue a conversation in which a tool call has no result.
  */
 function modelMessages(
   system: string,
@@ -139,42 +86,80 @@ function modelMessages(
     start = Math.max(0, lastUser);
   }
   const messages: ModelMessage[] = [{ role: 'system', content: system }];
-  for (const message of conversation.slice(start)) {
-    switch (message.role) {
-      case 'user':
-        messages.push({ role: 'user', content: message.content });
-        break;
-      case 'assistant':
-        messages.push({
-          role: 'assistant',
-          content: message.content,
-          toolCalls: message.toolCalls,
-        });
-        break;
-      case 'tool':
-        messages.push({
-          role: 'tool',
-          toolCallId: message.toolCallId,
-          content: JSON.stringify(message.result),
-        });
-        break;
+  let index = start;
+  while (index < conversation.length) {
+    const message = conversation[index];
+    if (message === undefined) break;
+    if (message.role === 'user') {
+      messages.push({ role: 'user', content: message.content });
+      index += 1;
+      continue;
     }
+    if (message.role === 'tool') {
+      // A result whose call is not in the window: no model could read it.
+      index += 1;
+      continue;
+    }
+    // The results of an assistant message are the tool messages that directly follow it.
+    const results = new Map<string, Extract<AssistantMessage, { role: 'tool' }>>();
+    let next = index + 1;
+    for (;;) {
+      const following = conversation[next];
+      if (following === undefined || following.role !== 'tool') break;
+      if (!results.has(following.toolCallId)) {
+        results.set(following.toolCallId, following);
+      }
+      next += 1;
+    }
+    const toolCalls = message.toolCalls.filter((call) => results.has(call.id));
+    const hasText = message.content !== null && message.content.trim() !== '';
+    if (!hasText && toolCalls.length === 0) {
+      index = next;
+      continue;
+    }
+    messages.push({ role: 'assistant', content: message.content, toolCalls });
+    for (const call of toolCalls) {
+      const result = results.get(call.id);
+      if (result === undefined) continue;
+      messages.push({ role: 'tool', toolCallId: call.id, content: JSON.stringify(result.result) });
+    }
+    index = next;
   }
   return messages;
+}
+
+/** A refused store ends the turn: what it refused is a fact the conversation no longer holds. */
+const refusalOfWrite = (rejection: AssistantRejection) => refuse(rejection.code, rejection.message);
+
+/** One stored message of the turn, as the lines of its stream: the refusal ends the turn. */
+async function* recordEntry(
+  record: RecordAssistantMessage,
+  message: AssistantMessage,
+): AsyncGenerator<AssistantStreamEvent, AssistantEntry | null> {
+  const outcome = await record(message);
+  if (!outcome.ok) {
+    yield { type: 'refusal', refusal: refusalOfWrite(outcome.rejection) };
+    yield { type: 'done' };
+    return null;
+  }
+  yield { type: 'entry', entry: outcome.value };
+  return outcome.value;
 }
 
 /** One turn: model requests and tool calls until an answer without tool calls, a refusal or the step limit. */
 export async function* runAssistantTurn(input: {
   readonly scope: AssistantScope;
   readonly model: ModelAdapter;
-  readonly messages: readonly AssistantMessage[];
+  /** The stored conversation, ending with the user message of this turn. */
+  readonly history: readonly AssistantMessage[];
+  readonly record: RecordAssistantMessage;
 }): AsyncGenerator<AssistantStreamEvent> {
-  const { scope, model } = input;
+  const { scope, model, record } = input;
   const { context } = scope;
   const { principal } = scope.session;
   const { turnId } = scope;
   const system = await assistantSystemPrompt(scope);
-  const conversation: AssistantMessage[] = [...input.messages];
+  const conversation: AssistantMessage[] = [...input.history];
   const tools = assistantTools.map((tool) => tool.definition);
 
   for (let step = 0; step < MAX_STEPS; step += 1) {
@@ -188,6 +173,21 @@ export async function* runAssistantTurn(input: {
       tools,
       maxOutputTokens: MAX_OUTPUT_TOKENS,
     });
+    // The browser stopped while the model was answering. Nothing the answer
+    // asks for is executed; what it wrote is kept as text, because it happened.
+    if (scope.signal.aborted) {
+      const text = outcome.ok ? outcome.response.text : null;
+      if (text !== null && text.trim() !== '') {
+        const stored = yield* recordEntry(record, {
+          role: 'assistant',
+          content: text,
+          toolCalls: [],
+        });
+        if (stored === null) return;
+      }
+      yield { type: 'done' };
+      return;
+    }
     if (!outcome.ok) {
       yield {
         type: 'refusal',
@@ -202,13 +202,19 @@ export async function* runAssistantTurn(input: {
       content: response.text,
       toolCalls: response.toolCalls.slice(0, MAX_TOOL_CALLS),
     };
-    conversation.push(assistant);
-    yield { type: 'message', message: assistant };
+    const storedAssistant = yield* recordEntry(record, assistant);
+    if (storedAssistant === null) return;
+    conversation.push(storedAssistant.message);
     if (assistant.toolCalls.length === 0) {
       yield { type: 'done' };
       return;
     }
     for (const call of assistant.toolCalls) {
+      // The browser stopped after the answer was stored: its calls stay unanswered, and none of them is executed.
+      if (scope.signal.aborted) {
+        yield { type: 'done' };
+        return;
+      }
       const tool = assistantTools.find((candidate) => candidate.name === call.name);
       let result: AssistantToolOutcome;
       if (tool === undefined) {
@@ -239,8 +245,9 @@ export async function* runAssistantTurn(input: {
         result: result.result,
         caseIds: result.caseIds,
       };
-      conversation.push(message);
-      yield { type: 'message', message };
+      const storedTool = yield* recordEntry(record, message);
+      if (storedTool === null) return;
+      conversation.push(storedTool.message);
       context.logger.info('console.assistant_tool', {
         principal,
         tool: call.name,

@@ -1,7 +1,13 @@
 import { fiveProducts } from '@aftercare/agent/testing';
 import { recreateTestDatabase } from '@aftercare/storage/testing';
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type { AssistantMessage, AssistantStreamEvent } from '../src/index.ts';
+import type {
+  AssistantConversation,
+  AssistantConversationSummary,
+  AssistantEntry,
+  AssistantMessage,
+  AssistantStreamEvent,
+} from '../src/index.ts';
 import { CSRF_HEADER } from '../src/index.ts';
 import {
   type ConsoleClient,
@@ -14,8 +20,8 @@ import {
 } from './support.ts';
 
 // SCRIPTED TEST DOUBLE throughout (see flow.test.ts): the assistant is driven
-// by createScriptedAssistantModel, so these tests show the HTTP shape of a
-// turn, its tool loop and its transcript — nothing about a model's ability.
+// by createScriptedAssistantModel, so these tests show the stored conversation
+// of a turn, its tool loop and its history — nothing about a model's ability.
 
 let c: ConsoleHarness;
 
@@ -31,60 +37,113 @@ afterEach(async () => {
 
 afterAll(recreateTestDatabase);
 
-/** Posts one turn the way the browser does: cookie, Origin and anti-forgery header. */
-async function sendTurn(
+/** The headers of a request the browser makes: cookie, Origin and anti-forgery token. */
+function requestHeaders(
   client: ConsoleClient,
-  messages: readonly AssistantMessage[],
-  overrides: RequestOverrides = {},
-): Promise<Response> {
+  overrides: RequestOverrides,
+): Record<string, string> {
   const origin = overrides.origin === undefined ? ORIGIN : overrides.origin;
   const csrf = overrides.csrf === undefined ? client.session.csrfToken : overrides.csrf;
   const cookie = overrides.cookie === undefined ? client.cookie : overrides.cookie;
-  return client.raw('/api/assistant', {
+  return {
+    'content-type': 'application/json',
+    ...(cookie === null ? {} : { cookie }),
+    ...(origin === null ? {} : { origin }),
+    ...(csrf === null ? {} : { [CSRF_HEADER]: csrf }),
+  };
+}
+
+/** Posts one turn the way the browser does. */
+async function sendTurn(
+  client: ConsoleClient,
+  conversationId: string,
+  content: string,
+  overrides: RequestOverrides = {},
+): Promise<Response> {
+  return client.raw(`/api/assistant/conversations/${conversationId}/turns`, {
     method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      ...(cookie === null ? {} : { cookie }),
-      ...(origin === null ? {} : { origin }),
-      ...(csrf === null ? {} : { [CSRF_HEADER]: csrf }),
-    },
-    body: JSON.stringify({ messages, acknowledgeDataEgress: false }),
+    headers: requestHeaders(client, overrides),
+    body: JSON.stringify({ content, acknowledgeDataEgress: false }),
   });
 }
 
-/** The events of an accepted turn, one by one, as the browser reads them. */
-async function eventsOf(response: Response): Promise<AssistantStreamEvent[]> {
+async function deleteConversation(
+  client: ConsoleClient,
+  conversationId: string,
+  overrides: RequestOverrides = {},
+): Promise<Response> {
+  return client.raw(`/api/assistant/conversations/${conversationId}`, {
+    method: 'DELETE',
+    headers: requestHeaders(client, overrides),
+  });
+}
+
+/** The stored entries of an accepted turn, in order; its stream always ends with done. */
+async function entriesOf(response: Response): Promise<AssistantEntry[]> {
   expect(response.status).toBe(200);
   expect(response.headers.get('content-type') ?? '').toContain('application/x-ndjson');
   const text = (await response.text()).trim();
-  return text.split('\n').map((line) => JSON.parse(line) as AssistantStreamEvent);
+  const events = text.split('\n').map((line) => JSON.parse(line) as AssistantStreamEvent);
+  expect(events.at(-1)).toEqual({ type: 'done' });
+  return events.flatMap((event) => (event.type === 'entry' ? [event.entry] : []));
 }
 
-const messagesOf = (events: readonly AssistantStreamEvent[]): AssistantMessage[] =>
-  events.flatMap((event) => (event.type === 'message' ? [event.message] : []));
+/** The conversations of the given client, as its history lists them. */
+async function listOf(client: ConsoleClient): Promise<AssistantConversationSummary[]> {
+  const reply = await client.get<AssistantConversationSummary[]>('/api/assistant/conversations');
+  expect(reply.status).toBe(200);
+  return reply.body;
+}
+
+/** One stored conversation of the given client. */
+async function readOf(
+  client: ConsoleClient,
+  conversationId: string,
+): Promise<AssistantConversation> {
+  const reply = await client.get<AssistantConversation>(
+    `/api/assistant/conversations/${conversationId}`,
+  );
+  if (reply.status !== 200) {
+    throw new Error(`conversation refused: ${reply.status} ${JSON.stringify(reply.body)}`);
+  }
+  return reply.body;
+}
 
 interface RefusalBody {
   readonly ok: boolean;
-  readonly refusal: { readonly code: string };
+  readonly refusal: { readonly code: string; readonly message: string };
 }
 
-/** The JSON refusal of a turn refused before any stream started. */
+/** The JSON refusal of a request refused before any stream started. */
 const refusalBody = async (response: Response): Promise<RefusalBody> =>
   (await response.json()) as RefusalBody;
 
-function assistantCall(
-  message: AssistantMessage | undefined,
-): Extract<AssistantMessage, { role: 'assistant' }> {
-  if (message?.role !== 'assistant') {
+/** The entry at a position of a turn, where the test knows it must exist. */
+function entryAt(entries: readonly AssistantEntry[], index: number): AssistantEntry {
+  const entry = entries[index];
+  if (entry === undefined) throw new Error(`the turn stored no entry ${index + 1}`);
+  return entry;
+}
+
+function userMessage(entry: AssistantEntry): Extract<AssistantMessage, { role: 'user' }> {
+  const message = entry.message;
+  if (message.role !== 'user') {
+    throw new Error(`expected a user message, got ${JSON.stringify(message)}`);
+  }
+  return message;
+}
+
+function assistantMessage(entry: AssistantEntry): Extract<AssistantMessage, { role: 'assistant' }> {
+  const message = entry.message;
+  if (message.role !== 'assistant') {
     throw new Error(`expected an assistant message, got ${JSON.stringify(message)}`);
   }
   return message;
 }
 
-function toolResult(
-  message: AssistantMessage | undefined,
-): Extract<AssistantMessage, { role: 'tool' }> {
-  if (message?.role !== 'tool') {
+function toolMessage(entry: AssistantEntry): Extract<AssistantMessage, { role: 'tool' }> {
+  const message = entry.message;
+  if (message.role !== 'tool') {
     throw new Error(`expected a tool message, got ${JSON.stringify(message)}`);
   }
   return message;
@@ -103,103 +162,223 @@ function toolRefusal(message: Extract<AssistantMessage, { role: 'tool' }>): stri
   return code;
 }
 
-/** The first turn of a conversation that reports an incident. */
-async function openedTurn(
-  client: ConsoleClient,
-): Promise<{ readonly events: AssistantStreamEvent[]; readonly messages: AssistantMessage[] }> {
-  const response = await sendTurn(client, [{ role: 'user', content: '导入后商品价格异常' }]);
-  const events = await eventsOf(response);
-  return { events, messages: messagesOf(events) };
+/** The case a tool of a turn opened. */
+function caseOf(entries: readonly AssistantEntry[]): string {
+  const caseId = toolMessage(entryAt(entries, 2)).caseIds[0];
+  if (caseId === undefined) throw new Error('the tool reported no case');
+  return caseId;
 }
 
-describe('the assistant turn of the console', () => {
-  it('needs a session and the anti-forgery header before any model request', async () => {
+describe('the stored conversations of the console assistant', () => {
+  it('refuses every endpoint without a session, the origin of this console or the anti-forgery token', async () => {
     const operator = await c.signIn(OPERATOR.principal);
-    const turn: readonly AssistantMessage[] = [{ role: 'user', content: '导入后商品价格异常' }];
-    expect((await sendTurn(operator, turn, { cookie: null })).status).toBe(401);
-    const withoutCsrf = await sendTurn(operator, turn, { csrf: null });
-    expect(withoutCsrf.status).toBe(403);
-    expect(await refusalBody(withoutCsrf)).toMatchObject({
-      ok: false,
-      refusal: { code: 'csrf_rejected' },
+    const conversationId = crypto.randomUUID();
+    const turnPath = `/api/assistant/conversations/${conversationId}/turns`;
+
+    // No session: the history, one conversation, a turn and a deletion are all refused.
+    for (const path of [
+      '/api/assistant/conversations',
+      `/api/assistant/conversations/${conversationId}`,
+    ]) {
+      expect((await operator.raw(path, { headers: {} })).status).toBe(401);
+    }
+    expect((await operator.raw(turnPath, { method: 'POST', headers: {}, body: '{}' })).status).toBe(
+      401,
+    );
+    expect(
+      (await operator.raw(`/api/assistant/conversations/${conversationId}`, { method: 'DELETE' }))
+        .status,
+    ).toBe(401);
+
+    // A state-changing request needs the token of the session and the Origin of this console.
+    const withoutCsrf = await sendTurn(operator, conversationId, '导入后商品价格异常', {
+      csrf: null,
     });
-    // Neither request reached the assistant: nothing was opened.
+    expect(withoutCsrf.status).toBe(403);
+    expect((await refusalBody(withoutCsrf)).refusal.code).toBe('csrf_rejected');
+    const wrongOrigin = await sendTurn(operator, conversationId, '导入后商品价格异常', {
+      origin: 'http://evil.example',
+    });
+    expect(wrongOrigin.status).toBe(403);
+    expect((await refusalBody(wrongOrigin)).refusal.code).toBe('forbidden_origin');
+    expect((await deleteConversation(operator, conversationId, { csrf: null })).status).toBe(403);
+    expect(
+      (await deleteConversation(operator, conversationId, { origin: 'http://evil.example' }))
+        .status,
+    ).toBe(403);
+
+    // A body the turn schema does not accept is refused before anything is stored.
+    const invalid = await operator.raw(turnPath, {
+      method: 'POST',
+      headers: requestHeaders(operator, {}),
+      body: JSON.stringify({ content: '   ' }),
+    });
+    expect(invalid.status).toBe(400);
+    expect((await refusalBody(invalid)).refusal.code).toBe('invalid_request');
+
+    // None of these reached the model: a turn stores its user message before the first model request.
+    expect(await listOf(operator)).toEqual([]);
     expect(await c.context.environment.operations.listCases(10)).toHaveLength(0);
   });
 
-  it('opens one case and one run from an incident description, and says so', async () => {
+  it('stores a turn message by message and reads the same conversation back', async () => {
     const operator = await c.signIn(OPERATOR.principal);
-    const { events, messages } = await openedTurn(operator);
-    // Assistant asks for the tool, the tool result follows, then the answer without tool calls.
-    expect(events.map((event) => event.type)).toEqual(['message', 'message', 'message', 'done']);
-    const call = assistantCall(messages[0]);
+    const conversationId = crypto.randomUUID();
+    const entries = await entriesOf(await sendTurn(operator, conversationId, '导入后商品价格异常'));
+    expect(entries.map((entry) => entry.seq)).toEqual([1, 2, 3, 4]);
+    expect(userMessage(entryAt(entries, 0)).content).toBe('导入后商品价格异常');
+    const call = assistantMessage(entryAt(entries, 1));
     expect(call.content).toBeNull();
-    expect(call.toolCalls.map((entry) => entry.name)).toEqual(['open_case']);
-    const tool = toolResult(messages[1]);
+    expect(call.toolCalls.map((toolCall) => toolCall.name)).toEqual(['open_case']);
+    const tool = toolMessage(entryAt(entries, 2));
     expect(tool.name).toBe('open_case');
     expect(tool.ok).toBe(true);
     expect(tool.caseIds).toHaveLength(1);
-    const caseId = tool.caseIds[0];
-    if (caseId === undefined) throw new Error('open_case reported no case');
-    const answer = assistantCall(messages[2]);
-    expect(answer.content).toBe('已创建案例并启动调查。');
-    expect(answer.toolCalls).toEqual([]);
+    expect(assistantMessage(entryAt(entries, 3)).content).toBe('已创建案例并启动调查。');
+    expect(await c.context.environment.operations.listCases(10)).toHaveLength(1);
 
-    const cases = await c.context.environment.operations.listCases(10);
-    expect(cases).toHaveLength(1);
-    const opened = cases[0];
-    if (opened === undefined) throw new Error('the case list is empty');
-    expect(opened.caseId).toBe(caseId);
-    expect(opened.openedBy).toBe(OPERATOR.principal);
-    expect(await c.h.agentStore.listRunsOfCase(caseId)).toHaveLength(1);
+    // The stored conversation is exactly what the stream carried.
+    const conversation = await readOf(operator, conversationId);
+    expect(conversation.entries).toEqual(entries);
+    expect(conversation.messageCount).toBe(4);
+    expect(conversation.running).toBe(false);
+    const summaries = await listOf(operator);
+    expect(summaries.map((summary) => summary.conversationId)).toEqual([conversationId]);
+    const summary = summaries[0];
+    if (summary === undefined) throw new Error('the conversation list is empty');
+    expect(summary.title).toBe('导入后商品价格异常');
+    expect(summary.messageCount).toBe(4);
+    expect(summary.running).toBe(false);
   });
 
-  it('lists the cases of the conversation when the next message asks for them', async () => {
+  it('continues a conversation from its stored history', async () => {
     const operator = await c.signIn(OPERATOR.principal);
-    const { messages } = await openedTurn(operator);
-    const response = await sendTurn(operator, [...messages, { role: 'user', content: '列出案例' }]);
-    const events = await eventsOf(response);
-    expect(events.map((event) => event.type)).toEqual(['message', 'message', 'message', 'done']);
-    const listed = toolResult(messagesOf(events)[1]);
+    const conversationId = crypto.randomUUID();
+    const first = await entriesOf(await sendTurn(operator, conversationId, '导入后商品价格异常'));
+    const caseId = caseOf(first);
+
+    const second = await entriesOf(await sendTurn(operator, conversationId, '列出案例'));
+    expect(second.map((entry) => entry.seq)).toEqual([5, 6, 7, 8]);
+    expect(userMessage(entryAt(second, 0)).content).toBe('列出案例');
+    const listed = toolMessage(entryAt(second, 2));
     expect(listed.name).toBe('list_cases');
     expect(listed.ok).toBe(true);
+    // The cases the tool listed are the ones the workspace follows.
+    expect(listed.caseIds).toContain(caseId);
     expect(listed.result.total).toBe(1);
-    expect(assistantCall(messagesOf(events)[2]).content).toBe('共 1 个案例。');
+    expect(assistantMessage(entryAt(second, 3)).content).toBe('共 1 个案例。');
+
+    const conversation = await readOf(operator, conversationId);
+    expect(conversation.entries.map((entry) => entry.seq)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
   });
 
-  it('refuses a transcript the model could not read as a conversation', async () => {
+  it('answers another principal with not_found and shows nothing of it', async () => {
     const operator = await c.signIn(OPERATOR.principal);
-    const notFromUser: readonly AssistantMessage[] = [
-      { role: 'user', content: '导入后商品价格异常' },
-      { role: 'assistant', content: '请稍等。', toolCalls: [] },
-    ];
-    const strayTool: readonly AssistantMessage[] = [
-      {
-        role: 'tool',
-        toolCallId: 'call-1',
-        name: 'open_case',
-        ok: true,
-        result: {},
-        caseIds: [],
+    const viewer = await c.signIn(VIEWER);
+    const conversationId = crypto.randomUUID();
+    await entriesOf(await sendTurn(operator, conversationId, '导入后商品价格异常'));
+
+    expect((await viewer.get(`/api/assistant/conversations/${conversationId}`)).status).toBe(404);
+    const deleted = await deleteConversation(viewer, conversationId);
+    expect(deleted.status).toBe(404);
+    expect((await refusalBody(deleted)).refusal.code).toBe('not_found');
+    const posted = await sendTurn(viewer, conversationId, '列出案例');
+    expect(posted.status).toBe(404);
+    expect((await refusalBody(posted)).refusal.code).toBe('not_found');
+    expect(await listOf(viewer)).toEqual([]);
+    // Another principal's attempt changes nothing of the conversation.
+    expect((await readOf(operator, conversationId)).entries).toHaveLength(4);
+  });
+
+  it('refuses a second turn and a deletion while a turn holds the conversation', async () => {
+    const operator = await c.signIn(OPERATOR.principal);
+    const conversationId = crypto.randomUUID();
+    const begun = await c.context.assistant.beginTurn({
+      principal: OPERATOR.principal,
+      conversationId,
+      turnId: crypto.randomUUID(),
+      content: '这一轮还没有结束',
+      leaseSeconds: 600,
+    });
+    expect(begun.ok).toBe(true);
+
+    const posted = await sendTurn(operator, conversationId, '列出案例');
+    expect(posted.status).toBe(409);
+    expect((await refusalBody(posted)).refusal.code).toBe('turn_in_progress');
+    const deleted = await deleteConversation(operator, conversationId);
+    expect(deleted.status).toBe(409);
+    expect((await refusalBody(deleted)).refusal.code).toBe('turn_in_progress');
+    expect((await readOf(operator, conversationId)).running).toBe(true);
+  });
+
+  it('deletes a conversation and takes it out of the history', async () => {
+    const operator = await c.signIn(OPERATOR.principal);
+    const conversationId = crypto.randomUUID();
+    const turnId = crypto.randomUUID();
+    const begun = await c.context.assistant.beginTurn({
+      principal: OPERATOR.principal,
+      conversationId,
+      turnId,
+      content: '导入后商品价格异常',
+      leaseSeconds: 600,
+    });
+    expect(begun.ok).toBe(true);
+    await c.context.assistant.endTurn({ principal: OPERATOR.principal, conversationId, turnId });
+    expect((await listOf(operator)).map((summary) => summary.conversationId)).toEqual([
+      conversationId,
+    ]);
+
+    const deleted = await deleteConversation(operator, conversationId);
+    expect(deleted.status).toBe(200);
+    const body = (await deleted.json()) as {
+      readonly ok: boolean;
+      readonly value: { readonly conversationId: string };
+      readonly replayed: boolean;
+    };
+    expect(body).toEqual({ ok: true, value: { conversationId }, replayed: false });
+    expect((await operator.get(`/api/assistant/conversations/${conversationId}`)).status).toBe(404);
+    expect(await listOf(operator)).toEqual([]);
+  });
+
+  it('continues a conversation whose earlier turn left a tool call unanswered', async () => {
+    const operator = await c.signIn(OPERATOR.principal);
+    const conversationId = crypto.randomUUID();
+    const turnId = crypto.randomUUID();
+    const begun = await c.context.assistant.beginTurn({
+      principal: OPERATOR.principal,
+      conversationId,
+      turnId,
+      content: '先看看案例',
+      leaseSeconds: 600,
+    });
+    expect(begun.ok).toBe(true);
+    const appended = await c.context.assistant.append({
+      principal: OPERATOR.principal,
+      conversationId,
+      turnId,
+      message: {
+        role: 'assistant',
+        content: '正在查看。',
+        toolCalls: [{ id: 'scripted-unanswered', name: 'list_cases', argumentsText: '{}' }],
       },
-      { role: 'user', content: '导入后商品价格异常' },
-    ];
-    for (const turn of [notFromUser, strayTool]) {
-      const response = await sendTurn(operator, turn);
-      expect(response.status).toBe(400);
-      expect(await refusalBody(response)).toMatchObject({
-        ok: false,
-        refusal: { code: 'invalid_request' },
-      });
-    }
-    expect(await c.context.environment.operations.listCases(10)).toHaveLength(0);
+      leaseSeconds: 600,
+    });
+    expect(appended.ok).toBe(true);
+    await c.context.assistant.endTurn({ principal: OPERATOR.principal, conversationId, turnId });
+
+    const entries = await entriesOf(await sendTurn(operator, conversationId, '列出案例'));
+    expect(entries.map((entry) => entry.seq)).toEqual([3, 4, 5, 6]);
+    expect(entries.at(-1)?.message).toEqual(
+      expect.objectContaining({ role: 'assistant', toolCalls: [] }),
+    );
   });
 
   it('answers a viewer without manage_case with a refused tool result and opens nothing', async () => {
     const viewer = await c.signIn(VIEWER);
-    const { events, messages } = await openedTurn(viewer);
-    expect(events.at(-1)?.type).toBe('done');
-    const tool = toolResult(messages[1]);
+    const conversationId = crypto.randomUUID();
+    const entries = await entriesOf(await sendTurn(viewer, conversationId, '导入后商品价格异常'));
+    expect(userMessage(entryAt(entries, 0)).content).toBe('导入后商品价格异常');
+    const tool = toolMessage(entryAt(entries, 2));
     expect(tool.name).toBe('open_case');
     expect(tool.ok).toBe(false);
     expect(toolRefusal(tool)).toBe('not_authorized');

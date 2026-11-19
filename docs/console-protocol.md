@@ -1,6 +1,6 @@
 # 操作台、运行保障与系统验收（Stage 8）
 
-实现见迁移 [0022](../packages/storage/migrations/0022_console.sql)、契约 [console.ts](../packages/contracts/src/console.ts)、
+实现见迁移 [0022](../packages/storage/migrations/0022_console.sql) 与 [0025](../packages/storage/migrations/0025_assistant.sql)（助手对话）、契约 [console.ts](../packages/contracts/src/console.ts) / [assistant.ts](../packages/contracts/src/assistant.ts)、
 存储入口 [operations-store.ts](../packages/storage/src/operations-store.ts) / [restore.ts](../packages/storage/src/admin/restore.ts)，
 以及 [packages/console](../packages/console/src)：身份（[identity.ts](../packages/console/src/identity.ts)）、HTTP 面（[http.ts](../packages/console/src/http.ts)）、
 状态修改操作（[actions.ts](../packages/console/src/actions.ts)）、只读视图（[reads.ts](../packages/console/src/reads.ts)、[view-model.ts](../packages/console/src/view-model.ts)）、
@@ -13,12 +13,12 @@ Next.js 页面在 [apps/web](../apps/web/src)，worker 进程在 [apps/worker](.
 
 ## 1. 信息结构
 
-| 页面                   | 内容                                                                                                                                                     |
-| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `/agent` Agent 对话    | 与操作台助手对话：描述事故即开案并启动调查，询问进展，暂停/恢复/取消，重新调查；列出对话中跟进的案例。live 模式下发送即确认对话与案例内容外发（见 §5）   |
-| `/` 案例列表           | 事故描述、当前阶段（文字 + 图标）、是否等待人、最近事件、最新报告是否仍为当前结果                                                                        |
-| `/cases/<id>` 案例详情 | 头部：阶段、原因、等待谁、事件流连接状态、最近动作、暂停/恢复/取消、预算与资源。页签：调查过程、业务问题、证据与调查、计划与批准、执行与验证、报告与产物 |
-| `/admin` 本地管理      | 健康（存活/就绪各项）、模型连接、worker、备份恢复与放行、资源、保留与清理、指标。需要 `administer_local`                                                 |
+| 页面                   | 内容                                                                                                                                                                                                                                                                                                                                                                           |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `/agent` Agent 对话    | 左：本人的历史对话（按日期分组，可打开、新建、删除）。中：与操作台助手对话——描述事故即开案并启动调查，询问进展，暂停/恢复/取消，重新调查；输入框上方列出对话中等待人处理的案例。右：案例工作区——自动显示助手创建或读取的案例，可切换到任何案例，页签与案例详情相同，回答业务问题、审核批准、运行控制、报告与产物都在这里完成。live 模式下发送即确认对话与案例内容外发（见 §5） |
+| `/` 案例列表           | 事故描述、当前阶段（文字 + 图标）、是否等待人、最近事件、最新报告是否仍为当前结果                                                                                                                                                                                                                                                                                              |
+| `/cases/<id>` 案例详情 | 头部：阶段、原因、等待谁、事件流连接状态、最近动作、暂停/恢复/取消、预算与资源。页签：调查过程、业务问题、证据与调查、计划与批准、执行与验证、报告与产物                                                                                                                                                                                                                       |
+| `/admin` 本地管理      | 健康（存活/就绪各项）、模型连接、worker、备份恢复与放行、资源、保留与清理、指标。需要 `administer_local`                                                                                                                                                                                                                                                                       |
 
 哈希、记录 id 与原始记录都在“技术详情”折叠区，不是默认内容；审核与批准不要求阅读哈希。
 
@@ -65,23 +65,36 @@ Next.js 页面在 [apps/web](../apps/web/src)，worker 进程在 [apps/worker](.
 拒绝以 `{ ok: false, refusal: { code, message, recovery, detail } }` 返回。`recovery: reload_and_review` 表示页面所依据的记录已经变化（如 `revision_conflict`、`execution_not_possible`、`question_not_answerable`）：页面重新读取并要求重新审核。
 HTTP 状态：`invalid_request` 400，`unauthenticated` 401，`not_authorized` / `forbidden_origin` / `csrf_rejected` 403，`not_found` / `reference_rejected` 404，`too_many_streams` 429，`database_unavailable` 503，`internal_error` 500，其余拒绝 409。
 
-### 操作台助手（`POST /api/assistant`）
+### 操作台助手（`/api/assistant/conversations`）
 
-与其他状态修改请求一样需要会话、同源 `Origin` 与 CSRF 头。请求体为 `{ messages, acknowledgeDataEgress }`：对话记录保存在浏览器（`localStorage`，按主体分开），每轮整段发送；
-服务端检查 schema 与工具调用的配对，只把最近至多 40 条交给模型。对话记录只决定模型读到什么，不带来任何授权。live 模式下页面在发送时随之确认外发，没有确认外发即拒绝（`egress_not_acknowledged`），未配置模型为 `model_unavailable`。
-应答是 NDJSON 流（`application/x-ndjson`）：每产生一条消息发一行，出错发 `refusal`（`model_<kind>`、`assistant_step_limit`、`internal_error`），最后一行 `done`。每轮最多 8 次模型请求；浏览器停止后服务端在下一步之前结束。
+对话存在数据库里（迁移 0025），属于发起它的会话主体，按消息逐条记录；对话记录只决定模型读到什么，不带来任何授权。
+
+| 端点                                           | 做什么                                                                                                        |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `GET /api/assistant/conversations`             | 本人的对话（最近 100 个，按最后一条消息时间倒序）：标题（首条消息前 80 字）、时间、消息数、是否有回合正在进行 |
+| `GET /api/assistant/conversations/<id>`        | 一段对话及其全部消息（`seq` 从 1 连续）。别人的对话与不存在的对话一样是 `not_found`                           |
+| `DELETE /api/assistant/conversations/<id>`     | 删除对话记录；回合进行中拒绝（`turn_in_progress`）。对话中创建的案例与已做的动作不受影响                      |
+| `POST /api/assistant/conversations/<id>/turns` | 一个回合：请求体 `{ content, acknowledgeDataEgress }`。新对话的 id 由浏览器生成，首个回合创建它               |
+
+与其他状态修改请求一样，`POST` / `DELETE` 需要会话、同源 `Origin` 与 CSRF 头。数据库只经 `aftercare_control.assistant_*` 入口访问这两张表，Runtime 角色不能直接读写。
+
+- **回合租约**：开始回合时存入用户消息，并让这个回合独占对话（`active_turn_id` + 到期时间）；之后每存一条消息续期。租约为 `max(180 秒, 模型超时 + 60 秒)`。另一个回合在租约有效期内开始为 `turn_in_progress`（双击发送、两个标签页同时发送都只有一个回合）；进程中途退出留下的租约到期后可被新回合接管，被接管的旧回合再写入为 `turn_superseded`。满 2000 条消息的对话不再接受新回合（`conversation_full`）。
+- **先存后发**：应答是 NDJSON 流（`application/x-ndjson`）。第一行是已存入的用户消息；之后每条助手消息与工具结果都先写入数据库再发出（`{ type: 'entry', entry }`）；出错发 `refusal`（`model_<kind>`、`assistant_step_limit`、`turn_superseded`、`internal_error`），最后一行 `done`。因此流在任何位置中断，库中的记录都是实际发生过的那部分；页面在回合结束后从库里重新读取。
+- **停止**：浏览器停止后不再发模型请求；停止时正在等待的模型应答只记录文字、不执行其中的工具调用；回合总会释放租约。
+- 开始回合前的拒绝以普通 JSON 返回：`model_unavailable`、`invalid_request`、`egress_not_acknowledged`（live 模式下页面在发送时随之确认外发）、`not_found`、`turn_in_progress`、`conversation_full`。
+- 模型看到系统提示与从某条用户消息开始的最近至多 40 条消息；中断留下的、没有结果的工具调用不交给模型。每轮最多 8 次模型请求。
 
 助手以会话主体的身份、只经本节的动作与只读视图行事，最终检查与人直接操作时相同：
 
 | 工具                                       | 经由                 | 说明                                                                                                          |
 | ------------------------------------------ | -------------------- | ------------------------------------------------------------------------------------------------------------- |
-| `list_cases`、`read_case`、`wait_for_case` | 案例列表与案例视图   | 只读；`wait_for_case` 最多等 60 秒，阶段或待答问题数变化即返回                                                |
+| `list_cases`、`read_case`、`wait_for_case` | 案例列表与案例视图   | 只读；`wait_for_case` 最多等 60 秒，阶段或待答问题数变化即返回；列出的案例出现在工作区的案例列表里            |
 | `open_case`                                | `POST /`             | 环境取本部署登记的环境；外发确认来自人在页面上的发送，不是模型参数；`autonomous` 仍需章程生效与 `manage_case` |
 | `rerun_case`                               | `POST /<id>/runs`    | 不代为确认隔离                                                                                                |
 | `control_run`                              | `POST /<id>/control` | 针对案例的最新运行                                                                                            |
 
-写操作的请求键由（主体、回合 id、工具调用 id）推导。助手**没有**回答业务问题、批准或拒绝执行、调整预算、获取产物、撤回确认的工具：这些只能由人在案例页完成。
-工具结果中的标题、描述与问题陈述对模型而言是数据。助手自己的模型请求不写入数据库、不计入任何运行的用量；它引起的每个动作照常以操作员身份记录。
+写操作的请求键由（主体、回合 id、工具调用 id）推导。助手**没有**回答业务问题、批准或拒绝执行、调整预算、获取产物、撤回确认的工具：这些仍只能由人完成——在 Agent 对话页右侧的案例工作区（与案例详情页使用同一组面板与同一组 `/api/cases/<id>/…` 动作），或在案例详情页。
+工具结果中的标题、描述与问题陈述对模型而言是数据。助手自己的模型请求不计入任何运行的用量；它引起的每个动作照常以操作员身份记录。
 测试模式下由脚本化测试替身回复：消息作为事故描述开案，以“列出”开头则列出案例。
 
 ## 6. 阶段：由记录确立，不由模型说法确立

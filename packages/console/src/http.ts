@@ -1,15 +1,16 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { charterSummary, type OperatorSession } from '@aftercare/contracts';
 import type { JsonObject, JsonValue } from '@aftercare/domain';
 import { z } from 'zod';
 import { type ConsoleActions, createActions, refuse } from './actions.ts';
 import { adminView, readiness } from './admin.ts';
 import {
-  type AssistantScope,
   assistantModelOf,
-  assistantRequestSchema,
-  runAssistantTurn,
-  transcriptProblem,
+  assistantTurnRequestSchema,
+  deleteAssistantConversation,
+  listAssistantConversations,
+  readAssistantConversation,
+  startAssistantTurn,
 } from './assistant/index.ts';
 import { SIGNATURE_HEADER, signatureMatches } from './autonomy/signature.ts';
 import { startAutonomousRun } from './autonomy/start.ts';
@@ -108,6 +109,18 @@ const result = <T extends JsonValue>(outcome: ActionResult<T>): Response =>
   outcome.ok
     ? json(200, { ok: true, value: outcome.value, replayed: outcome.replayed })
     : refusal(outcome.refusal);
+
+/**
+ * A stored document as a JSON response. The assistant store returns documents
+ * it parsed with the contract schemas; they are JSON already, so they are
+ * serialized as they are instead of being described again in this file.
+ */
+function jsonDocument(status: number, document: object): Response {
+  return new Response(JSON.stringify(document), {
+    status,
+    headers: { ...BASE_HEADERS, 'content-type': 'application/json; charset=utf-8' },
+  });
+}
 
 export const encodeCursor = (cursor: FeedCursor): string =>
   Buffer.from(JSON.stringify(cursor), 'utf8').toString('base64url');
@@ -476,12 +489,61 @@ export function createHttpApi(
   }
 
   /**
-   * One turn of the console assistant. Everything decided before the stream is
+   * The stored conversations of the console assistant. A conversation belongs
+   * to the principal of the session and to nobody else: another principal's
+   * conversation is answered like one that does not exist.
+   */
+  async function assistantRoutes(
+    auth: Authenticated,
+    method: string,
+    conversationId: string | undefined,
+    third: string | undefined,
+    request: Request,
+  ): Promise<Response> {
+    if (conversationId === undefined) {
+      return method === 'GET'
+        ? jsonDocument(200, await listAssistantConversations(context, auth.session))
+        : refused('not_found', 'no such request');
+    }
+    if (!uuid.safeParse(conversationId).success) {
+      return refused('not_found', 'no such conversation');
+    }
+    if (third !== undefined) {
+      return third === 'turns' && method === 'POST'
+        ? assistantTurn(auth, conversationId, request)
+        : refused('not_found', 'no such request');
+    }
+    if (method === 'GET') {
+      const conversation = await readAssistantConversation(context, auth.session, conversationId);
+      return conversation === null
+        ? refused('not_found', 'no such conversation')
+        : jsonDocument(200, conversation);
+    }
+    if (method === 'DELETE') {
+      const removed = await deleteAssistantConversation(context, auth.session, conversationId);
+      return removed.ok
+        ? json(200, {
+            ok: true,
+            value: { conversationId: removed.value.conversationId },
+            replayed: false,
+          })
+        : refusal({ ...refuse(removed.rejection.code, removed.rejection.message) });
+    }
+    return refused('not_found', 'no such request');
+  }
+
+  /**
+   * One turn of a stored conversation. Everything decided before the stream is
    * a normal refusal; after it, every event is one NDJSON line and the last
    * line is always `done`. The browser stopping the stream aborts the turn, so
-   * no further model request is made.
+   * no further model request is made. The turn releases its conversation in
+   * the finally of the stream it hands out, whatever its outcome.
    */
-  async function assistant(auth: Authenticated, request: Request): Promise<Response> {
+  async function assistantTurn(
+    auth: Authenticated,
+    conversationId: string,
+    request: Request,
+  ): Promise<Response> {
     // Narrowed once: the stream continues after this function returned.
     const model = assistantModel;
     if (model === null) {
@@ -494,13 +556,9 @@ export function createHttpApi(
     if (body === null) {
       return refused('invalid_request', 'the request body is not a JSON object');
     }
-    const parsed = assistantRequestSchema.safeParse(body);
+    const parsed = assistantTurnRequestSchema.safeParse(body);
     if (!parsed.success) {
       return refused('invalid_request', z.prettifyError(parsed.error));
-    }
-    const problem = transcriptProblem(parsed.data.messages);
-    if (problem !== null) {
-      return refused('invalid_request', problem);
     }
     if (settings.modelMode === 'live' && !parsed.data.acknowledgeDataEgress) {
       return refused(
@@ -509,21 +567,26 @@ export function createHttpApi(
       );
     }
     const abort = new AbortController();
-    const turnId = randomUUID();
     if (request.signal.aborted) {
       abort.abort();
     } else {
       request.signal.addEventListener('abort', () => abort.abort(), { once: true });
     }
-    const scope: AssistantScope = {
+    const started = await startAssistantTurn({
       context,
       env,
+      model,
       session: auth.session,
       actions: actionsOf(auth.session),
+      conversationId,
+      content: parsed.data.content,
       acknowledgeDataEgress: parsed.data.acknowledgeDataEgress,
-      turnId,
       signal: abort.signal,
-    };
+    });
+    if (!started.ok) {
+      return refusal({ ...refuse(started.rejection.code, started.rejection.message) });
+    }
+    const { turnId, events } = started.value;
     const encoder = new TextEncoder();
     let closed = false;
     const stream = new ReadableStream<Uint8Array>({
@@ -532,19 +595,13 @@ export function createHttpApi(
           if (!closed) controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
         };
         try {
-          for await (const event of runAssistantTurn({
-            scope,
-            model,
-            messages: parsed.data.messages,
-          })) {
-            send(event);
-          }
+          for await (const event of events) send(event);
         } catch (error) {
           const failure = error instanceof Error ? error : new Error(String(error));
           // What failed is in the server log; the stream says only that it did.
           logger.error(
             'console.assistant_failed',
-            { principal: auth.session.principal, turnId },
+            { principal: auth.session.principal, conversationId, turnId },
             failure,
           );
           metrics.count('console.assistant.failed');
@@ -755,8 +812,8 @@ export function createHttpApi(
     if (area === 'admin') {
       return admin(auth, method, first, request);
     }
-    if (area === 'assistant' && first === undefined && method === 'POST') {
-      return assistant(auth, request);
+    if (area === 'assistant' && first === 'conversations' && fourth === undefined) {
+      return assistantRoutes(auth, method, second, third, request);
     }
     if (area === 'autonomy' && first === undefined && method === 'GET') {
       const [autonomySwitch, charters] = await Promise.all([

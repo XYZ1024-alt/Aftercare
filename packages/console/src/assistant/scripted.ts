@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { ModelAdapter, ModelMessage, ModelOutcome, ModelToolCall } from '@aftercare/agent';
 import type { JsonObject } from '@aftercare/domain';
 import { z } from 'zod';
@@ -6,8 +7,8 @@ import { z } from 'zod';
 // (AFTERCARE_MODEL_MODE=scripted_test). It follows a script instead of
 // reasoning: the last user message becomes one tool call, and a tool result
 // becomes one sentence. It exists so the whole assistant path — request
-// schema, tool loop, streaming — can be exercised deterministically; a
-// conversation it drives proves nothing about a model.
+// schema, stored conversation, tool loop, streaming — can be exercised
+// deterministically; a conversation it drives proves nothing about a model.
 
 const documentSchema = z.record(z.string(), z.json());
 
@@ -102,8 +103,8 @@ export function createScriptedAssistantModel(): ModelAdapter {
         return answered('（脚本化测试替身没有收到任何消息。）', []);
       }
       if (last.role === 'user') {
-        // One call id per conversation length: a retry of the same turn keeps the id it had.
-        const id = `scripted-${request.messages.length}`;
+        // A fresh id per answer: a conversation is stored across turns, so ids numbered by length would repeat.
+        const id = `scripted-${randomUUID()}`;
         const lists = last.content.startsWith('列出');
         return answered(null, [
           {

@@ -303,7 +303,7 @@ export interface DeclarationWithStatus {
 }
 
 /** The newest migration this code was written against; readiness compares it with the ledger of the database. */
-export const EXPECTED_LATEST_MIGRATION = '0024_promotion.sql';
+export const EXPECTED_LATEST_MIGRATION = '0025_assistant.sql';
 
 const operatorWorkSchema = z.strictObject({
   kind: z.enum(['execute_undo', 'verify_undo']),

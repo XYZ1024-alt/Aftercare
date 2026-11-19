@@ -2,6 +2,7 @@ import type {
   AgentLimits,
   AgentRun,
   Artefact,
+  AssistantEntry,
   AutonomyCaseView,
   BasisNode,
   BranchLineage,
@@ -29,6 +30,14 @@ import type {
   WorkerHeartbeat,
 } from '@aftercare/contracts';
 import type { JsonObject, JsonValue } from '@aftercare/domain';
+
+export type {
+  AssistantConversation,
+  AssistantConversationSummary,
+  AssistantEntry,
+  AssistantMessage,
+  AssistantToolCall,
+} from '@aftercare/contracts';
 
 // What the console shows. Everything here is read from the records of a case
 // and labelled; nothing is a decision, and a field never claims more than its
@@ -410,41 +419,12 @@ export type ActionResult<T> =
   | { readonly ok: true; readonly value: T; readonly replayed: boolean }
   | { readonly ok: false; readonly refusal: Refusal };
 
-/** One tool request of the console assistant. */
-export interface AssistantToolCall {
-  readonly id: string;
-  readonly name: string;
-  /** Untrusted JSON text of the model: parsed and validated by the tool. */
-  readonly argumentsText: string;
-}
-
 /**
- * One message of a conversation with the console assistant. The browser
- * keeps the transcript and sends it with every turn; the server checks its
- * shape, never trusts it for authority: every tool acts as the session's
- * principal through the console actions.
+ * One line of the NDJSON answer of `POST /api/assistant/conversations/<id>/turns`.
+ * The first entry is the stored user message of the turn; every later entry
+ * is a message of the turn, stored before it is sent; the last line is done.
  */
-export type AssistantMessage =
-  | { readonly role: 'user'; readonly content: string }
-  | {
-      readonly role: 'assistant';
-      readonly content: string | null;
-      readonly toolCalls: readonly AssistantToolCall[];
-    }
-  | {
-      readonly role: 'tool';
-      readonly toolCallId: string;
-      readonly name: string;
-      /** False: the arguments were invalid or the action was refused. The result says why. */
-      readonly ok: boolean;
-      /** What the tool returned, as the model reads it. */
-      readonly result: JsonObject;
-      /** The cases this call opened, read or acted on: what the conversation follows. */
-      readonly caseIds: readonly string[];
-    };
-
-/** One line of the NDJSON answer of `POST /api/assistant`. */
 export type AssistantStreamEvent =
-  | { readonly type: 'message'; readonly message: AssistantMessage }
+  | { readonly type: 'entry'; readonly entry: AssistantEntry }
   | { readonly type: 'refusal'; readonly refusal: Refusal }
   | { readonly type: 'done' };

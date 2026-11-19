@@ -40,17 +40,23 @@ export async function signIn(page: Page, principal: string): Promise<void> {
   await expect(page.getByTestId('principal')).toContainText(principal);
 }
 
-/** Reports an incident to the assistant in the browser and returns the id of the case it opens. */
-export async function submitIncident(page: Page, description: string): Promise<string> {
+/** Reports an incident to the assistant in a new conversation and returns the id of the case it opens. */
+export async function reportToAssistant(page: Page, description: string): Promise<string> {
   await page.goto('/agent');
   await page.locator('textarea[name=message]').fill(description);
   await page.getByRole('button', { name: '发送' }).click();
-  // The conversation is kept in the browser: a later report leaves the earlier case links there.
   const opened = page.locator('[data-testid=opened-case]').last();
   await expect(opened).toBeVisible();
-  await opened.click();
-  await page.waitForURL(/\/cases\/[0-9a-f-]{36}$/);
-  return page.url().split('/').at(-1) ?? '';
+  const caseId = (await opened.getAttribute('data-case-id')) ?? '';
+  expect(caseId).toMatch(/^[0-9a-f-]{36}$/);
+  return caseId;
+}
+
+/** Reports an incident to the assistant and continues on the page of the case it opened. */
+export async function submitIncident(page: Page, description: string): Promise<string> {
+  const caseId = await reportToAssistant(page, description);
+  await page.goto(`/cases/${caseId}`);
+  return caseId;
 }
 
 export const stage = (page: Page) => page.getByTestId('stage');
