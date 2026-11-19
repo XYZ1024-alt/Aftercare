@@ -81,8 +81,8 @@ export function Execution() {
         )}
       </Card>
       <Card
-        title="应用记录（账本）"
-        description="“已应用”只说明事务提交；是否符合契约由独立验证判断。"
+        title="应用记录"
+        description="仅表示沙箱事务已提交，是否符合契约以独立验证为准。"
         icon={BookOpen}
         tone="sky"
         testId="applications"

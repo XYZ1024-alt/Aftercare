@@ -148,7 +148,7 @@ export const EVENT_LABEL: Readonly<Record<string, string>> = {
   question_opened: '发起提问',
   question_answered: '问题已作答',
   question_superseded: '问题已失效',
-  finish_refused: '结束提议被拒绝',
+  finish_refused: '结束请求被拒绝',
   budget_amended: '预算已调整',
 };
 

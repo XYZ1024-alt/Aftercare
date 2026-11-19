@@ -158,7 +158,7 @@ function EvidenceDetail({ evidenceId }: { readonly evidenceId: string }) {
         </Fact>
       </dl>
       <div>
-        <p className="mb-2 text-xs text-muted">观察内容（快照原始记录，操作者已替换为假名）</p>
+        <p className="mb-2 text-xs text-muted">快照原始记录（操作者已替换为假名）</p>
         <Json value={data.observations} />
       </div>
       <Technical>
@@ -337,7 +337,7 @@ function Confirmations() {
           if (revoking !== null) void revoke.run({ id: revoking, reason });
         }}
       >
-        <p>撤回会记入案例事件，原确认记录保留为历史。</p>
+        <p>原确认记录将保留为历史。</p>
       </ConfirmDialog>
     </>
   );
@@ -381,13 +381,7 @@ export function Knowledge() {
           </div>
         )}
       </Card>
-      <Card
-        title="原始观察（证据）"
-        description="取自冻结快照的记录；点开一条看全文。"
-        icon={Database}
-        tone="sky"
-        testId="evidence"
-      >
+      <Card title="证据" description="取自冻结快照" icon={Database} tone="sky" testId="evidence">
         <Evidence />
       </Card>
       <Card
@@ -430,13 +424,7 @@ export function Knowledge() {
           </ul>
         )}
       </Card>
-      <Card
-        title="人工声明"
-        description="按原文留存，不作数值换算。"
-        icon={PenLine}
-        tone="neutral"
-        testId="declarations"
-      >
+      <Card title="人工声明" icon={PenLine} tone="neutral" testId="declarations">
         {knowledge.declarations.length === 0 ? (
           <Empty>暂无人工声明</Empty>
         ) : (

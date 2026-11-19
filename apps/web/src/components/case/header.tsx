@@ -65,11 +65,11 @@ export function Controls() {
           at={when(last.recordedAt)}
         />
       )}
-      <Field label="原因（记入事件）">
+      <Field label="原因">
         <input
           name="control-reason"
           className={INPUT_CLASS}
-          placeholder="操作员在操作台请求"
+          placeholder="选填，将记入事件"
           value={reason}
           onChange={(event) => setReason(event.target.value)}
         />
@@ -102,7 +102,7 @@ export function Controls() {
           取消运行
         </Button>
       </div>
-      <p className="mt-3 text-xs text-muted">暂停或取消操作将在当前工具步骤完成后生效。</p>
+      <p className="mt-3 text-xs text-muted">暂停或取消将在当前步骤完成后生效。</p>
       {!manage && (
         <p className="mt-1 text-xs text-muted">当前账号缺少案例管理权限（manage_case）</p>
       )}
@@ -479,7 +479,7 @@ export function CaseHeader() {
         )}
         {run?.statusReason === 'budget_exhausted' && (
           <Notice tone="apricot">
-            预算已耗尽，运行已终止且未形成封存结果。具备预算管理权限的成员可调整预算后重新发起调查。
+            预算已耗尽，运行已终止且未形成封存结果。如需继续，请重新发起调查。
           </Notice>
         )}
       </div>

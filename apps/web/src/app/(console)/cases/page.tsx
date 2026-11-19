@@ -62,7 +62,9 @@ function Result({ row }: { readonly row: CaseRow }) {
   return report.validity === 'current' ? (
     <span className="font-medium text-mint-ink">当前有效 · {VERDICT_LABEL[report.verdict]}</span>
   ) : (
-    <span className="text-apricot-ink">已失效（{reasonLabel(report.staleReason)}），仅历史</span>
+    <span className="text-apricot-ink">
+      已失效（{reasonLabel(report.staleReason)}），仅作历史参考
+    </span>
   );
 }
 

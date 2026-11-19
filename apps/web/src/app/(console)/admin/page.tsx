@@ -346,7 +346,7 @@ export default function AdminPage() {
           </Card>
           <Card
             title="模型连接"
-            description="凭证仅保存在服务端环境变量中，不在此展示。"
+            description="凭证仅在服务端配置，不在此展示。"
             icon={Cpu}
             tone="violet"
           >
@@ -474,9 +474,11 @@ export default function AdminPage() {
                 (release.result?.ok === false ? release.result.refusal : null)
               }
             />
-            <p className="text-xs text-muted">
-              放行后，被暂停的运行仍需逐个恢复；旧批准不会重新生效，需重新批准。
-            </p>
+            {deployment.hold && (
+              <p className="text-xs text-muted">
+                放行后，被暂停的运行仍需逐个恢复；旧批准不会重新生效，需重新批准。
+              </p>
+            )}
           </div>
         </Card>
 

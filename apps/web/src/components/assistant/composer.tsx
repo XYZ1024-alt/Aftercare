@@ -67,7 +67,7 @@ export function Composer() {
       <p className="mt-2 text-xs text-muted">Enter 发送，Shift+Enter 换行</p>
       {modelMode === 'scripted_test' && (
         <p className="mt-1 text-xs text-muted">
-          测试模式：由脚本化测试替身自动回复。发送消息将创建新案例；以“列出”开头可查看案例列表。
+          测试模式：发送消息将创建案例；以“列出”开头可查看案例列表。
         </p>
       )}
     </form>

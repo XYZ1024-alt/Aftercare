@@ -345,7 +345,7 @@ function Question({
           <Subject question={question} />
           {body.evidenceRefs.length > 0 && (
             <p className="text-meta text-muted">
-              依据证据：{body.evidenceRefs.map(shortId).join('，')}（见“证据与调查”）
+              关联证据：{body.evidenceRefs.map(shortId).join('，')}
             </p>
           )}
           {question.state === 'superseded' && (

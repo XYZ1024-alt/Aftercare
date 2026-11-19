@@ -452,7 +452,7 @@ function Reopen() {
   return (
     <Card
       title="重新调查"
-      description="已有的报告、账本和封存分支保留为历史。"
+      description="现有报告、应用记录与封存分支将保留为历史。"
       icon={RotateCcw}
       tone="apricot"
       testId="reopen"
@@ -519,13 +519,7 @@ export function Results() {
   return (
     <>
       <Promotions />
-      <Card
-        title="验证报告"
-        description="由独立验证器发布并封存。"
-        icon={FileCheck2}
-        tone="mint"
-        testId="reports"
-      >
+      <Card title="验证报告" icon={FileCheck2} tone="mint" testId="reports">
         {reports.length === 0 ? (
           <Empty>
             还没有验证报告。

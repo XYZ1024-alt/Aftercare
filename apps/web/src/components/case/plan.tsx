@@ -338,7 +338,7 @@ function Approval({ contract }: { readonly contract: ContractView }) {
         reason={{ label: '拒绝理由', name: 'decline-reason' }}
         onConfirm={(reason) => void decline.run({ id: contract.approvalQuestionId, reason })}
       >
-        <p>本次拒绝将记入案例日志；如需继续，需重新生成契约并再次审核。</p>
+        <p>如需继续，需重新生成契约并再次审核。</p>
       </ConfirmDialog>
       <ConfirmDialog
         open={asking === 'revoke' && active !== undefined}
@@ -352,7 +352,7 @@ function Approval({ contract }: { readonly contract: ContractView }) {
           if (active !== undefined) void revoke.run({ id: active.approvalId, reason });
         }}
       >
-        <p>本次撤销将记入案例日志；后续需重新审核方可继续执行。</p>
+        <p>后续需重新审核方可继续执行。</p>
       </ConfirmDialog>
     </div>
   );
@@ -399,7 +399,7 @@ export function Plans() {
               {invalidated.map((contract) => (
                 <Notice key={contract.contractId} tone="apricot" testId="contract-invalidated">
                   契约 {shortId(contract.contractId)} 已失效（{reasonLabel(contract.statusReason)}
-                  ）：对它的批准不再有效，需要重新绑定并重新审核。
+                  ），原批准已作废，需要重新绑定并重新审核。
                 </Notice>
               ))}
             </div>
