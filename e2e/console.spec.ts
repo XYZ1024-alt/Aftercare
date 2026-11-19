@@ -85,9 +85,15 @@ test('from a vague report to a sealed partial result: real events, business answ
   const report = page.getByTestId('report');
   await expect(report).toHaveAttribute('data-verdict', 'partially_resolved');
   await expect(report.getByTestId('report-validity')).toContainText('当前结果');
-  await expect(report.getByTestId('objects-modified')).toContainText('product/a：90.00 → 110.00');
-  await expect(report.getByTestId('objects-preserved')).toContainText('product/b.price_cents');
-  await expect(report.getByTestId('objects-unresolved')).toContainText('product/c.price_cents');
+  await expect(report.getByTestId('objects-modified')).toContainText(
+    'product/a 价格：¥90.00 → ¥110.00',
+  );
+  await expect(report.getByTestId('objects-preserved')).toContainText(
+    'product/b.product.price_cents',
+  );
+  await expect(report.getByTestId('objects-unresolved')).toContainText(
+    'product/c.product.price_cents',
+  );
   await expect(report.getByTestId('objects-affected')).toContainText('order/order-d');
 
   await report.getByRole('button', { name: '生成报告文件' }).click();
@@ -278,7 +284,12 @@ test('an approval from a page that is out of date is refused, and the page asks 
   await collect(
     harness.h,
     { caseId, snapshotId: state?.currentSnapshotId ?? '' },
-    { tool: 'product.version_history', productId: 'e' },
+    {
+      tool: 'field.history',
+      objectType: 'product',
+      objectId: 'e',
+      fieldId: 'product.price_cents',
+    },
   );
 
   await approverPage.getByTestId('approve-button').click();
@@ -397,7 +408,12 @@ test('pause takes effect at a boundary; the page survives a reload and a dropped
   await collect(
     harness.h,
     { caseId, snapshotId: state?.currentSnapshotId ?? '' },
-    { tool: 'order.pricing', orderId: 'order-d' },
+    {
+      tool: 'reader.impacts',
+      objectType: 'product',
+      objectId: 'd',
+      fieldId: 'product.price_cents',
+    },
   );
   await untilStage(page, 'result_stale');
   await expect(page.getByTestId('stale-notice')).toContainText('只能作为历史材料阅读');
