@@ -49,10 +49,21 @@ done
 as_postgres() { gosu postgres "$@"; }
 as_node() { gosu node "$@"; }
 
-mkdir -p "$ROOT" "$PGDATA" "$AFTERCARE_DATA_DIR"
+mkdir -p "$ROOT" "$AFTERCARE_DATA_DIR"
+# /mnt/workspace may ignore chmod. Create PGDATA with a 0700 creation mode
+# (umask 077) and recreate an incomplete directory, otherwise initdb refuses
+# "invalid permissions" even though its own chmod reported success.
+if [ -d "$PGDATA" ] && [ ! -s "$PGDATA/PG_VERSION" ]; then
+  rm -rf "$PGDATA"
+fi
+umask 077
+mkdir -p "$PGDATA"
+umask 022
 chown postgres:postgres "$PGDATA"
 chmod 700 "$PGDATA"
 chown -R 1000:1000 "$AFTERCARE_DATA_DIR"
+log "workspace filesystem: $(stat -f -c '%T' "$ROOT" 2>/dev/null || echo unknown); $(mount | grep ' /mnt/workspace ' | head -1)"
+log "PostgreSQL data directory $PGDATA ($(stat -c '%a %U:%G' "$PGDATA" 2>/dev/null || echo 'mode unknown'))"
 
 if [ ! -s "$PGDATA/PG_VERSION" ]; then
   log "initialising PostgreSQL in $PGDATA"
