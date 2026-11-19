@@ -102,7 +102,7 @@ function ModeBanner() {
         className="mb-6 flex w-fit items-center gap-2 rounded-full bg-apricot-soft max-sm:rounded-2xl px-4 py-2 text-meta font-medium text-apricot-ink"
       >
         <FlaskConical aria-hidden className="size-4 shrink-0" />
-        测试模式：运行由脚本化测试替身驱动，不是模型的自主调查
+        测试模式：当前由脚本化测试替身驱动，非真实模型自主调查
       </p>
     );
   }
@@ -110,7 +110,7 @@ function ModeBanner() {
     return (
       <p className="mb-6 flex w-fit items-center gap-2 rounded-full bg-card px-4 py-2 text-meta text-ink-soft shadow-soft">
         <PlugZap aria-hidden className="size-4 shrink-0" />
-        未配置模型：可以查看案例，不能启动新的调查
+        尚未配置模型服务：当前仅支持查看案例，无法发起新调查
       </p>
     );
   }

@@ -130,12 +130,12 @@ function AnswerForm({ question }: { readonly question: QuestionView }) {
   return (
     <div className="space-y-4 border-line border-t pt-5">
       {!question.mayAnswer && (
-        <Notice tone="neutral">回答需要 {question.requiredCapability} 能力，当前账号没有。</Notice>
+        <Notice tone="neutral">当前账号缺少 {question.requiredCapability} 权限，无法作答。</Notice>
       )}
       {body.kind === 'incident_scope' && (
         <fieldset className="space-y-2">
           <legend className="mb-2 text-meta font-medium text-ink-soft">
-            勾选确属错误的操作（未勾选的不算事故）
+            请勾选确认为错误的操作（未勾选的将视为正常操作）
           </legend>
           {body.candidates.map((candidate) => (
             <label key={candidate.operationId} className={OPTION_CLASS}>
@@ -187,7 +187,9 @@ function AnswerForm({ question }: { readonly question: QuestionView }) {
         </fieldset>
       )}
       <Field
-        label={body.kind === 'clarification' ? '业务说明（按原文记录，不换算成金额）' : '确认说明'}
+        label={
+          body.kind === 'clarification' ? '业务说明（按原文留存，不折算为具体金额）' : '确认说明'
+        }
       >
         <textarea
           name="statement"
@@ -260,7 +262,7 @@ function AnswerForm({ question }: { readonly question: QuestionView }) {
             记录业务说明
           </Button>
         )}
-        {!grounded && <span className="text-meta text-muted">填写说明与依据出处后可确认。</span>}
+        {!grounded && <span className="text-meta text-muted">请先填写说明与依据出处</span>}
       </div>
       {body.kind !== 'clarification' && (
         <div className="space-y-4 rounded-field bg-canvas p-4">
@@ -348,7 +350,7 @@ function Question({
           )}
           {question.state === 'superseded' && (
             <Notice tone="apricot" testId="question-superseded">
-              依据已变化（{reasonLabel(answer?.supersededBecause)}），不能再回答。
+              相关依据已变更（{reasonLabel(answer?.supersededBecause)}），该问题已失效，无需作答。
             </Notice>
           )}
           {question.state === 'answered' && answer !== null && (
@@ -405,7 +407,7 @@ export function Questions() {
   if (ordered.length === 0) {
     return (
       <Card title="业务问题" icon={MessageCircleQuestion} tone="violet" testId="questions">
-        <Empty>没有需要回答的问题。</Empty>
+        <Empty>暂无待回答的业务问题</Empty>
       </Card>
     );
   }

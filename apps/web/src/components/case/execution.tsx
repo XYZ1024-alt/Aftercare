@@ -29,7 +29,7 @@ const VERIFICATION_STATUS: Readonly<Record<string, readonly [Tone, string]>> = {
   published: ['mint', '已发布并封存'],
   quarantined: ['rose', '验证失败，分支已隔离'],
   superseded: ['neutral', '已被取代'],
-  errored: ['apricot', '验证器自身出错（不代表结论）'],
+  errored: ['apricot', '验证器异常（非验证结论）'],
 };
 const statusOf = (
   table: Readonly<Record<string, readonly [Tone, string]>>,
@@ -43,7 +43,7 @@ export function Execution() {
     <>
       <Card title="沙箱分支" icon={GitBranch} tone="mint" testId="branches">
         {branches.length === 0 ? (
-          <Empty>还没有沙箱分支。</Empty>
+          <Empty>暂无沙箱分支</Empty>
         ) : (
           <ul className={ROWS_CLASS}>
             {branches.map((branch) => {
@@ -88,7 +88,7 @@ export function Execution() {
         testId="applications"
       >
         {applications.length === 0 ? (
-          <Empty>还没有补丁被应用。</Empty>
+          <Empty>暂无补丁应用记录</Empty>
         ) : (
           <ul className="space-y-4">
             {applications.map((application) => (
@@ -140,7 +140,7 @@ export function Execution() {
       </Card>
       <Card title="执行尝试与独立验证" icon={ShieldCheck} tone="violet" testId="attempts">
         {attempts.length === 0 && verificationRuns.length === 0 ? (
-          <Empty>没有记录。</Empty>
+          <Empty>暂无记录</Empty>
         ) : (
           <div className="space-y-4">
             {attempts.length > 0 && (
@@ -165,7 +165,7 @@ export function Execution() {
                             </p>
                           )}
                           <p className="mt-1 text-xs text-muted">
-                            {when(attempt.startedAt)}，执行者 {attempt.executorId}，代次{' '}
+                            {when(attempt.startedAt)} · 执行节点 {attempt.executorId} · 租约代次{' '}
                             {attempt.fencingToken}
                           </p>
                         </div>

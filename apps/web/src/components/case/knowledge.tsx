@@ -90,8 +90,8 @@ function Basis({ nodeId }: { readonly nodeId: string }) {
   );
   return (
     <div className="mt-2 grid grid-cols-2 gap-4 rounded-field bg-canvas p-4 text-xs text-ink-soft max-md:grid-cols-1">
-      {column('它依据什么', data.dependsOn)}
-      {column('什么依据它', data.dependents)}
+      {column('上游依据', data.dependsOn)}
+      {column('下游影响', data.dependents)}
     </div>
   );
 }
@@ -139,12 +139,12 @@ function EvidenceDetail({ evidenceId }: { readonly evidenceId: string }) {
     <div data-testid="evidence-detail" className="space-y-4">
       <dl className="space-y-3 rounded-field bg-canvas p-4">
         <Fact label="记录时间">{when(data.recordedAt)}</Fact>
-        <Fact label="来源">冻结快照（不是当前源库），水位 {source.baseWatermark}</Fact>
-        <Fact label="完整性">记录摘要与读取时重算一致</Fact>
+        <Fact label="来源">冻结快照（非当前源库），水位 {source.baseWatermark}</Fact>
+        <Fact label="完整性">校验通过（记录摘要与重算结果一致）</Fact>
         <Fact label="查询范围">
           {range.kind === 'entire_range'
-            ? `整个范围，匹配 ${range.matched} 条；审计完整性${range.auditCompleteness === 'established' ? '已确立' : '未确立'}`
-            : '只是一页，不能据此断言“没有其他记录”'}
+            ? `全量范围，匹配 ${range.matched} 条；审计完整性${range.auditCompleteness === 'established' ? '已确立' : '未确立'}`
+            : '仅展示单页结果，无法排除还有其他记录'}
         </Fact>
         <Fact label="涉及对象版本">
           {data.objectVersions.length === 0
@@ -153,7 +153,7 @@ function EvidenceDetail({ evidenceId }: { readonly evidenceId: string }) {
                 .map((entry) => `${entry.objectType}/${entry.objectId}@${entry.version}`)
                 .join('，')}
         </Fact>
-        <Fact label="当前适用性">
+        <Fact label="当前状态">
           <Status status={data.status} />
         </Fact>
       </dl>
@@ -248,7 +248,7 @@ function Evidence() {
                     />
                     {row.snapshotId !== current && (
                       <span className="text-xs text-muted">
-                        取自较早的快照 {shortId(row.snapshotId)}：对那份快照仍然属实
+                        采自较早快照 {shortId(row.snapshotId)}（对该快照仍有效）
                       </span>
                     )}
                   </span>
@@ -280,7 +280,7 @@ function Confirmations() {
     useCan('confirm_baseline'),
     useCan('confirm_replay_policy'),
   ].some(Boolean);
-  if (view.knowledge.confirmations.length === 0) return <Empty>还没有业务确认。</Empty>;
+  if (view.knowledge.confirmations.length === 0) return <Empty>暂无业务确认</Empty>;
   return (
     <>
       <ul className={ROWS_CLASS}>
@@ -348,13 +348,13 @@ export function Knowledge() {
   const { knowledge, certificate, invalidated } = view;
   return (
     <>
-      <Card title="接入资格与信任前提" icon={ShieldCheck} tone="mint">
+      <Card title="快照准入与信任前提" icon={ShieldCheck} tone="mint">
         {certificate === null ? (
-          <Empty>当前快照还没有完整性凭证。</Empty>
+          <Empty>当前快照暂无完整性凭证</Empty>
         ) : (
           <div className="space-y-4 text-sm">
             <div className="flex flex-wrap items-center gap-2">
-              <span className="text-meta text-muted">快照资格</span>
+              <span className="text-meta text-muted">快照状态</span>
               <Pill tone={certificate.failedChecks.length === 0 ? 'mint' : 'apricot'}>
                 {certificate.eligibility.snapshot}
               </Pill>
@@ -392,13 +392,13 @@ export function Knowledge() {
       </Card>
       <Card
         title="候选假设"
-        description="由模型提出，不是事实或确认。"
+        description="由模型提出，不代表事实或确认结论。"
         icon={Lightbulb}
         tone="violet"
         testId="hypotheses"
       >
         {knowledge.hypotheses.length === 0 ? (
-          <Empty>没有登记假设。</Empty>
+          <Empty>暂无候选假设</Empty>
         ) : (
           <ul className={ROWS_CLASS}>
             {knowledge.hypotheses.map((hypothesis) => (
@@ -416,7 +416,7 @@ export function Knowledge() {
                     {hypothesis.standing === 'refuted'
                       ? '已被反驳'
                       : hypothesis.standing === 'supported'
-                        ? '有证据支持（仍是假设）'
+                        ? '已有证据支持（仍属假设）'
                         : '待评估'}
                   </Pill>
                   <Status status={hypothesis.status} />
@@ -432,13 +432,13 @@ export function Knowledge() {
       </Card>
       <Card
         title="人工声明"
-        description="按原文记录，不解释为数值。"
+        description="按原文留存，不作数值换算。"
         icon={PenLine}
         tone="neutral"
         testId="declarations"
       >
         {knowledge.declarations.length === 0 ? (
-          <Empty>没有声明。</Empty>
+          <Empty>暂无人工声明</Empty>
         ) : (
           <ul className={ROWS_CLASS}>
             {knowledge.declarations.map(({ record, status }) => (
@@ -465,14 +465,14 @@ export function Knowledge() {
         <Confirmations />
       </Card>
       <Card
-        title="已失效或不再适用的结论与材料"
-        description="失效只影响当前能否使用；记录仍可作历史阅读。"
+        title="已失效的结论与材料"
+        description="失效仅表示不可用于当前分析，原始记录仍可作为历史查阅。"
         icon={Archive}
         tone="apricot"
         testId="invalidated"
       >
         {invalidated.length === 0 ? (
-          <Empty>没有失效项。</Empty>
+          <Empty>暂无失效项</Empty>
         ) : (
           <ul className={ROWS_CLASS}>
             {invalidated.map((node) => (

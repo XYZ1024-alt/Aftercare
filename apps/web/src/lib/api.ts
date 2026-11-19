@@ -17,7 +17,7 @@ const refusal = (code: string, message: string): Refusal => ({
 
 const UNREACHABLE = refusal(
   'network_error',
-  '请求没有得到响应。操作可能已生效，也可能没有；重试会使用同一请求键，不会重复执行。',
+  '请求未收到响应，操作状态未知。重试将沿用同一请求键，不会重复执行。',
 );
 
 export function toSignIn(): void {

@@ -145,7 +145,7 @@ export function Timeline() {
             </Notice>
           )}
           {feed.items.length === 0 ? (
-            <Empty>还没有事件。</Empty>
+            <Empty>暂无事件记录</Empty>
           ) : (
             <ol className="relative pl-6 before:absolute before:top-2 before:bottom-2 before:left-[3px] before:w-0.5 before:rounded-full before:bg-line">
               {feed.items.map((item) => (
@@ -154,7 +154,7 @@ export function Timeline() {
             </ol>
           )}
           {waiting && view.stage.stage === 'queued' && (
-            <p className="text-meta text-muted">运行在排队，等待 worker 领取。</p>
+            <p className="text-meta text-muted">任务排队中，等待工作节点领取。</p>
           )}
         </div>
       </Card>

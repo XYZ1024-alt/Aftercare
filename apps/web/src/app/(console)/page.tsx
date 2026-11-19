@@ -98,7 +98,7 @@ function tasksOf(rows: readonly CaseRow[]): Task[] {
           key: overview.caseId,
           tone: 'apricot',
           icon: Pause,
-          title: '运行已暂停，等待恢复或取消',
+          title: '运行已暂停，请决定恢复或取消',
           row,
           tab: 'process',
         },
@@ -110,7 +110,7 @@ function tasksOf(rows: readonly CaseRow[]): Task[] {
           key: overview.caseId,
           tone: 'rose',
           icon: OctagonAlert,
-          title: `${STAGE_LABEL[stage]}：${reasonLabel(overview.agentRun?.statusReason) || '需要人工判断'}`,
+          title: `${STAGE_LABEL[stage]}：${reasonLabel(overview.agentRun?.statusReason) || '需人工介入判断'}`,
           row,
           tab: 'results',
         },
@@ -122,7 +122,7 @@ function tasksOf(rows: readonly CaseRow[]): Task[] {
           key: overview.caseId,
           tone: 'apricot',
           icon: History,
-          title: '封存结果已失效，可以重新调查',
+          title: '原有结论已失效，建议重新调查',
           row,
           tab: 'results',
         },
@@ -162,7 +162,7 @@ function Tasks({ rows }: { readonly rows: readonly CaseRow[] }) {
   return (
     <Card title="待处理" aside={tasks.length > 0 && <Pill tone="apricot">{tasks.length} 项</Pill>}>
       {shown.length === 0 ? (
-        <Empty>没有等待处理的事项。</Empty>
+        <Empty>暂无待办事项</Empty>
       ) : (
         <ul className="-my-1">
           {shown.map((task) => (
@@ -209,7 +209,7 @@ function Recent({ rows }: { readonly rows: readonly CaseRow[] }) {
       }
     >
       {rows.length === 0 ? (
-        <Empty>还没有案例。</Empty>
+        <Empty>暂无案例</Empty>
       ) : (
         <ul className="-my-1">
           {rows.slice(0, 5).map((row) => (
@@ -254,9 +254,9 @@ function Metrics({ rows }: { readonly rows: readonly CaseRow[] }) {
     {
       tone: 'apricot',
       icon: Hourglass,
-      label: '等待人工处理',
+      label: '待人工介入',
       value: inGroup('confirming', 'waiting').length,
-      foot: questions > 0 ? `共 ${questions} 个问题待回答` : '没有待回答的问题',
+      foot: questions > 0 ? `共 ${questions} 个问题待回答` : '暂无待回答问题',
     },
     {
       tone: 'sky',
@@ -276,7 +276,7 @@ function Metrics({ rows }: { readonly rows: readonly CaseRow[] }) {
       icon: TriangleAlert,
       label: '需要关注',
       value: attention,
-      foot: attention > 0 ? '已隔离或失败，需要人工判断' : undefined,
+      foot: attention > 0 ? '已隔离或失败，需人工判断' : undefined,
     },
   ];
   return (

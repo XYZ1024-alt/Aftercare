@@ -31,16 +31,16 @@ import { Promotions } from './promotion.tsx';
 
 const LAYER: Readonly<Record<string, string>> = {
   input_sufficiency: '输入充分性',
-  compiled_semantics: '编译语义',
-  execution_conformance: '执行符合性',
-  business_appropriateness: '业务适当性',
+  compiled_semantics: '语义编译',
+  execution_conformance: '执行一致性',
+  business_appropriateness: '业务合理性',
 };
 const LAYER_STATUS: Readonly<Record<string, readonly [Tone, string]>> = {
-  holds: ['mint', '成立'],
-  fails: ['rose', '不成立'],
-  blocked: ['apricot', '无法确立'],
-  not_established: ['neutral', '未确立'],
-  acknowledged_by_approver: ['violet', '由批准人知悉'],
+  holds: ['mint', '通过'],
+  fails: ['rose', '未通过'],
+  blocked: ['apricot', '无法判定'],
+  not_established: ['neutral', '未判定'],
+  acknowledged_by_approver: ['violet', '批准人已知悉'],
 };
 const KIND: Readonly<Record<string, string>> = {
   verification_report: '报告文件',
@@ -97,12 +97,12 @@ function Artefacts({ report }: { readonly report: VerificationReport }) {
       </div>
       {!repair && (
         <Notice tone="rose" testId="no-artefact">
-          本报告结论为“{VERDICT_LABEL[report.verdict]}”，不是修复产物：不能生成或下载。
+          当前结论为“{VERDICT_LABEL[report.verdict]}”，不是修复产物，无法生成或下载文件。
         </Notice>
       )}
       {repair && !current && (
         <Notice tone="apricot">
-          报告已失效：不能再生成新产物；已有产物仅供持历史读取权限者作为历史材料读取。
+          报告已失效，无法生成新产物；已有产物仅供具备历史查阅权限的人员下载。
         </Notice>
       )}
       {artefacts.length > 0 && (
@@ -226,7 +226,7 @@ function Artefacts({ report }: { readonly report: VerificationReport }) {
           if (revoking !== null) void revoke.run({ id: revoking.artefactId, reason });
         }}
       >
-        <p>撤销后，这份产物不能再从操作台获取。</p>
+        <p>撤销登记后，该产物将无法再从控制台下载。</p>
       </ConfirmDialog>
     </section>
   );
@@ -242,7 +242,7 @@ function Undo({ report }: { readonly report: VerificationReport }) {
       <div>
         <h3 className="font-medium">受保护撤销</h3>
         <p className="mt-1 text-meta text-muted">
-          在封存分支的后继分支上逆转账本差异，仍需独立批准、执行和验证；封存分支本身不会被改写。
+          将在封存分支的后继分支上回滚本次修改，且同样需要独立批准、执行与验证；原封存分支保持不变。
         </p>
       </div>
       <Button
@@ -258,7 +258,7 @@ function Undo({ report }: { readonly report: VerificationReport }) {
           <RefusalNote refusal={undo.refusal} />
           {conflict !== undefined && (
             <Notice tone="apricot" testId="undo-conflict">
-              存在撤销冲突，系统不会强制覆盖后续变化。依据冲突内容决定后续处理，例如重新调查。
+              检测到撤销冲突，系统不会强行覆盖后续变更。请根据冲突详情决定后续处理（如重新调查）。
               <Json value={conflict} />
             </Notice>
           )}
@@ -287,7 +287,7 @@ function Objects({
         <span className="text-meta font-normal text-muted tabular-nums">{entries.length}</span>
       </h3>
       {entries.length === 0 ? (
-        <p className="text-meta text-muted">没有。</p>
+        <p className="text-meta text-muted">暂无</p>
       ) : (
         <ul className="space-y-1.5 break-words tabular-nums">
           {entries.map((entry) => (
@@ -361,21 +361,21 @@ function Report({
         <Objects
           testId="objects-unresolved"
           tone="violet"
-          title="未决"
+          title="未决项"
           entries={objects.unresolved.map((entry) => ({
             key: entry,
-            text: `${entry}：按快照原样保留，本次修复没有决定它`,
+            text: `${entry}：暂按快照原样保留（本次修复未处理）`,
           }))}
         />
         <Objects
           testId="objects-affected"
           tone="neutral"
-          title="仅受影响、未修改"
+          title="受影响但未修改"
           entries={objects.affectedOnly.map((entry) => ({ key: entry, text: entry }))}
         />
       </div>
       <section className="text-sm">
-        <h3 className="mb-2.5 font-medium">四层结论</h3>
+        <h3 className="mb-2.5 font-medium">四维核验结论</h3>
         <ul className="grid grid-cols-4 gap-3 max-lg:grid-cols-2">
           {Object.entries(layers).map(([layer, status]) => {
             const [tone, label] = LAYER_STATUS[status] ?? ['neutral', status];
@@ -394,15 +394,15 @@ function Report({
           <UntrustedText text={scope.appliesTo} />
         </p>
       </section>
-      <Technical label={`义务检查（${findings.length} 项，${failing} 项未通过）`}>
+      <Technical label={`校验项明细（共 ${findings.length} 项，${failing} 项未通过）`}>
         <div className="font-sans">
           <Table>
             <thead>
               <tr>
-                <th>义务</th>
-                <th>层</th>
-                <th>状态</th>
-                <th>说明</th>
+                <th>校验项</th>
+                <th>维度</th>
+                <th>结果</th>
+                <th>详情</th>
               </tr>
             </thead>
             <tbody>
@@ -474,7 +474,7 @@ function Reopen() {
               checked={isolation}
               onChange={(event) => setIsolation(event.target.checked)}
             />
-            <span>我知道上一次运行因确定性不变量失败被隔离，仍要开始新的运行。</span>
+            <span>我已知晓上次运行因不变量校验失败而被隔离，仍确认发起新的调查。</span>
           </label>
         )}
         {modelMode === 'live' && (
@@ -484,7 +484,7 @@ function Reopen() {
               checked={egress}
               onChange={(event) => setEgress(event.target.checked)}
             />
-            <span>我知道案例内容会发送到配置的模型服务。</span>
+            <span>我已知晓案例数据将发送至已配置的模型服务。</span>
           </label>
         )}
         <Button
@@ -542,13 +542,13 @@ export function Results() {
         )}
       </Card>
       <Reopen />
-      <Card title="运行与重开记录" icon={History} tone="sky" testId="runs">
+      <Card title="运行历史" icon={History} tone="sky" testId="runs">
         <ul className={ROWS_CLASS}>
           {view.caseRuns.map((run) => (
             <li key={run.runId} className="flex items-start gap-3 text-sm">
               <Dot tone="violet" className="mt-1.5" />
               <span className="min-w-0">
-                <span className="font-medium">案例 run #{run.runSeq}</span>：{run.phase}，开启原因：
+                <span className="font-medium">调查轮次 #{run.runSeq}</span>：{run.phase}，发起原因：
                 <UntrustedText text={run.openedReason} />（{run.openedBy}）
                 {run.endReason !== null && `；结束：${run.endReason}`}
               </span>

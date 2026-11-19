@@ -115,7 +115,7 @@ export function ConversationHistory({
       {conversations === undefined && error === undefined ? (
         <Loading />
       ) : conversations !== undefined && conversations.length === 0 ? (
-        <Empty>还没有对话。</Empty>
+        <Empty>暂无历史对话</Empty>
       ) : (
         <ul className="min-h-0 flex-1 overflow-y-auto">
           {groups.map((group) => (
@@ -175,14 +175,14 @@ export function ConversationHistory({
       <ConfirmDialog
         open={confirming !== null}
         onClose={() => setConfirming(null)}
-        title="删除这段对话？"
+        title="确认删除这段对话？"
         confirmLabel="删除对话"
         tone="danger"
         onConfirm={() => {
           if (confirming !== null) void remove(confirming);
         }}
       >
-        对话记录删除后不能恢复。对话中创建的案例和已做的操作不受影响。
+        删除后对话记录将无法恢复；对话中已创建的案例及执行过的操作不受影响。
       </ConfirmDialog>
     </div>
   );

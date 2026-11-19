@@ -302,7 +302,7 @@ export function Transcript() {
         </>
       )}
       {runningElsewhere && (
-        <Notice tone="sky">这段对话正在另一个页面进行，完成后会自动更新。</Notice>
+        <Notice tone="sky">当前对话正在其他页面进行中，完成后将自动同步。</Notice>
       )}
     </div>
   );

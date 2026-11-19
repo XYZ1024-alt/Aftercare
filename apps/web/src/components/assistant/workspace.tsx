@@ -217,7 +217,7 @@ export function CaseWorkspace() {
         <CaseSwitcher caseId={caseId} />
         {caseId === null && (
           <div className="mt-4">
-            <Empty>对话中的案例会显示在这里。</Empty>
+            <Empty>当前对话关联的案例将显示在此处</Empty>
           </div>
         )}
       </WorkspaceCard>

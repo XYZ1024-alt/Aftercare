@@ -69,7 +69,7 @@ export function useCaseBadges(): Partial<Record<CaseTab, string>> {
   return {
     ...(open > 0 ? { questions: String(open) } : {}),
     ...(waitsForApproval(view) ? { plan: '待批准' } : {}),
-    ...(waiting > 0 ? { process: '待人处理' } : {}),
+    ...(waiting > 0 ? { process: '待人工处理' } : {}),
   };
 }
 

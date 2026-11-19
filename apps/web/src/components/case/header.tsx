@@ -102,20 +102,22 @@ export function Controls() {
           取消运行
         </Button>
       </div>
-      <p className="mt-3 text-xs text-muted">暂停与取消在下一个工具边界生效。</p>
-      {!manage && <p className="mt-1 text-xs text-muted">需要 manage_case 能力。</p>}
+      <p className="mt-3 text-xs text-muted">暂停或取消操作将在当前工具步骤完成后生效。</p>
+      {!manage && (
+        <p className="mt-1 text-xs text-muted">当前账号缺少案例管理权限（manage_case）</p>
+      )}
       <RefusalNote refusal={control.refusal} />
       <ConfirmDialog
         open={confirmCancel}
         onClose={() => setConfirmCancel(false)}
-        title="取消这次运行？"
-        warning="取消后不会自动重启。要继续调查，只能在同一案例上开始新的运行。"
+        title="确认取消这次运行？"
+        warning="取消后不会自动恢复；如需继续调查，需在本案例中重新发起运行。"
         confirmLabel="确认取消运行"
         dismissLabel="继续运行"
         tone="danger"
         onConfirm={() => send('cancel')}
       >
-        <p>运行会在下一个工具边界停止。已记录的事件、证据与报告都会保留。</p>
+        <p>运行将在当前步骤完成后停止，已记录的事件、证据与报告均会保留。</p>
       </ConfirmDialog>
     </Card>
   );
@@ -244,10 +246,10 @@ export function Budget() {
             {cost.known
               ? `${cost.amount} ${cost.currency}`
               : cost.reason === 'test_mode'
-                ? '不适用：测试替身没有费用'
+                ? '不适用（测试模式不计费）'
                 : cost.reason === 'no_price_configured'
-                  ? '未知：未配置价格'
-                  : `未知：部分请求没有用量报告${cost.reportedLowerBound === null ? '' : `（已报告部分不低于 ${cost.reportedLowerBound.amount} ${cost.reportedLowerBound.currency}）`}`}
+                  ? '未知（未配置模型单价）'
+                  : `未知（部分请求未返回用量${cost.reportedLowerBound === null ? '' : `，已报告部分不低于 ${cost.reportedLowerBound.amount} ${cost.reportedLowerBound.currency}`}）`}
           </dd>
         </div>
       </dl>
@@ -461,23 +463,23 @@ export function CaseHeader() {
       <div className="mt-5 space-y-2 empty:hidden">
         {run?.model?.testDouble === true && modelMode !== 'scripted_test' && (
           <Notice tone="apricot">
-            本次运行的步骤由脚本化测试替身决定，不能作为模型自主能力的证据。
+            本次运行由脚本化测试替身驱动，不代表真实模型的自主推理能力。
           </Notice>
         )}
         {stage.appliedUnverified && (
           <Notice tone="violet" testId="applied-notice">
-            补丁已应用到沙箱并提交，但尚未经过独立验证。此时不能认为修复成功，也没有可下载的修复产物。
+            补丁已提交至沙箱，但尚未经过独立验证。此时不能视为修复成功，暂不提供产物下载。
           </Notice>
         )}
         {stage.stage === 'result_stale' && (
           <Notice tone="apricot" testId="stale-notice">
-            封存报告之后案例依据发生了变化（{reasonLabel(stage.reason)}
-            ）。原报告只能作为历史材料阅读，不再是当前结果；需要时请重新调查。
+            原报告封存后，案例依据已发生变化（{reasonLabel(stage.reason)}
+            ）。该报告只能作为历史材料阅读，不再作为当前结论；如有需要请重新调查。
           </Notice>
         )}
         {run?.statusReason === 'budget_exhausted' && (
           <Notice tone="apricot">
-            预算耗尽，运行已结束且没有封存结果。持预算权限的人可以重新启动调查并设定新的预算。
+            预算已耗尽，运行已终止且未形成封存结果。具备预算管理权限的成员可调整预算后重新发起调查。
           </Notice>
         )}
       </div>

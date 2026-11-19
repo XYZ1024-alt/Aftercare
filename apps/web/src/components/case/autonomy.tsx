@@ -45,7 +45,7 @@ export function AutonomyBadge() {
       </Pill>
       {waiting > 0 && (
         <Pill tone="apricot" testId="autonomy-waiting">
-          待人处理 {waiting}
+          待人工处理 {waiting}
         </Pill>
       )}
       {promoted && (
@@ -73,7 +73,7 @@ export function AutonomyDecisions() {
       <div className="space-y-4">
         {!autonomy.switch.enabled && (
           <Notice tone="apricot" testId="autonomy-off">
-            自主模式已关闭，后续事项由人处理。
+            自主模式已关闭，后续流程将转由人工处理。
           </Notice>
         )}
         <p className="text-meta text-ink-soft" data-testid="autonomy-enrollment">
@@ -82,7 +82,7 @@ export function AutonomyDecisions() {
           {enrollment.reopenOf !== null && ` · 重开：${enrollment.reopenReason ?? '未记录原因'}`}
         </p>
         {decisions.length === 0 ? (
-          <Empty>尚无自主决策。</Empty>
+          <Empty>暂无自主决策记录</Empty>
         ) : (
           <ul className={ROWS_CLASS}>
             {decisions.map((decision) => {

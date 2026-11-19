@@ -84,7 +84,7 @@ function Row({ row, index }: { readonly row: CaseRow; readonly index: number }) 
           </span>
           <span className="mt-1 block text-meta text-muted">
             {overview.lastEvent === null
-              ? '还没有事件'
+              ? '暂无动态'
               : `最近：${eventLabel(overview.lastEvent.origin, overview.lastEvent.eventType)} · ${whenShort(overview.lastEvent.recordedAt)}`}
           </span>
         </span>
@@ -97,14 +97,14 @@ function Row({ row, index }: { readonly row: CaseRow; readonly index: number }) 
           )}
           {overview.openQuestions > 0 && (
             <span className="block text-xs font-medium text-violet-ink">
-              等待你：{overview.openQuestions} 个问题
+              待回答：{overview.openQuestions} 个问题
             </span>
           )}
         </span>
         <span className="min-w-0 text-right text-meta max-lg:text-left max-sm:col-start-2">
           <Result row={row} />
           <span className="mt-1 block text-xs text-muted">
-            {overview.openedBy} 开启于 {whenShort(overview.openedAt)}
+            {overview.openedBy} 发起于 {whenShort(overview.openedAt)}
           </span>
         </span>
       </Link>
@@ -144,7 +144,7 @@ export default function CaseListPage() {
         </Card>
       ) : rows.length === 0 ? (
         <Card className="py-14 text-center">
-          <p className="text-[17px] font-medium">还没有案例</p>
+          <p className="text-[17px] font-medium">暂无案例</p>
           <div className="mt-5 flex justify-center">
             <ButtonLink href="/agent" tone="primary">
               <Bot aria-hidden className="size-4" />
@@ -165,7 +165,7 @@ export default function CaseListPage() {
                 ref={searchBox}
                 type="search"
                 name="case-search"
-                placeholder="搜索事故描述、开启人或阶段"
+                placeholder="搜索事故描述、发起人或当前阶段"
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
                 className="h-12 w-full rounded-full border border-transparent bg-card pr-40 pl-11 text-body shadow-soft transition-[border-color,box-shadow] duration-(--duration-quick) ease-smooth-out placeholder:text-muted/70 focus-visible:border-sky/60 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-sky/15 [&::-webkit-search-cancel-button]:appearance-none [&::-webkit-search-decoration]:appearance-none"

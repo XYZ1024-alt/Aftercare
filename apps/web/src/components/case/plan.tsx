@@ -26,9 +26,9 @@ import {
 import { useCase, useCaseAction } from './case-context.tsx';
 
 const TREATMENT: Readonly<Record<string, string>> = {
-  recomputed_on_corrected_input: '在纠正后的输入上重算',
-  retained_independent_override: '保留（独立的后续覆写）',
-  retained_outside_affected_domain: '保留（不在受影响范围内）',
+  recomputed_on_corrected_input: '基于修正后的数据重算',
+  retained_independent_override: '保留（独立后续修改）',
+  retained_outside_affected_domain: '保留（未受事故波及）',
 };
 const fieldOf = (entry: { readonly objectType: string; readonly objectId: string }) =>
   `${entry.objectType}/${entry.objectId}`;
@@ -52,14 +52,14 @@ function Group({
         {title}
         <span className="text-meta text-muted tabular-nums">{count}</span>
       </h3>
-      {count === 0 ? <p className="text-sm text-muted">没有。</p> : children}
+      {count === 0 ? <p className="text-sm text-muted">暂无</p> : children}
     </section>
   );
 }
 
 function PlanPreview({ plan }: { readonly plan: PlanSummaryView }) {
   const content = plan.content;
-  if (content === null) return <Empty>较早的计划，未加载内容。</Empty>;
+  if (content === null) return <Empty>历史计划（未加载详情）</Empty>;
   return (
     <div className="space-y-4 text-sm" data-testid="plan-preview">
       <section>
@@ -69,7 +69,7 @@ function PlanPreview({ plan }: { readonly plan: PlanSummaryView }) {
           <span className="text-meta text-muted tabular-nums">{content.patch.length}</span>
         </h3>
         {content.patch.length === 0 ? (
-          <Empty>没有需要修改的字段。</Empty>
+          <Empty>无需修改任何字段</Empty>
         ) : (
           <Table>
             <thead>
@@ -94,7 +94,7 @@ function PlanPreview({ plan }: { readonly plan: PlanSummaryView }) {
         )}
       </section>
       <div className="grid grid-cols-3 gap-4 max-xl:grid-cols-1">
-        <Group tone="sky" title="保留的合法后续变化" count={content.preserved.length}>
+        <Group tone="sky" title="保留的后续合法变更" count={content.preserved.length}>
           <ul className="space-y-2">
             {content.preserved.map((entry) => (
               <li key={entry.operationId} data-testid="preserved-row" data-object={entry.objectId}>
@@ -108,7 +108,7 @@ function PlanPreview({ plan }: { readonly plan: PlanSummaryView }) {
             ))}
           </ul>
         </Group>
-        <Group tone="neutral" title="仅受影响、不修改" count={content.orderImpacts.length}>
+        <Group tone="neutral" title="受影响但不修改" count={content.orderImpacts.length}>
           <ul className="space-y-2">
             {content.orderImpacts.map((order) => (
               <li key={order.orderId} data-testid="affected-row" data-object={order.orderId}>
@@ -116,7 +116,7 @@ function PlanPreview({ plan }: { readonly plan: PlanSummaryView }) {
                 ）按 <span className="tabular-nums">{cents(order.struckUnitPriceCents)}</span> 成交
                 {order.replayedUnitPriceCents !== null &&
                   `，回放价格 ${cents(order.replayedUnitPriceCents)}`}
-                ：订单已发生，不修改。
+                （订单已成交，不修改）
               </li>
             ))}
           </ul>
@@ -137,9 +137,9 @@ function PlanPreview({ plan }: { readonly plan: PlanSummaryView }) {
           </ul>
           {content.isolation !== null && (
             <p className="mt-2 text-xs text-ink-soft">
-              部分解决的适用条件：已修复字段与未决项相互隔离（
+              部分解决前提：已修复字段与未决项相互隔离（
               {content.isolation.checks.map((check) => check.check).join('，')}
-              ）。批准时需逐项确认未决项。
+              ）；批准前需逐项确认未决项。
             </p>
           )}
         </Group>
@@ -153,11 +153,11 @@ function PlanPreview({ plan }: { readonly plan: PlanSummaryView }) {
             .join('，')}
         </p>
         <p className="text-meta text-ink-soft">
-          事故操作 {content.incident.operationIds.length} 个
+          共纳入 {content.incident.operationIds.length} 个事故操作
           {content.incident.batches
             .map(
               (batch) =>
-                `；批次 ${shortId(batch.batchId)} 共 ${batch.targetCount} 个目标，其中 ${batch.retainedOperationIds.length} 个不视为事故`,
+                `；批次 ${shortId(batch.batchId)} 共 ${batch.targetCount} 个对象，其中 ${batch.retainedOperationIds.length} 个不计入事故`,
             )
             .join('')}
         </p>
@@ -207,7 +207,7 @@ function Approval({ contract }: { readonly contract: ContractView }) {
           ；源业务库和快照都不会被写入。
         </Notice>
         <section>
-          <h3 className="mb-2 font-medium">批准的内容</h3>
+          <h3 className="mb-2 font-medium">待批变更明细</h3>
           <Table>
             <thead>
               <tr>
@@ -230,8 +230,8 @@ function Approval({ contract }: { readonly contract: ContractView }) {
           </Table>
         </section>
         <div className="grid grid-cols-2 gap-4 max-md:grid-cols-1">
-          <Checks title="执行事务内的强制检查" checks={contract.checks.inTransaction} />
-          <Checks title="之后必须由独立验证确认" checks={contract.checks.afterwards} />
+          <Checks title="执行前事务内检查" checks={contract.checks.inTransaction} />
+          <Checks title="执行后独立验证项" checks={contract.checks.afterwards} />
         </div>
         <p className="text-meta text-muted">
           策略修订 {contract.policy.revision}；基于依赖修订 {contract.dependencyRevision} 的输入。
@@ -253,7 +253,7 @@ function Approval({ contract }: { readonly contract: ContractView }) {
         <div className="space-y-4">
           {!mayApprove && (
             <Notice tone="apricot">
-              批准执行需要 approve_execution 能力，当前账号没有。业务确认不等于执行批准。
+              当前账号缺少执行批准权限（approve_execution）。业务确认不等于执行批准。
             </Notice>
           )}
           {contract.untouched.length > 0 && (
@@ -332,19 +332,19 @@ function Approval({ contract }: { readonly contract: ContractView }) {
         open={asking === 'decline'}
         onClose={() => setAsking(null)}
         title="拒绝批准这个执行契约？"
-        warning="拒绝后补丁不会应用到沙箱；调查会收到拒绝理由。"
+        warning="拒绝后不会修改沙箱，系统会将拒绝理由反馈给调查流程。"
         confirmLabel="拒绝批准"
         tone="danger"
         reason={{ label: '拒绝理由', name: 'decline-reason' }}
         onConfirm={(reason) => void decline.run({ id: contract.approvalQuestionId, reason })}
       >
-        <p>拒绝会记入案例事件。之后需要新的契约和新的审核。</p>
+        <p>本次拒绝将记入案例日志；如需继续，需重新生成契约并再次审核。</p>
       </ConfirmDialog>
       <ConfirmDialog
         open={asking === 'revoke' && active !== undefined}
         onClose={() => setAsking(null)}
         title="撤销这次执行批准？"
-        warning="尚未应用的补丁将不再被允许执行；已应用的内容不会因此回滚。"
+        warning="尚未执行的补丁将无法继续应用；已写入沙箱的内容不会自动回滚。"
         confirmLabel="撤销批准"
         tone="danger"
         reason={{ label: '撤销理由', name: 'revoke-approval-reason' }}
@@ -352,7 +352,7 @@ function Approval({ contract }: { readonly contract: ContractView }) {
           if (active !== undefined) void revoke.run({ id: active.approvalId, reason });
         }}
       >
-        <p>撤销会记入案例事件。之后需要重新审核才能执行。</p>
+        <p>本次撤销将记入案例日志；后续需重新审核方可继续执行。</p>
       </ConfirmDialog>
     </div>
   );
@@ -381,16 +381,12 @@ export function Plans() {
           )
         }
       >
-        {current === undefined ? (
-          <Empty>还没有当前有效的计划。</Empty>
-        ) : (
-          <PlanPreview plan={current} />
-        )}
+        {current === undefined ? <Empty>暂无有效修复计划</Empty> : <PlanPreview plan={current} />}
       </Card>
       <Card title="执行批准" icon={ShieldCheck} tone="apricot" testId="approvals">
         <div className="space-y-4">
           {bound.length === 0 ? (
-            <Empty>没有等待批准的执行契约。</Empty>
+            <Empty>暂无待批准的执行契约</Empty>
           ) : (
             <div className="space-y-4">
               {bound.map((contract) => (
@@ -411,7 +407,7 @@ export function Plans() {
         </div>
       </Card>
       {stale.length > 0 && (
-        <Card title="过期或已被取代的计划" icon={History} tone="neutral" testId="stale-plans">
+        <Card title="历史与失效计划" icon={History} tone="neutral" testId="stale-plans">
           <ul className={ROWS_CLASS}>
             {stale.map((plan) => (
               <li key={plan.planId} data-testid="stale-plan" className="text-sm text-ink-soft">

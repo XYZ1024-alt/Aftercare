@@ -56,23 +56,23 @@ type Words = Readonly<Record<string, readonly [Tone, string]>>;
 
 const HEALTH: Words = {
   ready: ['mint', '就绪'],
-  degraded: ['apricot', '可用但有降级'],
+  degraded: ['apricot', '降级运行'],
   not_ready: ['rose', '未就绪'],
 };
-const DATABASE: Words = { ok: ['mint', '可连接'], unavailable: ['rose', '不可用'] };
+const DATABASE: Words = { ok: ['mint', '已连接'], unavailable: ['rose', '不可用'] };
 const SCHEMA: Words = {
   current: ['mint', '与代码一致'],
-  behind: ['apricot', '落后于代码，需要迁移'],
-  ahead: ['apricot', '比代码新'],
+  behind: ['apricot', '落后于代码，需执行迁移'],
+  ahead: ['apricot', '领先于代码'],
 };
 const DEPLOYMENT: Words = {
   ready: ['mint', '正常'],
-  restore_hold: ['apricot', '恢复保持中：旧租约与批准已禁用'],
-  unbound: ['rose', '未绑定：这是一个未围栏的恢复副本'],
+  restore_hold: ['apricot', '恢复保护中（旧租约与批准已失效）'],
+  unbound: ['rose', '未绑定（未启用隔离围栏的恢复副本）'],
 };
 const WORKER: Words = {
-  active: ['mint', '在工作'],
-  stalled: ['rose', '停滞：心跳超时，后台任务没有推进'],
+  active: ['mint', '运行中'],
+  stalled: ['rose', '已停滞（心跳超时，后台任务未推进）'],
   stopped: ['apricot', '已停止'],
   absent: ['apricot', '从未启动'],
 };
@@ -80,7 +80,7 @@ const MODEL: Words = {
   configured: ['mint', '已配置'],
   test_mode: ['apricot', '测试模式（脚本化测试替身）'],
   unconfigured: ['neutral', '未配置'],
-  failing: ['rose', '最近的请求失败'],
+  failing: ['rose', '近期请求失败'],
 };
 const RETENTION_KIND: Readonly<Record<string, string>> = {
   agent_events: '运行事件',
@@ -181,7 +181,7 @@ function AutonomyCard() {
         </div>
 
         {charters.length === 0 ? (
-          <Empty>没有生效的章程。</Empty>
+          <Empty>暂无生效中的自主章程</Empty>
         ) : (
           <ul className={ROWS_CLASS}>
             {charters.map((charter) => (
@@ -213,7 +213,7 @@ function AutonomyCard() {
               <input
                 className={INPUT_CLASS}
                 value={reason}
-                placeholder="记录这次切换的原因"
+                placeholder="请填写本次切换的原因"
                 onChange={(event) => setReason(event.target.value)}
               />
             </Field>
@@ -294,7 +294,7 @@ export default function AdminPage() {
             <MetricCard
               tone="apricot"
               icon={Hourglass}
-              label="未结束的运行"
+              label="进行中的运行"
               value={resources.agentRuns.active}
               unit="个"
               foot={`已结束 ${resources.agentRuns.ended} 个，有效租约 ${resources.activeLeases} 个`}
@@ -304,7 +304,7 @@ export default function AdminPage() {
             <MetricCard
               tone="mint"
               icon={GitBranch}
-              label="有数据的沙箱分支"
+              label="活跃沙箱分支"
               value={resources.branches.withData}
               unit="个"
               foot={`已清理 ${resources.branches.dataRemoved} 个`}
@@ -314,7 +314,7 @@ export default function AdminPage() {
             <MetricCard
               tone="violet"
               icon={Camera}
-              label="有数据的快照"
+              label="有效快照"
               value={resources.snapshots.published}
               unit="个"
               foot={`已清理 ${resources.snapshots.dropped} 个`}
@@ -346,7 +346,7 @@ export default function AdminPage() {
           </Card>
           <Card
             title="模型连接"
-            description="凭证只保存在服务端进程环境，不在此显示。"
+            description="凭证仅保存在服务端环境变量中，不在此展示。"
             icon={Cpu}
             tone="violet"
           >
@@ -357,7 +357,7 @@ export default function AdminPage() {
                   {model.mode === 'live'
                     ? '真实模型'
                     : model.mode === 'scripted_test'
-                      ? '测试模式（脚本化测试替身，不是模型）'
+                      ? '测试模式（由脚本化测试替身驱动，非真实模型）'
                       : '未配置'}
                 </dd>
               </div>
@@ -388,7 +388,7 @@ export default function AdminPage() {
         <div className="grid grid-cols-2 gap-4 max-lg:grid-cols-1">
           <Card title="Worker" icon={HeartPulse} tone="mint">
             {workers.length === 0 ? (
-              <Empty>没有 Worker 心跳记录。</Empty>
+              <Empty>暂无 Worker 心跳记录</Empty>
             ) : (
               <ul className={ROWS_CLASS}>
                 {workers.map((worker) => (
@@ -430,7 +430,7 @@ export default function AdminPage() {
         <Card title="备份恢复" icon={ArchiveRestore} tone="apricot">
           <div className="space-y-4 text-sm">
             {deployment.lastFence === null ? (
-              <p className="text-muted">数据库没有恢复围栏记录。</p>
+              <p className="text-muted">暂无数据库恢复围栏记录</p>
             ) : (
               <p data-testid="fence" className="rounded-field bg-canvas p-4 text-ink-soft">
                 最近一次恢复围栏：{when(deployment.lastFence.fencedAt)}（
@@ -462,7 +462,7 @@ export default function AdminPage() {
             </div>
             {verify.result?.ok === true && (
               <Notice tone={verify.result.value.ok ? 'mint' : 'rose'} testId="verify-result">
-                {verify.result.value.ok ? '全部记录与摘要一致。' : '发现不一致的记录。'}
+                {verify.result.value.ok ? '全部记录与摘要校验一致' : '发现不一致的记录'}
                 <Technical label="核验结果">
                   <Json value={verify.result.value} />
                 </Technical>
@@ -482,7 +482,7 @@ export default function AdminPage() {
 
         <Card
           title="保留与清理"
-          description="清理是物理删除数据，登记记录保留；只清理已结束且不再被引用的案例数据；记录“已失效”不构成清理理由；已下载的副本不受影响。"
+          description="清理将物理删除底层数据（仅保留审计登记），且仅针对已结束、无引用的案例。数据“已失效”不触发清理；已下载的本地副本不受影响。"
           icon={Trash2}
           tone="rose"
           testId="retention"
@@ -492,7 +492,7 @@ export default function AdminPage() {
               <tr>
                 <th>类别</th>
                 <th>保留期</th>
-                <th className="num">现在可清理</th>
+                <th className="num">当前可清理</th>
               </tr>
             </thead>
             <tbody>
@@ -515,7 +515,7 @@ export default function AdminPage() {
               onClick={() => void retention.run({ apply: false })}
             >
               <ScanSearch aria-hidden className="size-4" />
-              演练（不删除）
+              预演（仅统计，不删除）
             </Button>
             <Button
               tone="danger"
@@ -537,7 +537,7 @@ export default function AdminPage() {
             open={confirmApply}
             onClose={() => setConfirmApply(false)}
             title={`物理删除 ${candidates} 项数据？`}
-            warning="删除后无法恢复。登记记录保留；已下载的副本不受影响。"
+            warning="删除后无法恢复。审计登记记录将保留，已下载的本地副本不受影响。"
             confirmLabel="执行清理"
             tone="danger"
             onConfirm={() => void retention.run({ apply: true })}

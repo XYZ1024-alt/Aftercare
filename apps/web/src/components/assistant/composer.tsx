@@ -29,7 +29,7 @@ export function Composer() {
     >
       {unconfigured && (
         <div className="mb-3">
-          <Notice tone="neutral">未配置模型，不能对话。</Notice>
+          <Notice tone="neutral">尚未配置模型服务，暂无法发起对话。</Notice>
         </div>
       )}
       <div className="rounded-field border border-transparent bg-canvas p-2 transition-[background-color,border-color,box-shadow] duration-(--duration-quick) ease-smooth-out focus-within:border-sky/60 focus-within:bg-card focus-within:ring-4 focus-within:ring-sky/15">
@@ -67,7 +67,7 @@ export function Composer() {
       <p className="mt-2 text-xs text-muted">Enter 发送，Shift+Enter 换行</p>
       {modelMode === 'scripted_test' && (
         <p className="mt-1 text-xs text-muted">
-          测试模式：由脚本化测试替身回复，消息会作为事故描述创建案例；以“列出”开头则列出案例。
+          测试模式：由脚本化测试替身自动回复。发送消息将创建新案例；以“列出”开头可查看案例列表。
         </p>
       )}
     </form>
