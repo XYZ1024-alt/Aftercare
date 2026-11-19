@@ -14,7 +14,11 @@ if [ "$(id -u)" != "0" ]; then
 fi
 
 ROOT="${AFTERCARE_STUDIO_ROOT:-/mnt/workspace/aftercare}"
-PGDATA="${PGDATA:-${ROOT}/pgdata}"
+# The official postgres image exports PGDATA=/var/lib/postgresql/data, which is
+# NOT on the persistent volume. Ignore that value and keep the catalog on the
+# mounted /mnt/workspace, or every redeploy would start from an empty database.
+PGDATA="${AFTERCARE_PGDATA:-${ROOT}/pgdata}"
+export PGDATA
 export AFTERCARE_DATA_DIR="${AFTERCARE_DATA_DIR:-${ROOT}/data}"
 export AFTERCARE_DB_HOST="${AFTERCARE_DB_HOST:-127.0.0.1}"
 export AFTERCARE_DB_PORT="${AFTERCARE_DB_PORT:-5432}"
