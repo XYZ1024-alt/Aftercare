@@ -264,6 +264,7 @@ describe('text in the records that reads like an instruction', () => {
         parallelToolCalls: 'omit',
         temperature: null,
         pricing: null,
+        catalog: { url: 'https://models.dev/api.json', providerId: null, modelId: 'compromised' },
       },
       send,
     );

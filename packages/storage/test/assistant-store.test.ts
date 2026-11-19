@@ -4,7 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { type AssistantStore, createAssistantStore } from '../src/index.ts';
 import { openTestDatabase, PRINCIPAL, type TestDatabase } from './support.ts';
 
-// The assistant store (0025): a conversation belongs to the principal who
+// The assistant store (0026): a conversation belongs to the principal who
 // started it, stored message by message under a turn lease. Every test uses a
 // conversation id of its own, so the tests of this file cannot see each other.
 
@@ -49,7 +49,7 @@ async function expireLease(conversationId: string): Promise<void> {
   );
 }
 
-describe('assistant store (0025)', () => {
+describe('assistant store (0026)', () => {
   it('creates the conversation on its first turn and titles it with the message', async () => {
     const conversationId = randomUUID();
     const content = '  First   question of the case\n\nand its  continuation  ';
@@ -115,6 +115,7 @@ describe('assistant store (0025)', () => {
           role: 'assistant',
           content: 'Reading the case.',
           toolCalls: [{ id: 'call-1', name: 'read_case', argumentsText: '{"caseId":"x"}' }],
+          ui: null,
         },
         leaseSeconds: 180,
       }),
@@ -145,7 +146,7 @@ describe('assistant store (0025)', () => {
         principal: PRINCIPAL,
         conversationId,
         turnId,
-        message: { role: 'assistant', content: 'The case is in process.', toolCalls: [] },
+        message: { role: 'assistant', content: 'The case is in process.', toolCalls: [], ui: null },
         leaseSeconds: 180,
       }),
     );
@@ -248,7 +249,7 @@ describe('assistant store (0025)', () => {
           principal: PRINCIPAL,
           conversationId,
           turnId,
-          message: { role: 'assistant', content: null, toolCalls: [] },
+          message: { role: 'assistant', content: null, toolCalls: [], ui: null },
           leaseSeconds: 180,
         }),
       ).code,
@@ -293,7 +294,7 @@ describe('assistant store (0025)', () => {
         principal: PRINCIPAL,
         conversationId,
         turnId,
-        message: { role: 'assistant', content: 'Answer', toolCalls: [] },
+        message: { role: 'assistant', content: 'Answer', toolCalls: [], ui: null },
         leaseSeconds: 180,
       }),
     );
@@ -319,7 +320,7 @@ describe('assistant store (0025)', () => {
         principal: PRINCIPAL,
         conversationId: renewed,
         turnId: renewedTurn,
-        message: { role: 'assistant', content: 'Answer', toolCalls: [] },
+        message: { role: 'assistant', content: 'Answer', toolCalls: [], ui: null },
         leaseSeconds: 180,
       }),
     );
@@ -356,7 +357,7 @@ describe('assistant store (0025)', () => {
           principal: PRINCIPAL,
           conversationId: takenOver,
           turnId: oldTurn,
-          message: { role: 'assistant', content: 'late answer', toolCalls: [] },
+          message: { role: 'assistant', content: 'late answer', toolCalls: [], ui: null },
           leaseSeconds: 180,
         }),
       ).code,
@@ -368,11 +369,100 @@ describe('assistant store (0025)', () => {
           principal: PRINCIPAL,
           conversationId: takenOver,
           turnId: newTurn,
-          message: { role: 'assistant', content: 'answer', toolCalls: [] },
+          message: { role: 'assistant', content: 'answer', toolCalls: [], ui: null },
           leaseSeconds: 180,
         }),
       ).seq,
     ).toBe(3);
+  });
+
+  it('renews the lease of the turn that still holds the conversation', async () => {
+    const conversationId = randomUUID();
+    const turnId = randomUUID();
+    stored(
+      await store.beginTurn({
+        principal: PRINCIPAL,
+        conversationId,
+        turnId,
+        content: 'Question',
+        leaseSeconds: 1,
+      }),
+    );
+    // The lease ran out and nobody took the conversation over: the turn that
+    // holds it stays the holder and may renew without writing a message.
+    await expireLease(conversationId);
+    expect(
+      await store.renewTurn({ principal: PRINCIPAL, conversationId, turnId, leaseSeconds: 180 }),
+    ).toBe(true);
+    expect(await store.read(PRINCIPAL, conversationId)).toMatchObject({ running: true });
+
+    // A turn that does not hold the conversation renews nothing, nor does
+    // another principal; neither call takes the lease away from the holder.
+    expect(
+      await store.renewTurn({
+        principal: PRINCIPAL,
+        conversationId,
+        turnId: randomUUID(),
+        leaseSeconds: 180,
+      }),
+    ).toBe(false);
+    expect(
+      await store.renewTurn({
+        principal: OTHER_PRINCIPAL,
+        conversationId,
+        turnId,
+        leaseSeconds: 180,
+      }),
+    ).toBe(false);
+    expect(await store.read(PRINCIPAL, conversationId)).toMatchObject({ running: true });
+
+    // An ended turn is no longer the holder either.
+    await store.endTurn({ principal: PRINCIPAL, conversationId, turnId });
+    expect(
+      await store.renewTurn({ principal: PRINCIPAL, conversationId, turnId, leaseSeconds: 180 }),
+    ).toBe(false);
+    expect(await store.read(PRINCIPAL, conversationId)).toMatchObject({ running: false });
+  });
+
+  it('renews nothing after another turn took the conversation over', async () => {
+    const conversationId = randomUUID();
+    const oldTurn = randomUUID();
+    stored(
+      await store.beginTurn({
+        principal: PRINCIPAL,
+        conversationId,
+        turnId: oldTurn,
+        content: 'Question',
+        leaseSeconds: 1,
+      }),
+    );
+    await expireLease(conversationId);
+    const newTurn = randomUUID();
+    stored(
+      await store.beginTurn({
+        principal: PRINCIPAL,
+        conversationId,
+        turnId: newTurn,
+        content: 'Taken over',
+        leaseSeconds: 180,
+      }),
+    );
+    expect(
+      await store.renewTurn({
+        principal: PRINCIPAL,
+        conversationId,
+        turnId: oldTurn,
+        leaseSeconds: 180,
+      }),
+    ).toBe(false);
+    expect(
+      await store.renewTurn({
+        principal: PRINCIPAL,
+        conversationId,
+        turnId: newTurn,
+        leaseSeconds: 180,
+      }),
+    ).toBe(true);
   });
 
   it('refuses a message that is not one a turn produces', async () => {
@@ -413,7 +503,7 @@ describe('assistant store (0025)', () => {
     ).toBe('invalid_request');
   });
 
-  it('takes no new turn in a conversation that reached 2000 messages', async () => {
+  it('takes another turn beyond the message count the old ceiling stopped at', async () => {
     const conversationId = randomUUID();
     const turnId = randomUUID();
     stored(
@@ -426,56 +516,38 @@ describe('assistant store (0025)', () => {
       }),
     );
     await store.endTurn({ principal: PRINCIPAL, conversationId, turnId });
-    await db.migratorPool.query(
-      `UPDATE aftercare_control.assistant_conversations
-          SET message_count = 2000
-        WHERE conversation_id = $1`,
-      [conversationId],
-    );
-    expect(
-      refused(
-        await store.beginTurn({
-          principal: PRINCIPAL,
-          conversationId,
-          turnId: randomUUID(),
-          content: 'One more question',
-          leaseSeconds: 180,
-        }),
-      ).code,
-    ).toBe('conversation_full');
-    expect(await store.read(PRINCIPAL, conversationId)).toMatchObject({ messageCount: 2000 });
-  });
-
-  it('tells the turn that filled the last room of a conversation that it is full', async () => {
-    const conversationId = randomUUID();
-    const turnId = randomUUID();
-    stored(
-      await store.beginTurn({
-        principal: PRINCIPAL,
-        conversationId,
-        turnId,
-        content: 'Question',
-        leaseSeconds: 180,
-      }),
-    );
-    // The turn began below the start limit and wrote the last message of the hard limit.
+    // 0025 stopped a new turn at 2000 messages and an append at 2100; 0026 has no
+    // ceiling, so both go on from whatever the conversation had reached.
     await db.migratorPool.query(
       `UPDATE aftercare_control.assistant_conversations
           SET message_count = 2100
         WHERE conversation_id = $1`,
       [conversationId],
     );
+    const nextTurn = randomUUID();
     expect(
-      refused(
+      stored(
+        await store.beginTurn({
+          principal: PRINCIPAL,
+          conversationId,
+          turnId: nextTurn,
+          content: 'One more question',
+          leaseSeconds: 180,
+        }),
+      ).seq,
+    ).toBe(2101);
+    expect(
+      stored(
         await store.append({
           principal: PRINCIPAL,
           conversationId,
-          turnId,
-          message: { role: 'assistant', content: 'One more', toolCalls: [] },
+          turnId: nextTurn,
+          message: { role: 'assistant', content: 'One more answer', toolCalls: [], ui: null },
           leaseSeconds: 180,
         }),
-      ).code,
-    ).toBe('conversation_full');
+      ).seq,
+    ).toBe(2102);
+    expect(await store.read(PRINCIPAL, conversationId)).toMatchObject({ messageCount: 2102 });
   });
 
   it('removes a conversation only while no turn holds it', async () => {

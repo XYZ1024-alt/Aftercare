@@ -85,6 +85,7 @@ const STATUS_BY_CODE: Readonly<Record<string, number>> = {
   not_found: 404,
   too_many_streams: 429,
   database_unavailable: 503,
+  model_limits_unavailable: 503,
   internal_error: 500,
 };
 const statusOf = (code: string): number => STATUS_BY_CODE[code] ?? 409;
@@ -566,6 +567,20 @@ export function createHttpApi(
         'case content will be sent to the configured model service; this has to be acknowledged before the assistant sees it',
       );
     }
+    // A turn sizes its context window and its output by the limits of the model
+    // the catalog resolved. There is no built-in fallback: a turn whose limits
+    // are unknown is refused before its stream starts, not run on made-up ones.
+    const limits = await model.catalog.limits();
+    if (!limits.ok) {
+      logger.warn('console.assistant_limits_unavailable', {
+        principal: auth.session.principal,
+        conversationId,
+        reason: limits.reason,
+        message: limits.message,
+      });
+      metrics.count('console.assistant.limits_unavailable');
+      return refused('model_limits_unavailable', limits.message);
+    }
     const abort = new AbortController();
     if (request.signal.aborted) {
       abort.abort();
@@ -575,7 +590,8 @@ export function createHttpApi(
     const started = await startAssistantTurn({
       context,
       env,
-      model,
+      model: model.adapter,
+      limits: limits.limits,
       session: auth.session,
       actions: actionsOf(auth.session),
       conversationId,

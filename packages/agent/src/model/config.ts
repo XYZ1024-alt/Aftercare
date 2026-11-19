@@ -37,6 +37,16 @@ const modelEnvironmentSchema = z.object({
     .string()
     .regex(/^[A-Z]{3}$/)
     .default('USD'),
+  /**
+   * The public models.dev catalogue. The context window and the output limit
+   * are read from the models.dev entry of this model, because the
+   * chat-completions service reports neither.
+   */
+  AFTERCARE_MODELS_DEV_URL: z.url({ protocol: /^https?$/ }).default('https://models.dev/api.json'),
+  /** models.dev provider id, when the host of the base URL does not identify it. */
+  AFTERCARE_MODEL_CATALOG_PROVIDER: z.string().min(1).max(100).optional(),
+  /** models.dev model id, when it differs from AFTERCARE_MODEL_NAME. */
+  AFTERCARE_MODEL_CATALOG_MODEL: z.string().min(1).max(200).optional(),
 });
 
 export interface ModelPricing {
@@ -54,6 +64,15 @@ export interface ModelConfig {
   readonly parallelToolCalls: 'omit' | 'disable';
   readonly temperature: number | null;
   readonly pricing: ModelPricing | null;
+  /**
+   * The models.dev entry of this model. It supplies the context window and the
+   * output limit, which the chat-completions service does not report.
+   */
+  readonly catalog: {
+    readonly url: string;
+    readonly providerId: string | null;
+    readonly modelId: string;
+  };
 }
 
 export const MODEL_ENVIRONMENT_VARIABLES = [
@@ -92,5 +111,10 @@ export function readModelConfig(env: NodeJS.ProcessEnv): ModelConfig {
             outputPerMillionTokens: output,
             currency: data.AFTERCARE_MODEL_PRICE_CURRENCY,
           },
+    catalog: {
+      url: data.AFTERCARE_MODELS_DEV_URL,
+      providerId: data.AFTERCARE_MODEL_CATALOG_PROVIDER ?? null,
+      modelId: data.AFTERCARE_MODEL_CATALOG_MODEL ?? data.AFTERCARE_MODEL_NAME,
+    },
   };
 }

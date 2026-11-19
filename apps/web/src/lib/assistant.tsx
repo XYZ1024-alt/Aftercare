@@ -1,11 +1,14 @@
 'use client';
 
-import type {
-  AssistantConversation,
-  AssistantConversationSummary,
-  AssistantEntry,
-  AssistantStreamEvent,
-  Refusal,
+import {
+  type AssistantConversation,
+  type AssistantConversationSummary,
+  type AssistantEntry,
+  type AssistantStreamEvent,
+  type CaseTabId,
+  extractAssistantUi,
+  type Refusal,
+  type TurnState,
 } from '@aftercare/console/client';
 import {
   createContext,
@@ -24,8 +27,10 @@ import { useSession } from './session.tsx';
 
 // A conversation with the console assistant is stored in the database, message
 // by message: the page reads it back by id instead of keeping it. A turn is
-// posted as NDJSON, and every line is a message the server has already stored:
+// posted as NDJSON, and every entry is a message the server has already stored:
 // what the page shows while the turn runs is the record, not a local guess.
+// The preview frames are the one exception: they carry the answer being
+// generated and are dropped as soon as the stored entry of their step arrives.
 
 const CONVERSATIONS_KEY = '/api/assistant/conversations';
 /** A conversation another page is running into is read again at this pace until that turn ends. */
@@ -37,6 +42,22 @@ const NETWORK_REFUSAL: Refusal = {
   recovery: 'none',
   detail: {},
 };
+
+/** The model answer being generated; not stored, and replaced by the entry of its step. */
+export interface AssistantPreview {
+  readonly step: number;
+  readonly attempt: number;
+  readonly text: string;
+  /** repairing: the reply failed validation and the model is correcting it; fallback: it could not. */
+  readonly phase: 'streaming' | 'repairing' | 'fallback';
+}
+
+/** The case panel opened beside the conversation. */
+export interface AssistantDrawer {
+  readonly caseId: string;
+  /** null: the urgent tab of the case. */
+  readonly tab: CaseTabId | null;
+}
 
 export interface AssistantState {
   /** Null: a new conversation, nothing stored yet. */
@@ -65,8 +86,15 @@ export interface AssistantState {
   readonly selection: number;
   /** Cases of every tool result, newest first, without repeats. */
   readonly followed: readonly string[];
-  /** The case of the newest tool result whose name is not list_cases. */
-  readonly latestCaseId: string | null;
+  /** The model answer being generated, or null when nothing is streaming. */
+  readonly preview: AssistantPreview | null;
+  /** The state of the newest stored reply of the conversation, or null without one. */
+  readonly latestState: TurnState | null;
+  /** The temporary case panel, or null when it is closed. */
+  readonly drawer: AssistantDrawer | null;
+  /** Opens the case panel on a tab; no tab means the urgent one. */
+  readonly openCase: (caseId: string, tab?: CaseTabId) => void;
+  readonly closeDrawer: () => void;
 }
 
 const AssistantContext = createContext<AssistantState | null>(null);
@@ -82,7 +110,7 @@ const mergeEntries = (
   return [...bySeq.values()].sort((left, right) => left.seq - right.seq);
 };
 
-/** The cases the conversation touched, newest first, as the workspace follows them. */
+/** The cases the conversation touched, newest first, as the conversation follows them. */
 const followedCases = (entries: readonly AssistantEntry[]): readonly string[] => {
   const seen = new Set<string>();
   const ids: string[] = [];
@@ -96,17 +124,6 @@ const followedCases = (entries: readonly AssistantEntry[]): readonly string[] =>
     }
   }
   return ids;
-};
-
-/** list_cases follows every open case; the workspace shows a single case, so it is not a lead. */
-const latestCase = (entries: readonly AssistantEntry[]): string | null => {
-  for (let index = entries.length - 1; index >= 0; index -= 1) {
-    const message = entries[index]?.message;
-    if (message?.role !== 'tool' || message.name === 'list_cases') continue;
-    const [caseId] = message.caseIds;
-    if (caseId !== undefined) return caseId;
-  }
-  return null;
 };
 
 /** A read of the stored conversation failed: say why instead of showing nothing. */
@@ -139,6 +156,8 @@ export function AssistantProvider({
   const [pendingText, setPendingText] = useState<string | null>(null);
   const [turnRefusal, setTurnRefusal] = useState<Refusal | null>(null);
   const [draft, setDraft] = useState('');
+  const [preview, setPreview] = useState<AssistantPreview | null>(null);
+  const [drawer, setDrawer] = useState<AssistantDrawer | null>(null);
   const [selection, setSelection] = useState(0);
   const inFlight = useRef(false);
   const abort = useRef<AbortController | null>(null);
@@ -155,7 +174,17 @@ export function AssistantProvider({
   const runningElsewhere = data?.running === true && !pending;
   const entries = useMemo(() => mergeEntries(data?.entries ?? [], streamed), [data, streamed]);
   const followed = useMemo(() => followedCases(entries), [entries]);
-  const latestCaseId = useMemo(() => latestCase(entries), [entries]);
+  // The newest reply that the server validated carries the state the bar shows:
+  // an earlier turn keeps its own snapshot, and a preview never overrides it.
+  const latestState = useMemo((): TurnState | null => {
+    for (let index = entries.length - 1; index >= 0; index -= 1) {
+      const message = entries[index]?.message;
+      if (message?.role !== 'assistant' || message.ui === null) continue;
+      if (message.content === null) return null;
+      return extractAssistantUi(message.content)?.state ?? null;
+    }
+    return null;
+  }, [entries]);
 
   // The address names the conversation so a reload opens it; the page is not
   // navigated, the record is read by the new id.
@@ -173,7 +202,16 @@ export function AssistantProvider({
     setStoredId(next);
     setStreamed([]);
     setTurnRefusal(null);
+    setDrawer(null);
     setSelection((current) => current + 1);
+  }, []);
+
+  const openCase = useCallback((caseId: string, tab?: CaseTabId): void => {
+    setDrawer({ caseId, tab: tab ?? null });
+  }, []);
+
+  const closeDrawer = useCallback((): void => {
+    setDrawer(null);
   }, []);
 
   const stop = useCallback((): void => {
@@ -196,6 +234,7 @@ export function AssistantProvider({
       setPendingText(content);
       setDraft('');
       setTurnRefusal(null);
+      setPreview(null);
       let accepted = false;
       let readBack = false;
       const apply = (line: string): boolean => {
@@ -207,12 +246,39 @@ export function AssistantProvider({
           const { entry } = event;
           streamedSeq.current = Math.max(streamedSeq.current, entry.seq);
           setStreamed((current) => [...current, entry]);
+          // The stored message replaces whatever the model was generating for
+          // this step, including the note written beside its tool calls.
+          if (entry.message.role === 'assistant') setPreview(null);
           // The stored user message replaced the optimistic one.
           if (entry.message.role === 'user') setPendingText(null);
           // A tool opened, read or acted on cases: the list names them now, not at its next poll.
           if (entry.message.role === 'tool' && entry.message.caseIds.length > 0) {
             void mutate(CASES_KEY);
           }
+        } else if (event.type === 'preview_delta') {
+          setPreview((current) =>
+            current !== null && current.step === event.step && current.attempt === event.attempt
+              ? { ...current, text: current.text + event.delta, phase: 'streaming' }
+              : {
+                  step: event.step,
+                  attempt: event.attempt,
+                  text: event.delta,
+                  phase: 'streaming',
+                },
+          );
+        } else if (event.type === 'preview_reset') {
+          // A step that only called tools has nothing to show; a repair or a
+          // fallback keeps its phase, so the transcript can say what it is doing.
+          setPreview(
+            event.reason === 'tool_calls'
+              ? null
+              : {
+                  step: event.step,
+                  attempt: event.attempt,
+                  text: '',
+                  phase: event.reason,
+                },
+          );
         } else {
           setTurnRefusal(event.refusal);
         }
@@ -277,6 +343,7 @@ export function AssistantProvider({
         inFlight.current = false;
         setPending(false);
         setPendingText(null);
+        setPreview(null);
         if (created && accepted) {
           // The first turn created the conversation on the server: read it once
           // into the cache, then the streamed entries can be dropped.
@@ -317,7 +384,11 @@ export function AssistantProvider({
     select,
     selection,
     followed,
-    latestCaseId,
+    preview,
+    latestState,
+    drawer,
+    openCase,
+    closeDrawer,
   };
   return <AssistantContext value={state}>{children}</AssistantContext>;
 }

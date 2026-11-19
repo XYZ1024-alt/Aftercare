@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { ModelAdapter } from '@aftercare/agent';
+import type { ModelLimits, StreamingModelAdapter } from '@aftercare/agent';
 import type { AssistantOutcome, OperatorSession } from '@aftercare/contracts';
 import type { ConsoleActions } from '../actions.ts';
 import type { ConsoleContext } from '../context.ts';
@@ -79,7 +79,9 @@ export interface AssistantTurnStart {
 export interface StartAssistantTurn {
   readonly context: ConsoleContext;
   readonly env: NodeJS.ProcessEnv;
-  readonly model: ModelAdapter;
+  readonly model: StreamingModelAdapter;
+  /** The limits the catalog resolves for that model: the turn sizes its window and its output with them. */
+  readonly limits: ModelLimits;
   readonly session: OperatorSession;
   readonly actions: ConsoleActions;
   /** The id the browser chose; the first turn of a conversation creates it. */
@@ -144,6 +146,44 @@ async function* turnEvents(
 ): AsyncGenerator<AssistantStreamEvent> {
   const { context, session, conversationId, turnId } = input;
   const { principal } = session;
+  // A turn can outlast the lease it took on its conversation: the model answers
+  // token by token, tool results are written in between, and the turn has no
+  // step limit. The lease is renewed at a third of its length, so a turn that is
+  // still alive keeps its conversation and no other turn can take it over
+  // underneath.
+  const lost = new AbortController();
+  const renewLease = async (): Promise<void> => {
+    try {
+      const held = await context.assistant.renewTurn({
+        principal,
+        conversationId,
+        turnId,
+        leaseSeconds: input.leaseSeconds,
+      });
+      if (!held) {
+        // Another turn holds the conversation now, so nothing this one wrote
+        // would be accepted; it stops instead of producing refused writes.
+        context.logger.info('console.assistant_turn_lease_lost', {
+          principal,
+          conversationId,
+          turnId,
+        });
+        lost.abort();
+      }
+    } catch (error) {
+      // A renewal that failed says nothing about who holds the conversation:
+      // the next append finds out. The turn goes on and only the lease runs
+      // short, so this is logged and counted but not turned into a refusal.
+      const failure = error instanceof Error ? error : new Error(String(error));
+      context.logger.error(
+        'console.assistant_lease_renew_failed',
+        { principal, conversationId, turnId },
+        failure,
+      );
+      context.metrics.count('console.assistant.lease_renew_failed');
+    }
+  };
+  const renewal = setInterval(() => void renewLease(), Math.floor(input.leaseSeconds / 3) * 1000);
   try {
     // Read after the user message was stored: the history ends with this turn's message.
     const conversation = await context.assistant.read(principal, conversationId);
@@ -158,11 +198,13 @@ async function* turnEvents(
       actions: input.actions,
       acknowledgeDataEgress: input.acknowledgeDataEgress,
       turnId,
-      signal: input.signal,
+      // The browser stopping the turn and the lease being lost both end it.
+      signal: AbortSignal.any([input.signal, lost.signal]),
     };
     yield* runAssistantTurn({
       scope,
       model: input.model,
+      limits: input.limits,
       history: conversation.entries.map((entry) => entry.message),
       record: (message) =>
         context.assistant.append({
@@ -174,6 +216,9 @@ async function* turnEvents(
         }),
     });
   } finally {
+    // The renewal stops before the turn is released, so a late renewal cannot
+    // hold a conversation that this turn already gave back.
+    clearInterval(renewal);
     try {
       await context.assistant.endTurn({ principal, conversationId, turnId });
       context.logger.info('console.assistant_turn_ended', { principal, conversationId, turnId });

@@ -5,3 +5,5 @@ packages:
 allowBuilds:
   esbuild: true
   sharp: true
+  # Its only install script is opt-out usage telemetry.
+  "@openuidev/lang-core": false

@@ -137,6 +137,7 @@ export function createScriptedModel(steps: readonly ScriptStep[]): ScriptedModel
         ok: true,
         response: {
           text: reply.text ?? null,
+          reasoning: null,
           toolCalls: calls.map((call, index) => ({
             // Deliberately reused across answers: the Runtime must not rely on service ids being globally unique.
             id: `call_${index}`,

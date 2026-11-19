@@ -246,13 +246,14 @@ describe('published snapshot: who can do what', () => {
       ['approve_promotion', ['aftercare_runtime']],
       // The assistant entries (0025): a conversation is the principal's, stored
       // message by message under a turn lease. The two json renderers are plain
-      // helpers granted to nobody.
+      // helpers granted to nobody. A running turn renews its lease (0026).
       ['assistant_append', ['aftercare_runtime']],
       ['assistant_begin_turn', ['aftercare_runtime']],
       ['assistant_delete_conversation', ['aftercare_runtime']],
       ['assistant_end_turn', ['aftercare_runtime']],
       ['assistant_list_conversations', ['aftercare_runtime']],
       ['assistant_read_conversation', ['aftercare_runtime']],
+      ['assistant_renew_turn', ['aftercare_runtime']],
       ['autonomy_admit_intake', ['aftercare_runtime']],
       ['autonomy_enroll', ['aftercare_runtime']],
       ['autonomy_record_decision', ['aftercare_runtime']],

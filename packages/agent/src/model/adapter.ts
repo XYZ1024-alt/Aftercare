@@ -28,6 +28,13 @@ export type ModelMessage =
       readonly role: 'assistant';
       readonly content: string | null;
       readonly toolCalls: readonly ModelToolCall[];
+      /**
+       * Sent back as reasoning_content, when present. A service in thinking
+       * mode rejects the next request of the same turn unless every assistant
+       * message that carried tool calls repeats the reasoning it was answered
+       * with; this field is that echo and nothing else.
+       */
+      readonly reasoning?: string;
     }
   | { readonly role: 'tool'; readonly toolCallId: string; readonly content: string };
 
@@ -48,6 +55,12 @@ export interface ModelUsage {
 export interface ModelResponse {
   /** A short visible note of the model, if it wrote one. Never a hidden chain of thought. */
   readonly text: string | null;
+  /**
+   * The reasoning_content a service in thinking mode returns with the answer.
+   * Kept only to be sent back in a later request of the same turn: it is never
+   * shown and never stored. null: the service returned none.
+   */
+  readonly reasoning: string | null;
   readonly toolCalls: readonly ModelToolCall[];
   readonly finishReason: FinishReason;
   /** null: the service reported no usage. It is then unknown, never estimated. */
@@ -95,9 +108,11 @@ export interface ModelDescription {
 }
 
 /**
- * One bounded, non-streaming decision call. An adapter never throws for a
- * failure of the service: timeouts, refusals and unreadable answers are
- * returned as a ModelFailure, with no credential in any message.
+ * The model boundary of the worker. complete() is the single non-streaming
+ * call the worker uses; the assistant uses stream() instead, which a
+ * StreamingModelAdapter adds. An adapter never throws for a failure of the
+ * service: timeouts, refusals and unreadable answers are returned as a
+ * ModelFailure, with no credential in any message.
  *
  * Minimum capability of a service behind an adapter:
  *   - chat-style messages with system, user, assistant and tool roles;
@@ -112,4 +127,36 @@ export interface ModelDescription {
 export interface ModelAdapter {
   readonly describe: () => ModelDescription;
   readonly complete: (request: ModelRequest) => Promise<ModelOutcome>;
+}
+
+/**
+ * One event of a streamed assistant answer. Text and tool-call starts arrive
+ * in the order the service produced them; the stream then ends with exactly
+ * one done event that carries either the assembled response or the failure.
+ */
+export type ModelStreamEvent =
+  | { readonly type: 'text_delta'; readonly text: string }
+  | { readonly type: 'tool_call_started'; readonly index: number; readonly name: string }
+  | { readonly type: 'done'; readonly outcome: ModelOutcome };
+
+export interface ModelStreamRequest extends ModelRequest {
+  /**
+   * Aborting it stops the read at once. An abort is not a service failure:
+   * the stream ends with a done event for the partial answer received so far.
+   */
+  readonly signal: AbortSignal;
+}
+
+/**
+ * The streaming model boundary of the assistant. stream() never throws for a
+ * failure of the service and always ends with exactly one done event.
+ *
+ * The adapter timeout is an idle timeout while streaming, not a wall-clock
+ * budget: it is the longest wait for the first byte and, after that, the
+ * longest gap between two received bytes. A timeout is a ModelFailure with
+ * an unknown outcome, because the service may still have processed the
+ * request; an abort of request.signal is not a failure.
+ */
+export interface StreamingModelAdapter extends ModelAdapter {
+  readonly stream: (request: ModelStreamRequest) => AsyncGenerator<ModelStreamEvent>;
 }

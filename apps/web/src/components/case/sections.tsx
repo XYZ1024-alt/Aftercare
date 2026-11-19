@@ -1,9 +1,9 @@
 'use client';
 
-import type { CaseView } from '@aftercare/console/client';
+import type { CaseTabId, CaseView } from '@aftercare/console/client';
 import type { ComponentType, ReactNode } from 'react';
 import { SlidingPill, useSlidingPill } from '../ui.tsx';
-import { useCase } from './case-context.tsx';
+import { useCase, useCaseTabScope } from './case-context.tsx';
 import { Execution } from './execution.tsx';
 import { Knowledge } from './knowledge.tsx';
 import { Plans } from './plan.tsx';
@@ -15,7 +15,8 @@ import { Timeline } from './timeline.tsx';
 // assistant conversation: the same tabs, the same signals, the same panels.
 // Neither copy of the page decides anything the other one does not.
 
-export type CaseTab = 'process' | 'questions' | 'evidence' | 'plan' | 'execution' | 'results';
+/** The tabs are the contract's ids: the assistant names its focus tab with the same values. */
+export type CaseTab = CaseTabId;
 
 export interface CaseTabDefinition {
   readonly id: CaseTab;
@@ -92,6 +93,7 @@ export function CaseTabBar({
   readonly compact?: boolean;
 }) {
   const badges = useCaseBadges();
+  const scope = useCaseTabScope();
   const { bar, pill } = useSlidingPill<HTMLDivElement>(tab);
   return (
     <div className="overflow-x-auto pb-1">
@@ -109,11 +111,11 @@ export function CaseTabBar({
               key={id}
               type="button"
               role="tab"
-              id={`tab-${id}`}
+              id={`${scope}-tab-${id}`}
               data-testid={`tab-${id}`}
               data-active={selected}
               aria-selected={selected}
-              aria-controls="case-panel"
+              aria-controls={`${scope}-panel`}
               onClick={() => onSelect(id)}
               className={`relative z-1 inline-flex shrink-0 items-center gap-1.5 rounded-full font-medium transition-colors duration-(--duration-fast) ease-smooth-out ${
                 compact ? 'h-8 px-2.5 text-meta' : 'h-9 px-4 text-sm'
@@ -137,9 +139,15 @@ export function CaseTabBar({
 
 /** The panel of one tab, on the panel surface the tabs control. */
 export function CasePanel({ tab }: { readonly tab: CaseTab }): ReactNode {
+  const scope = useCaseTabScope();
   const Panel = PANELS[tab];
   return (
-    <div role="tabpanel" id="case-panel" aria-labelledby={`tab-${tab}`} className="min-w-0">
+    <div
+      role="tabpanel"
+      id={`${scope}-panel`}
+      aria-labelledby={`${scope}-tab-${tab}`}
+      className="min-w-0"
+    >
       <div key={tab} className="t-enter space-y-5">
         <Panel />
       </div>

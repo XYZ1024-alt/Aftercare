@@ -2,25 +2,100 @@
 
 import { History, Plus } from 'lucide-react';
 import { useSearchParams } from 'next/navigation';
-import { Suspense, useState } from 'react';
+import { Suspense, useMemo, useState } from 'react';
 import { z } from 'zod';
+import { CaseDrawer } from '../../../components/assistant/case-drawer.tsx';
 import { Composer } from '../../../components/assistant/composer.tsx';
 import { ConversationHistory } from '../../../components/assistant/history.tsx';
+import { AgentStateBar } from '../../../components/assistant/state-bar.tsx';
 import { Transcript } from '../../../components/assistant/transcript.tsx';
-import {
-  AttentionBar,
-  CaseWorkspace,
-  WorkspaceProvider,
-} from '../../../components/assistant/workspace.tsx';
+import { CaseLivePoolProvider } from '../../../components/case/case-context.tsx';
 import { Drawer } from '../../../components/overlay.tsx';
-import { Button, Loading, RefusalNote } from '../../../components/ui.tsx';
+import {
+  Button,
+  Loading,
+  RefusalNote,
+  Select,
+  type SelectOption,
+} from '../../../components/ui.tsx';
 import { UntrustedText } from '../../../components/untrusted-text.tsx';
 import { AssistantProvider, useAssistant, useConversations } from '../../../lib/assistant.tsx';
+import { type CaseRow, useCases } from '../../../lib/cases.ts';
+import { STAGE_LABEL, shortId } from '../../../lib/labels.ts';
 
 const CONVERSATION_ID = z.uuid();
 
+const FOLLOWED_GROUP = '本对话';
+const OTHERS_GROUP = '全部案例';
+/** A case is named in a select by what the operator would call it, cut where it stops distinguishing. */
+const TITLE_LIMIT = 60;
+
+const shortTitle = (title: string): string =>
+  title.length > TITLE_LIMIT ? `${title.slice(0, TITLE_LIMIT)}…` : title;
+
+const caseHint = (row: CaseRow): string => {
+  const stage = STAGE_LABEL[row.stage];
+  return row.overview.openQuestions > 0
+    ? `${stage} · ${row.overview.openQuestions} 个问题待回答`
+    : stage;
+};
+
+/** The cases of the conversation first, then the others; a followed case that is still loading says so. */
+const caseOptions = (
+  rows: readonly CaseRow[] | undefined,
+  followed: readonly string[],
+): readonly SelectOption<string>[] => {
+  const known = new Map((rows ?? []).map((row) => [row.overview.caseId, row]));
+  const opened = followed.map((caseId): SelectOption<string> => {
+    const row = known.get(caseId);
+    return row === undefined
+      ? { value: caseId, label: shortId(caseId), hint: '读取中…', group: FOLLOWED_GROUP }
+      : { value: caseId, label: shortTitle(row.title), hint: caseHint(row), group: FOLLOWED_GROUP };
+  });
+  const others = (rows ?? [])
+    .filter((row) => !followed.includes(row.overview.caseId))
+    .map(
+      (row): SelectOption<string> => ({
+        value: row.overview.caseId,
+        label: shortTitle(row.title),
+        hint: caseHint(row),
+        group: OTHERS_GROUP,
+      }),
+    );
+  return [...opened, ...others];
+};
+
+/**
+ * Opens any case in the drawer without leaving the conversation. The control is
+ * a command, not a state: it returns to its placeholder after a choice so the
+ * same case can be opened again.
+ */
+function CasePicker() {
+  const { followed, openCase } = useAssistant();
+  const { rows } = useCases();
+  const [chosen, setChosen] = useState<string | null>(null);
+  const options = useMemo(() => caseOptions(rows, followed), [rows, followed]);
+  return (
+    <div className="w-44 shrink-0 max-sm:w-32">
+      <Select
+        value={chosen}
+        options={options}
+        onChange={(caseId) => {
+          setChosen(null);
+          openCase(caseId);
+        }}
+        aria-label="打开案例"
+        placeholder="打开案例"
+        size="sm"
+        testId="case-picker"
+        disabled={options.length === 0}
+      />
+    </div>
+  );
+}
+
 function AgentLayout() {
-  const { conversationId, pending, refusal, select } = useAssistant();
+  const { conversationId, latestState, pending, refusal, select } = useAssistant();
   const { conversations } = useConversations();
   const [historyOpen, setHistoryOpen] = useState(false);
   const title =
@@ -33,61 +108,54 @@ function AgentLayout() {
           <ConversationHistory />
         </aside>
         <section className="flex min-w-0 flex-1 flex-col rounded-panel bg-card p-5 shadow-soft lg:min-h-0">
-          <header className="mb-3 flex items-center justify-between gap-3">
-            <h1 className="line-clamp-1 min-w-0 flex-1 text-[17px] leading-6 font-medium">
-              <UntrustedText text={title} />
-            </h1>
-            <div className="flex shrink-0 items-center gap-2">
-              <Button size="sm" className="xl:hidden" onClick={() => setHistoryOpen(true)}>
-                <History aria-hidden className="size-3.5" />
-                <span className="max-sm:sr-only">历史对话</span>
-              </Button>
-              {/* From xl on, the history column beside the conversation has this button. */}
-              <Button
-                size="sm"
-                className="xl:hidden"
-                disabled={pending}
-                onClick={() => select(null)}
-              >
-                <Plus aria-hidden className="size-3.5" />
-                <span className="max-sm:sr-only">新对话</span>
-              </Button>
-            </div>
-          </header>
-          <Transcript />
-          <RefusalNote refusal={refusal} />
-          <AttentionBar />
-          <Composer />
+          <div className="mx-auto flex min-h-0 w-full max-w-[920px] flex-1 flex-col">
+            <header className="mb-3 flex flex-wrap items-center justify-between gap-3">
+              <h1 className="line-clamp-1 min-w-0 flex-1 text-[17px] leading-6 font-medium">
+                <UntrustedText text={title} />
+              </h1>
+              <div className="flex shrink-0 items-center gap-2">
+                <CasePicker />
+                <Button size="sm" className="xl:hidden" onClick={() => setHistoryOpen(true)}>
+                  <History aria-hidden className="size-3.5" />
+                  <span className="max-sm:sr-only">历史对话</span>
+                </Button>
+                {/* From xl on, the history column beside the conversation has this button. */}
+                <Button
+                  size="sm"
+                  className="xl:hidden"
+                  disabled={pending}
+                  onClick={() => select(null)}
+                >
+                  <Plus aria-hidden className="size-3.5" />
+                  <span className="max-sm:sr-only">新对话</span>
+                </Button>
+              </div>
+            </header>
+            {latestState !== null && (
+              <div className="sticky top-0 z-10 bg-card pb-3">
+                <AgentStateBar />
+              </div>
+            )}
+            <Transcript />
+            <RefusalNote refusal={refusal} />
+            <Composer />
+          </div>
         </section>
-        <div className="flex shrink-0 flex-col lg:min-h-0 lg:w-[440px] 2xl:w-[500px]">
-          <CaseWorkspace />
-        </div>
       </div>
       <Drawer open={historyOpen} onClose={() => setHistoryOpen(false)} title="历史对话">
         <ConversationHistory titled={false} onPicked={() => setHistoryOpen(false)} />
       </Drawer>
+      <CaseDrawer />
     </>
-  );
-}
-
-/**
- * The workspace starts afresh with every conversation the person opens, and
- * then follows its newest case. The id a new conversation receives on its
- * first turn is no new selection: a case picked before sending stays.
- */
-function AgentWorkspace() {
-  const { selection } = useAssistant();
-  return (
-    <WorkspaceProvider key={selection}>
-      <AgentLayout />
-    </WorkspaceProvider>
   );
 }
 
 function AgentConsole({ conversationId }: { readonly conversationId: string | null }) {
   return (
     <AssistantProvider initialConversationId={conversationId}>
-      <AgentWorkspace />
+      <CaseLivePoolProvider>
+        <AgentLayout />
+      </CaseLivePoolProvider>
     </AssistantProvider>
   );
 }

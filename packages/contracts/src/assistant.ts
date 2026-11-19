@@ -6,13 +6,80 @@ import { instantSchema, jsonObjectSchema } from './wire.ts';
 // as a turn produces them. It records what was said and which tools ran; it
 // grants nothing: every tool still acts as the session's principal through
 // the console entries, which check capability, ownership and state.
+// The final reply of a turn is OpenUI Lang that the server validates before
+// storing it; ui is the metadata that validation produced for that reply.
 
 /** Longest user message of one turn. */
 export const ASSISTANT_MESSAGE_LIMIT = 4000;
 /** Longest title of a conversation: the start of its first user message, whitespace collapsed. */
 export const ASSISTANT_TITLE_LIMIT = 80;
-/** A conversation that holds this many messages takes no new turn: start another one. */
-export const ASSISTANT_CONVERSATION_LIMIT = 2000;
+
+/** The tabs of the case panel, in the order the panel shows them. */
+export const CASE_TAB_IDS = [
+  'process',
+  'questions',
+  'evidence',
+  'plan',
+  'execution',
+  'results',
+] as const;
+export type CaseTabId = (typeof CASE_TAB_IDS)[number];
+
+/** How a turn stands: what the state bar of its GenUI reply reports. */
+export const TURN_STATE_MODES = [
+  'idle',
+  'tracking',
+  'waiting_human',
+  'blocked',
+  'completed',
+] as const;
+export type TurnStateMode = (typeof TURN_STATE_MODES)[number];
+
+/** What happened during a turn: each kind of event the event strip can show. */
+export const TURN_EVENT_KINDS = [
+  'case_opened',
+  'case_rerun',
+  'cases_queried',
+  'stage_observed',
+  'run_controlled',
+  'wait_finished',
+  'human_action_needed',
+  'action_refused',
+] as const;
+export type TurnEventKind = (typeof TURN_EVENT_KINDS)[number];
+
+/** At most this many events of one turn: the event strip has to stay readable. */
+export const TURN_EVENT_LIMIT = 32;
+
+/** The state of one turn, as the AgentState block of its reply renders it. */
+export const turnStateSchema = z.strictObject({
+  mode: z.enum(TURN_STATE_MODES),
+  headline: z.string().trim().min(1).max(160),
+  focusCaseId: z.uuid().nullable(),
+  focusTab: z.enum(CASE_TAB_IDS).nullable(),
+  trackedCaseIds: z.array(z.uuid()).max(10).readonly(),
+  nextStep: z.string().trim().min(1).max(200).nullable(),
+});
+export type TurnState = z.output<typeof turnStateSchema>;
+
+/** One event of a turn, as an EventItem block of its reply renders it. */
+export const turnEventSchema = z.strictObject({
+  kind: z.enum(TURN_EVENT_KINDS),
+  summary: z.string().trim().min(1).max(160),
+  caseId: z.uuid().nullable(),
+  tab: z.enum(CASE_TAB_IDS).nullable(),
+  detailCode: z.string().trim().min(1).max(64).nullable(),
+});
+export type TurnEvent = z.output<typeof turnEventSchema>;
+
+/** What the server made of the OpenUI Lang of an assistant message. */
+export const assistantUiMetaSchema = z.strictObject({
+  format: z.literal('openui'),
+  fallback: z.boolean(),
+  /** One flag per AgentTurn event, in order: whether this turn's tool records back it. */
+  eventCorroborated: z.array(z.boolean()).max(TURN_EVENT_LIMIT).readonly(),
+});
+export type AssistantUiMeta = z.output<typeof assistantUiMetaSchema>;
 
 const toolNameSchema = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
 
@@ -36,8 +103,14 @@ export const assistantMessageSchema = z.discriminatedUnion('role', [
   }),
   z.strictObject({
     role: z.literal('assistant'),
-    content: z.string().max(16_000).nullable(),
-    toolCalls: z.array(assistantToolCallSchema).max(16).readonly(),
+    /**
+     * With ui: the OpenUI Lang of the final reply, as the server validated it.
+     * Without ui: the note the model wrote beside its tool calls, if any.
+     */
+    content: z.string().max(200_000).nullable(),
+    toolCalls: z.array(assistantToolCallSchema).readonly(),
+    /** Set on the final reply of a turn only; null on a message that requests tools. */
+    ui: assistantUiMetaSchema.nullable(),
   }),
   z.strictObject({
     role: z.literal('tool'),
@@ -83,14 +156,12 @@ export type AssistantConversation = z.output<typeof assistantConversationSchema>
  * not_found: no such conversation of this principal (another principal's is not found either).
  * turn_in_progress: another turn holds the conversation and its lease has not run out.
  * turn_superseded: this turn's lease ran out and another turn took the conversation over.
- * conversation_full: the conversation reached ASSISTANT_CONVERSATION_LIMIT messages.
  */
 export const ASSISTANT_REJECTION_CODES = [
   'invalid_request',
   'not_found',
   'turn_in_progress',
   'turn_superseded',
-  'conversation_full',
 ] as const;
 export type AssistantRejectionCode = (typeof ASSISTANT_REJECTION_CODES)[number];
 

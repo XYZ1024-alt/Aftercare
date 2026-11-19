@@ -1,4 +1,9 @@
-import type { AutonomyDecisionAction, Stage } from '@aftercare/console/client';
+import type {
+  AutonomyDecisionAction,
+  Stage,
+  TurnEventKind,
+  TurnStateMode,
+} from '@aftercare/console/client';
 
 // Display wording. Codes of the records stay as they are recorded; these
 // tables only say what a code means to an operator.
@@ -68,6 +73,35 @@ export const STAGE_GROUP: Readonly<Record<Stage, StageGroup>> = {
 };
 
 export const stageTone = (stage: Stage): Tone => STAGE_GROUPS[STAGE_GROUP[stage]].tone;
+
+/** How the assistant stands at the end of a turn, as its state bar says it. */
+export const TURN_MODE_LABEL: Readonly<Record<TurnStateMode, string>> = {
+  idle: '空闲',
+  tracking: '跟进中',
+  waiting_human: '等你处理',
+  blocked: '受阻',
+  completed: '本轮完成',
+};
+
+export const TURN_MODE_TONE: Readonly<Record<TurnStateMode, Tone>> = {
+  idle: 'neutral',
+  tracking: 'sky',
+  waiting_human: 'apricot',
+  blocked: 'rose',
+  completed: 'mint',
+};
+
+/** One event of a turn, as the event strip names it: short, since the summary follows it. */
+export const TURN_EVENT_LABEL: Readonly<Record<TurnEventKind, string>> = {
+  case_opened: '打开案例',
+  case_rerun: '重开调查',
+  cases_queried: '查询案例',
+  stage_observed: '查看阶段',
+  run_controlled: '控制运行',
+  wait_finished: '等待结束',
+  human_action_needed: '需要人工处理',
+  action_refused: '动作被拒绝',
+};
 
 const REASONS: Readonly<Record<string, string>> = {
   operator_requested: '操作员请求',

@@ -118,7 +118,7 @@ test('from a vague report to a sealed partial result: real events, business answ
   await expect(page.getByTestId('case-row')).toContainText('当前有效');
 });
 
-test('a case is done without leaving the agent page: answers in the workspace, the approval from another agent page, the conversation kept in history', async ({
+test('a case is done without leaving the agent page: the GenUI turn, answers in the case drawer, the approval from another agent page, the conversation kept in history', async ({
   page,
   browser,
   harness,
@@ -127,42 +127,56 @@ test('a case is done without leaving the agent page: answers in the workspace, t
   harness.startWorker();
   const caseId = await reportToAssistant(page, '导入后商品价格异常，帮我处理');
 
-  // The workspace shows the case the assistant opened; the page stays on the conversation.
-  const workspace = page.getByTestId('case-workspace');
+  // The turn names the case it opened: a corroborated case_opened event, the
+  // workbench of the same turn, and the state bar above the conversation. The
+  // page stays on the conversation instead of opening a workspace column.
   await expect(page).toHaveURL(/\/agent\?c=[0-9a-f-]{36}$/);
-  await expect(workspace.getByTestId('open-case-page')).toHaveAttribute('href', `/cases/${caseId}`);
+  await expect(page.getByTestId('agent-state-bar')).toBeVisible();
+  const opened = page.locator('[data-testid=agent-event][data-kind=case_opened]').last();
+  await expect(opened).toHaveAttribute('data-corroborated', 'true');
+  await expect(opened.locator('[data-testid=opened-case]')).toHaveAttribute('data-case-id', caseId);
+  const workbench = page.locator('[data-testid=genui-block][data-block=CaseWorkbenchBlock]').last();
+  await expect(workbench.getByTestId('open-case-page')).toHaveAttribute('href', `/cases/${caseId}`);
+  // The streamed preview was replaced by the stored reply of the turn.
+  await expect(page.getByTestId('assistant-preview')).toHaveCount(0);
   await untilStage(page, 'awaiting_answer');
 
-  // What waits on the person is offered beside the composer; the source is picked in the custom dropdown.
-  await page
-    .locator('[data-testid=attention-item][data-tab=questions]')
-    .getByRole('button')
-    .click();
-  const first = workspace.locator('[data-testid=question][data-state=open]').first();
+  // What waits on the person is offered in the state bar; the drawer opens it
+  // without leaving the conversation, and the source is picked in the custom dropdown.
+  await page.locator('[data-testid=state-attention-pill][data-tab=questions]').click();
+  const drawer = page.getByTestId('case-drawer');
+  const first = drawer.locator('[data-testid=question][data-state=open]').first();
   await first.getByRole('combobox').click();
-  await page.getByRole('option', { name: '业务决策记录' }).click();
+  await drawer.getByRole('option', { name: '业务决策记录' }).click();
   await expect(first.locator('input[name=source-kind]')).toHaveValue('business_decision_record');
-  const kinds = await answerUntilApproval(page);
+  const kinds = await answerUntilApproval(drawer);
   expect(kinds).toEqual(['incident_scope', 'baseline', 'replay_policy', 'clarification']);
 
-  // The approver reaches the case from an agent page of their own, through the case switcher.
+  // The approver reaches the case from an agent page of their own: the list the
+  // assistant returns, and the case it opens in the drawer.
   const approverContext = await browser.newContext();
   const approverPage = await approverContext.newPage();
   await signIn(approverPage, APPROVER.principal);
   await approverPage.goto('/agent');
-  await approverPage.getByTestId('case-switcher').click();
-  await approverPage.getByRole('option').first().click();
-  await expect(stage(approverPage)).toHaveAttribute('data-stage', 'awaiting_approval');
+  await approverPage.locator('textarea[name=message]').fill('列出案例');
+  await approverPage.getByRole('button', { name: '发送' }).click();
+  const list = approverPage.locator('[data-testid=genui-block][data-block=CaseListBlock]').last();
+  await list.getByRole('button', { name: '处理' }).first().click();
+  const approverDrawer = approverPage.getByTestId('case-drawer');
+  await untilStage(approverDrawer, 'awaiting_approval');
   await Promise.all([
     approverPage.waitForResponse((response) => response.url().endsWith('/approve')),
-    approveInBrowser(approverPage),
+    approveInBrowser(approverDrawer),
   ]);
   await approverContext.close();
 
-  // The operator's workspace follows to the sealed result and produces the report file there.
-  await untilStage(page, 'partially_resolved');
-  await page.locator('[data-testid=attention-item][data-tab=results]').getByRole('button').click();
-  const report = workspace.getByTestId('report');
+  // The operator's drawer follows to the sealed result by itself. It is modal,
+  // so it closes before the state bar offers the report in it again.
+  await untilStage(drawer, 'partially_resolved');
+  await page.getByRole('button', { name: '关闭' }).click();
+  await expect(page.getByTestId('case-drawer')).toBeHidden();
+  await page.locator('[data-testid=state-attention-pill][data-tab=results]').click();
+  const report = drawer.getByTestId('report');
   await expect(report).toHaveAttribute('data-verdict', 'partially_resolved');
   await report.getByRole('button', { name: '生成报告文件' }).click();
   await expect(report.locator('[data-testid=artefact][data-status=ready]')).toBeVisible();
@@ -202,7 +216,10 @@ test('a double click on send opens one case, and an answer whose response is los
   await page.goto('/agent');
   await page.locator('textarea[name=message]').fill('导入后商品价格异常');
   await page.getByRole('button', { name: '发送' }).dblclick();
-  const opened = page.locator('[data-testid=opened-case]').last();
+  const opened = page
+    .locator('[data-testid=agent-event][data-kind=case_opened]')
+    .locator('[data-testid=opened-case]')
+    .last();
   await expect(opened).toBeVisible();
   const caseId = (await opened.getAttribute('data-case-id')) ?? '';
   expect(await harness.context.environment.operations.listCases(10)).toHaveLength(1);
