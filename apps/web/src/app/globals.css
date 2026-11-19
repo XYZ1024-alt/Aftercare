@@ -271,6 +271,43 @@
   }
 }
 
+/* ── Dropdown open / close (transitions.dev) on the native popover list ── */
+.t-dropdown {
+  transform-origin: top;
+  opacity: 0;
+  transform: translateY(calc(var(--distance-micro) * -1)) scale(var(--scale-small));
+  transition:
+    opacity var(--duration-quick) var(--ease-smooth-out),
+    transform var(--duration-quick) var(--ease-smooth-out),
+    display var(--duration-quick) var(--ease-smooth-out) allow-discrete,
+    overlay var(--duration-quick) var(--ease-smooth-out) allow-discrete;
+}
+/* An upward list hangs from the trigger: it grows from its bottom edge and enters from below. */
+.t-dropdown[data-side="top"] {
+  transform-origin: bottom;
+  transform: translateY(var(--distance-micro)) scale(var(--scale-small));
+}
+.t-dropdown:popover-open {
+  opacity: 1;
+  transform: none;
+}
+@starting-style {
+  .t-dropdown:popover-open {
+    opacity: 0;
+    transform: translateY(calc(var(--distance-micro) * -1)) scale(var(--scale-small));
+  }
+  .t-dropdown[data-side="top"]:popover-open {
+    transform: translateY(var(--distance-micro)) scale(var(--scale-small));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .t-dropdown {
+    /* biome-ignore lint/complexity/noImportantStyles: the reduced-motion guard must beat every state selector */
+    transition: none !important;
+  }
+}
+
 /* ── Accordion expand (transitions.dev) ── */
 .t-acc-panel {
   display: grid;

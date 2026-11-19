@@ -4,6 +4,7 @@ import type { Refusal } from '@aftercare/console/client';
 import {
   AlertTriangle,
   Ban,
+  Check,
   CheckCircle2,
   ChevronDown,
   Info,
@@ -17,7 +18,11 @@ import {
   type ButtonHTMLAttributes,
   type ComponentProps,
   type CSSProperties,
+  Fragment,
+  type InputHTMLAttributes,
+  type KeyboardEvent,
   type ReactNode,
+  useEffect,
   useId,
   useLayoutEffect,
   useRef,
@@ -519,9 +524,316 @@ export function Field({
   );
 }
 
-export const INPUT_CLASS = `w-full rounded-input border border-transparent bg-canvas px-3.5 py-2.5 text-body text-ink transition-[background-color,border-color,box-shadow] ${MOTION} placeholder:text-muted/70 hover:bg-canvas-2/60 in-[.bg-canvas]:bg-card focus-visible:border-sky/60 focus-visible:bg-card focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-sky/15 disabled:bg-track disabled:text-muted`;
+/** The face every typed control shares: surface, hover, focus ring, disabled state. */
+const CONTROL_FACE = `rounded-input border border-transparent bg-canvas text-ink transition-[background-color,border-color,box-shadow] ${MOTION} hover:bg-canvas-2/60 in-[.bg-canvas]:bg-card focus-visible:border-sky/60 focus-visible:bg-card focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-sky/15 disabled:bg-track disabled:text-muted`;
 
-export const CHECK_CLASS = 'mt-0.5 size-4 shrink-0 accent-ink';
+export const INPUT_CLASS = `w-full ${CONTROL_FACE} px-3.5 py-2.5 text-body placeholder:text-muted/70 [&:-webkit-autofill]:shadow-[inset_0_0_0_1000px_var(--color-card)] [&:-webkit-autofill]:[-webkit-text-fill-color:var(--color-ink)]`;
+
+/** A textarea keeps the input face, grows with its content and never shows the native resize grip. */
+export const TEXTAREA_CLASS = `${INPUT_CLASS} resize-none field-sizing-content max-h-72 min-h-[4.5rem]`;
+
+const CHECKBOX_INPUT = `peer absolute inset-0 size-full cursor-pointer appearance-none rounded-[6px] bg-card ring-1 ring-ink/20 ring-inset transition-[background-color,box-shadow] ${MOTION} hover:ring-ink/35 checked:bg-ink checked:ring-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky disabled:cursor-not-allowed disabled:opacity-45`;
+const CHECKBOX_ICON =
+  'pointer-events-none relative size-3 scale-75 text-white opacity-0 transition-[opacity,scale] duration-(--duration-quick) ease-bounce motion-reduce:transition-none peer-checked:scale-100 peer-checked:opacity-100 peer-disabled:opacity-45';
+const RADIO_INPUT = `peer absolute inset-0 size-full cursor-pointer appearance-none rounded-full bg-card ring-1 ring-ink/20 ring-inset transition-[background-color,box-shadow] ${MOTION} hover:ring-ink/35 checked:bg-ink checked:ring-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky disabled:cursor-not-allowed disabled:opacity-45`;
+const RADIO_DOT =
+  'pointer-events-none relative size-2 scale-0 rounded-full bg-white transition-transform duration-(--duration-quick) ease-bounce motion-reduce:transition-none peer-checked:scale-100 peer-disabled:opacity-45';
+
+/**
+ * A checkbox keeps the native input (keyboard, forms, Playwright's check()) and
+ * paints the box itself; the icon is a sibling so peer-checked can animate it in.
+ */
+export function Checkbox(props: Omit<InputHTMLAttributes<HTMLInputElement>, 'type' | 'className'>) {
+  return (
+    <span className="relative mt-0.5 grid size-[18px] shrink-0 place-items-center">
+      <input type="checkbox" {...props} className={CHECKBOX_INPUT} />
+      <Check aria-hidden strokeWidth={3} className={CHECKBOX_ICON} />
+    </span>
+  );
+}
+
+/** A radio, styled like Checkbox: the native input stays, a white dot fills the checked circle. */
+export function Radio(props: Omit<InputHTMLAttributes<HTMLInputElement>, 'type' | 'className'>) {
+  return (
+    <span className="relative mt-0.5 grid size-[18px] shrink-0 place-items-center">
+      <input type="radio" {...props} className={RADIO_INPUT} />
+      <span aria-hidden className={RADIO_DOT} />
+    </span>
+  );
+}
+
+type SelectSize = 'md' | 'sm';
+
+const SELECT_TRIGGER_SIZE: Readonly<Record<SelectSize, string>> = {
+  md: 'px-3.5 py-2.5 text-body',
+  sm: 'h-9 px-3 text-meta',
+};
+const SELECT_TRIGGER_CLASS = `flex w-full cursor-pointer items-center justify-between gap-2 text-left ${CONTROL_FACE}`;
+const SELECT_CHEVRON =
+  'size-4 shrink-0 text-muted transition-transform duration-(--duration-quick) ease-smooth-out motion-reduce:transition-none';
+
+/** Distance between the trigger and the open list, and the room the list needs below it. */
+const DROPDOWN_OFFSET = 6;
+const DROPDOWN_MIN_BELOW = 280;
+
+export interface SelectOption<T extends string> {
+  readonly value: T;
+  readonly label: string;
+  readonly hint?: string;
+  readonly group?: string;
+}
+
+/**
+ * A select-only combobox (WAI-ARIA): a button trigger, and a listbox in the top
+ * layer (native popover) so scroll containers and transformed ancestors cannot
+ * clip it. Focus never leaves the trigger; the active option is announced
+ * through aria-activedescendant.
+ */
+export function Select<T extends string>({
+  value,
+  options,
+  onChange,
+  name,
+  placeholder = '请选择',
+  disabled = false,
+  'aria-label': ariaLabel,
+  size = 'md',
+  testId,
+}: {
+  readonly value: T | null;
+  readonly options: readonly SelectOption<T>[];
+  readonly onChange: (value: T) => void;
+  readonly name?: string;
+  readonly placeholder?: string;
+  readonly disabled?: boolean;
+  readonly 'aria-label'?: string;
+  readonly size?: SelectSize;
+  readonly testId?: string;
+}): ReactNode {
+  const listId = useId();
+  const wrapper = useRef<HTMLDivElement>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const list = useRef<HTMLUListElement>(null);
+  const [open, setOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(-1);
+  const selectedIndex = options.findIndex((option) => option.value === value);
+  const selected = selectedIndex < 0 ? undefined : options[selectedIndex];
+
+  const choose = (next: T) => {
+    onChange(next);
+    setOpen(false);
+    trigger.current?.focus();
+  };
+
+  // Opening always highlights the current value (or the first option).
+  const openAt = (index: number) => {
+    setActiveIndex(index >= 0 && index < options.length ? index : options.length === 0 ? -1 : 0);
+    setOpen(true);
+  };
+
+  const move = (step: 1 | -1) => {
+    setActiveIndex((current) => {
+      if (options.length === 0) return -1;
+      if (current < 0) return step === 1 ? 0 : options.length - 1;
+      return (current + step + options.length) % options.length;
+    });
+  };
+
+  // The list is fixed-positioned by its trigger and follows it while open.
+  useLayoutEffect(() => {
+    const anchor = trigger.current;
+    const menu = list.current;
+    if (!open || anchor === null || menu === null) return;
+    let frame = 0;
+    const place = () => {
+      frame = 0;
+      const rect = anchor.getBoundingClientRect();
+      const side = window.innerHeight - rect.bottom < DROPDOWN_MIN_BELOW ? 'top' : 'bottom';
+      menu.dataset.side = side;
+      menu.style.left = `${rect.left}px`;
+      menu.style.width = `${rect.width}px`;
+      if (!menu.matches(':popover-open')) {
+        menu.style.top = `${side === 'bottom' ? rect.bottom + DROPDOWN_OFFSET : rect.top}px`;
+        menu.showPopover();
+      }
+      // The height is known only once the list is displayed: an upward list hangs from its bottom edge.
+      menu.style.top =
+        side === 'bottom'
+          ? `${rect.bottom + DROPDOWN_OFFSET}px`
+          : `${rect.top - menu.offsetHeight - DROPDOWN_OFFSET}px`;
+    };
+    const schedule = () => {
+      if (frame === 0) frame = requestAnimationFrame(place);
+    };
+    place();
+    // Capture sees the scroll of every scroll container, not just the window.
+    window.addEventListener('scroll', schedule, true);
+    window.addEventListener('resize', schedule);
+    return () => {
+      window.removeEventListener('scroll', schedule, true);
+      window.removeEventListener('resize', schedule);
+      if (frame !== 0) cancelAnimationFrame(frame);
+      if (menu.matches(':popover-open')) menu.hidePopover();
+    };
+  }, [open]);
+
+  // A pointer down anywhere outside the trigger and its list closes the list.
+  useEffect(() => {
+    if (!open) return;
+    const outside = (event: PointerEvent) => {
+      const root = wrapper.current;
+      if (root !== null && event.target instanceof Node && !root.contains(event.target)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener('pointerdown', outside);
+    return () => document.removeEventListener('pointerdown', outside);
+  }, [open]);
+
+  useEffect(() => {
+    if (!open || activeIndex < 0) return;
+    document
+      .getElementById(`${listId}-option-${activeIndex}`)
+      ?.scrollIntoView({ block: 'nearest' });
+  }, [open, activeIndex, listId]);
+
+  const onKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
+    switch (event.key) {
+      case 'ArrowDown':
+        event.preventDefault();
+        if (open) move(1);
+        else openAt(selectedIndex);
+        break;
+      case 'ArrowUp':
+        event.preventDefault();
+        if (open) move(-1);
+        else openAt(selectedIndex);
+        break;
+      case 'Home':
+        if (!open) break;
+        event.preventDefault();
+        setActiveIndex(0);
+        break;
+      case 'End':
+        if (!open) break;
+        event.preventDefault();
+        setActiveIndex(options.length - 1);
+        break;
+      case 'Enter':
+      case ' ': {
+        event.preventDefault();
+        if (!open) {
+          openAt(selectedIndex);
+          break;
+        }
+        const active = options[activeIndex];
+        if (active === undefined) setOpen(false);
+        else choose(active.value);
+        break;
+      }
+      case 'Escape':
+        if (!open) break;
+        // The focus stays on the trigger, which is where it already is.
+        event.preventDefault();
+        setOpen(false);
+        break;
+      case 'Tab':
+        if (open) setOpen(false);
+        break;
+      default:
+        break;
+    }
+  };
+
+  return (
+    <div ref={wrapper} className="min-w-0">
+      <button
+        ref={trigger}
+        type="button"
+        role="combobox"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-controls={listId}
+        aria-activedescendant={
+          open && activeIndex >= 0 ? `${listId}-option-${activeIndex}` : undefined
+        }
+        aria-label={ariaLabel}
+        data-testid={testId}
+        disabled={disabled}
+        onClick={() => setOpen(!open)}
+        onKeyDown={onKeyDown}
+        className={`${SELECT_TRIGGER_CLASS} ${SELECT_TRIGGER_SIZE[size]}`}
+      >
+        <span className={`min-w-0 truncate ${selected === undefined ? 'text-muted' : ''}`}>
+          {selected?.label ?? placeholder}
+        </span>
+        <ChevronDown aria-hidden className={`${SELECT_CHEVRON}${open ? ' rotate-180' : ''}`} />
+      </button>
+      {name !== undefined && <input type="hidden" name={name} value={value ?? ''} />}
+      {/* biome-ignore-start lint/a11y/noNoninteractiveElementToInteractiveRole lint/a11y/useFocusableInteractive lint/a11y/useKeyWithClickEvents: a select-only combobox: the trigger keeps the focus and the keys, the options are announced through aria-activedescendant and must not be focusable themselves. */}
+      <ul
+        ref={list}
+        id={listId}
+        role="listbox"
+        aria-label={ariaLabel}
+        popover="manual"
+        onPointerDown={(event) => {
+          // Keep the focus on the trigger when an option is clicked.
+          event.preventDefault();
+        }}
+        onClick={(event) => {
+          // The list sits inside the Field's <label>: a click on the padding or a
+          // group heading must not fall through and toggle the trigger open again.
+          event.preventDefault();
+        }}
+        className="t-dropdown fixed inset-auto m-0 max-h-72 overflow-auto rounded-field bg-card p-1.5 shadow-lift ring-1 ring-ink/5"
+      >
+        {options.map((option, index) => {
+          const previous = index === 0 ? undefined : options[index - 1];
+          const isSelected = option.value === value;
+          return (
+            <Fragment key={option.value}>
+              {option.group !== undefined && option.group !== previous?.group && (
+                <li role="presentation" className="px-3 pt-2 pb-1 text-xs text-muted">
+                  {option.group}
+                </li>
+              )}
+              <li
+                id={`${listId}-option-${index}`}
+                role="option"
+                aria-selected={isSelected}
+                // The pointer and the keys move one highlight, so a hovered option is the one Enter takes.
+                onPointerMove={() => {
+                  if (activeIndex !== index) setActiveIndex(index);
+                }}
+                onClick={(event) => {
+                  // Field wraps the control in a <label>, which would forward this
+                  // click to the trigger; preventing it keeps the list from reopening.
+                  event.preventDefault();
+                  choose(option.value);
+                }}
+                className={`flex cursor-pointer items-start gap-2 rounded-input px-3 py-2 text-sm ${index === activeIndex ? 'bg-canvas' : ''}`}
+              >
+                <span className="min-w-0 flex-1">
+                  <span className={`block truncate ${isSelected ? 'font-medium' : ''}`}>
+                    {option.label}
+                  </span>
+                  {option.hint !== undefined && (
+                    <span className="block text-xs text-muted">{option.hint}</span>
+                  )}
+                </span>
+                {isSelected && (
+                  <Check aria-hidden className="mt-0.5 size-4 shrink-0 text-sky-ink" />
+                )}
+              </li>
+            </Fragment>
+          );
+        })}
+      </ul>
+      {/* biome-ignore-end lint/a11y/noNoninteractiveElementToInteractiveRole lint/a11y/useFocusableInteractive lint/a11y/useKeyWithClickEvents: end of the combobox listbox pattern */}
+    </div>
+  );
+}
 
 /** A choice among several, as a whole clickable row (a label around a checkbox or radio). */
 export const OPTION_CLASS = `flex cursor-pointer items-start gap-3 rounded-input bg-canvas px-3.5 py-3 text-sm transition-colors ${MOTION} hover:bg-canvas-2/70 in-[.bg-canvas]:bg-card has-checked:bg-sky-soft`;

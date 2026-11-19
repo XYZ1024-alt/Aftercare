@@ -10,9 +10,10 @@ import {
   Search,
   ShieldCheck,
   TriangleAlert,
+  X,
 } from 'lucide-react';
 import Link from 'next/link';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import {
   Button,
   ButtonLink,
@@ -113,6 +114,7 @@ function Row({ row, index }: { readonly row: CaseRow; readonly index: number }) 
 
 export default function CaseListPage() {
   const { rows, error } = useCases();
+  const searchBox = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState('');
   const [group, setGroup] = useState<StageGroup | null>(null);
   const needle = query.trim().toLowerCase();
@@ -152,28 +154,44 @@ export default function CaseListPage() {
         </Card>
       ) : (
         <>
-          <div className="mb-4">
-            <label className="relative block">
+          <div className="relative mb-4">
+            <label className="block">
               <span className="sr-only">搜索案例</span>
               <Search
                 aria-hidden
                 className="pointer-events-none absolute top-1/2 left-4 size-4 -translate-y-1/2 text-muted"
               />
               <input
+                ref={searchBox}
                 type="search"
                 name="case-search"
                 placeholder="搜索事故描述、开启人或阶段"
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                className="h-12 w-full rounded-full border border-transparent bg-card pr-28 pl-11 text-body shadow-soft transition-[border-color,box-shadow] duration-(--duration-quick) ease-smooth-out placeholder:text-muted/70 focus-visible:border-sky/60 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-sky/15"
+                className="h-12 w-full rounded-full border border-transparent bg-card pr-40 pl-11 text-body shadow-soft transition-[border-color,box-shadow] duration-(--duration-quick) ease-smooth-out placeholder:text-muted/70 focus-visible:border-sky/60 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-sky/15 [&::-webkit-search-cancel-button]:appearance-none [&::-webkit-search-decoration]:appearance-none"
               />
+            </label>
+            <div className="absolute inset-y-0 right-3 flex items-center gap-2">
               <span
-                className="pointer-events-none absolute top-1/2 right-5 -translate-y-1/2 text-meta text-muted tabular-nums"
+                className="pointer-events-none text-meta text-muted tabular-nums"
                 aria-live="polite"
               >
                 {shown.length < rows.length && `显示 ${shown.length} / ${rows.length}`}
               </span>
-            </label>
+              {query !== '' && (
+                <button
+                  type="button"
+                  aria-label="清除搜索"
+                  onClick={() => {
+                    setQuery('');
+                    searchBox.current?.focus();
+                  }}
+                  className="grid size-7 place-items-center rounded-full text-muted transition-colors duration-(--duration-quick) ease-smooth-out hover:bg-canvas hover:text-ink"
+                >
+                  <X aria-hidden className="size-4" />
+                </button>
+              )}
+            </div>
           </div>
           <fieldset className="mb-5 flex flex-wrap gap-2">
             <legend className="sr-only">按阶段筛选</legend>

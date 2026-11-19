@@ -9,11 +9,10 @@ import { ConfirmDialog } from '../overlay.tsx';
 import {
   Button,
   Card,
-  CHECK_CLASS,
+  Checkbox,
   Dot,
   Empty,
   Field,
-  INPUT_CLASS,
   Json,
   Notice,
   OPTION_CLASS,
@@ -21,6 +20,7 @@ import {
   RefusalNote,
   ROWS_CLASS,
   Table,
+  TEXTAREA_CLASS,
   Technical,
 } from '../ui.tsx';
 import { useCase, useCaseAction } from './case-context.tsx';
@@ -263,11 +263,9 @@ function Approval({ contract }: { readonly contract: ContractView }) {
               </legend>
               {contract.untouched.map((domain) => (
                 <label key={domain} className={OPTION_CLASS}>
-                  <input
-                    type="checkbox"
+                  <Checkbox
                     name="acknowledge"
                     value={domain}
-                    className={CHECK_CLASS}
                     checked={acknowledged.includes(domain)}
                     onChange={(event) =>
                       setAcknowledged(
@@ -286,7 +284,7 @@ function Approval({ contract }: { readonly contract: ContractView }) {
             <textarea
               name="approval-statement"
               rows={2}
-              className={INPUT_CLASS}
+              className={TEXTAREA_CLASS}
               value={statement}
               onChange={(event) => setStatement(event.target.value)}
             />

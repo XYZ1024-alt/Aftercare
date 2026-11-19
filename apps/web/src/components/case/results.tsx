@@ -10,7 +10,7 @@ import { ConfirmDialog } from '../overlay.tsx';
 import {
   Button,
   Card,
-  CHECK_CLASS,
+  Checkbox,
   Dot,
   Empty,
   Field,
@@ -22,6 +22,7 @@ import {
   RefusalNote,
   ROWS_CLASS,
   Table,
+  TEXTAREA_CLASS,
   Technical,
 } from '../ui.tsx';
 import { UntrustedText } from '../untrusted-text.tsx';
@@ -461,17 +462,15 @@ function Reopen() {
           <textarea
             name="rerun-description"
             rows={2}
-            className={INPUT_CLASS}
+            className={TEXTAREA_CLASS}
             value={description}
             onChange={(event) => setDescription(event.target.value)}
           />
         </Field>
         {held && (
           <label className={OPTION_CLASS}>
-            <input
-              type="checkbox"
+            <Checkbox
               name="ack-isolation"
-              className={CHECK_CLASS}
               checked={isolation}
               onChange={(event) => setIsolation(event.target.checked)}
             />
@@ -480,10 +479,8 @@ function Reopen() {
         )}
         {modelMode === 'live' && (
           <label className={OPTION_CLASS}>
-            <input
-              type="checkbox"
+            <Checkbox
               name="ack-egress"
-              className={CHECK_CLASS}
               checked={egress}
               onChange={(event) => setEgress(event.target.checked)}
             />

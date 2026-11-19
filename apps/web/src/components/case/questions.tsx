@@ -15,7 +15,7 @@ import { cents, QUESTION_KIND_LABEL, reasonLabel, shortId, when } from '../../li
 import {
   Button,
   Card,
-  CHECK_CLASS,
+  Checkbox,
   Empty,
   Field,
   INPUT_CLASS,
@@ -23,9 +23,13 @@ import {
   Notice,
   OPTION_CLASS,
   Pill,
+  Radio,
   RefusalNote,
+  Select,
+  type SelectOption,
   stagger,
   Table,
+  TEXTAREA_CLASS,
   Technical,
 } from '../ui.tsx';
 import { UntrustedText } from '../untrusted-text.tsx';
@@ -36,6 +40,11 @@ const SOURCE_KINDS = [
   ['business_decision_record', '业务决策记录'],
   ['pricing_system_record', '定价系统记录'],
 ] as const;
+
+const SOURCE_OPTIONS: readonly SelectOption<string>[] = SOURCE_KINDS.map(([value, label]) => ({
+  value,
+  label,
+}));
 
 const DECISION: Readonly<Record<string, string>> = {
   confirm_operations: '确认事故操作',
@@ -130,11 +139,9 @@ function AnswerForm({ question }: { readonly question: QuestionView }) {
           </legend>
           {body.candidates.map((candidate) => (
             <label key={candidate.operationId} className={OPTION_CLASS}>
-              <input
-                type="checkbox"
+              <Checkbox
                 name="operation"
                 value={candidate.operationId}
-                className={CHECK_CLASS}
                 checked={operations.includes(candidate.operationId)}
                 onChange={(event) =>
                   setOperations(
@@ -163,11 +170,9 @@ function AnswerForm({ question }: { readonly question: QuestionView }) {
           <legend className="mb-2 text-meta font-medium text-ink-soft">选择适用的策略版本</legend>
           {body.options.map((option) => (
             <label key={option.policyVersionId} className={OPTION_CLASS}>
-              <input
-                type="radio"
+              <Radio
                 name="policy"
                 value={option.policyVersionId}
-                className={CHECK_CLASS}
                 checked={policy === option.policyVersionId}
                 onChange={() => setPolicy(option.policyVersionId)}
               />
@@ -187,25 +192,19 @@ function AnswerForm({ question }: { readonly question: QuestionView }) {
         <textarea
           name="statement"
           rows={2}
-          className={INPUT_CLASS}
+          className={TEXTAREA_CLASS}
           value={statement}
           onChange={(event) => setStatement(event.target.value)}
         />
       </Field>
       <div className="grid grid-cols-2 gap-4 max-md:grid-cols-1">
         <Field label="依据来源">
-          <select
+          <Select
             name="source-kind"
-            className={INPUT_CLASS}
             value={sourceKind}
-            onChange={(event) => setSourceKind(event.target.value)}
-          >
-            {SOURCE_KINDS.map(([kind, label]) => (
-              <option key={kind} value={kind}>
-                {label}
-              </option>
-            ))}
-          </select>
+            options={SOURCE_OPTIONS}
+            onChange={setSourceKind}
+          />
         </Field>
         <Field label="依据编号或出处">
           <input

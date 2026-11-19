@@ -2,7 +2,7 @@
 
 import { X } from 'lucide-react';
 import { type ReactNode, type RefObject, useEffect, useId, useRef, useState } from 'react';
-import { Button, type ButtonTone, Field, INPUT_CLASS } from './ui.tsx';
+import { Button, type ButtonTone, Field, TEXTAREA_CLASS } from './ui.tsx';
 
 // Modal surfaces on the native <dialog>: focus stays inside, Esc and a click
 // on the backdrop close it. The dialog scales in (modal open / close) and the
@@ -208,7 +208,7 @@ function ConfirmBody({
           <textarea
             name={reason.name}
             rows={3}
-            className={INPUT_CLASS}
+            className={TEXTAREA_CLASS}
             value={text}
             onChange={(event) => setText(event.target.value)}
           />
