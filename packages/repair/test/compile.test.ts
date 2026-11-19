@@ -32,7 +32,7 @@ import {
 // Every case builds its own small history through the real controlled entry
 // on a freshly migrated test database. Expected values are literals.
 
-const EVERYTHING = { kind: 'all_products' } as const;
+const EVERYTHING = { kind: 'all', objectType: 'product' } as const;
 const ALWAYS = { fromInclusive: '0', toInclusive: null };
 
 let h: RepairHarness;
@@ -60,7 +60,7 @@ async function seed(prices: Readonly<Record<string, bigint>>): Promise<bigint> {
 function derivationOf(plan: ReturnType<typeof planOf>, productId: string): string[] {
   const candidate = plan.content.candidates.find((entry) => entry.objectId === productId);
   return (candidate?.derivation ?? []).map(
-    (step) => `${step.action} ${step.recordedCents}=>${step.replayedCents}`,
+    (step) => `${step.action} ${step.recordedValue}=>${step.replayedValue}`,
   );
 }
 
@@ -107,7 +107,7 @@ describe('replay of explicit deltas and independent overrides', () => {
     expect(candidatesOf(plan)).toEqual({ a: '10000' });
     expect(patchOf(plan)).toEqual({ a: '8000->10000' });
     expect(plan.content.allowedFootprint).toEqual([
-      { objectType: 'product', objectId: 'a', field: 'price_cents' },
+      { objectType: 'product', objectId: 'a', fieldId: 'product.price_cents' },
     ]);
     expect(plan.content.incident.batches).toEqual([
       {
@@ -143,7 +143,7 @@ describe('replay of explicit deltas and independent overrides', () => {
       obligationRef: 'preflight.incident_operations_confirmed',
       affectedDomain: {
         wholeProposal: false,
-        objects: [{ objectType: 'product', objectId: 'p', field: 'price_cents' }],
+        objects: [{ objectType: 'product', objectId: 'p', field: 'product.price_cents' }],
       },
       observed: { content: { operationId: batch.operations.p, batchId: batch.batchId } },
     });
@@ -180,9 +180,9 @@ describe('replay of explicit deltas and independent overrides', () => {
     // Only the order struck at the incident VERSION is exposed, although both were struck at 80.00;
     // and the order struck at t's incident version stays exposed although the number did not change.
     expect(
-      plan.content.orderImpacts.map(
+      plan.content.readerImpacts.map(
         (impact) =>
-          `${impact.orderId} v${impact.priceVersionRead} ${impact.struckUnitPriceCents} ${impact.priceSource.treatment} ${impact.replayedUnitPriceCents}`,
+          `${impact.readerObjectId} v${impact.readObjectVersion} ${impact.recordedValue} ${impact.source.treatment} ${impact.replayedValue}`,
       ),
     ).toEqual(['o-incident v2 8000 omitted_incident 10000', 'o-t v2 10000 omitted_incident 10000']);
   });
@@ -216,14 +216,13 @@ describe('unknown meaning and its reach', () => {
       'retained_independent_override 12000=>12000',
     ]);
     expect(
-      plan.content.orderImpacts.map(
-        (impact) =>
-          `${impact.orderId} ${impact.priceSource.treatment} ${impact.replayedUnitPriceCents}`,
+      plan.content.readerImpacts.map(
+        (impact) => `${impact.readerObjectId} ${impact.source.treatment} ${impact.replayedValue}`,
       ),
     ).toEqual(['o-early omitted_incident 10000', 'o-mid unresolved null']);
     // The object is degraded in the certificate; the plan says what its negative statement rests on.
     expect(plan.content.inputs.negativeQueries[0]).toMatchObject({
-      afterVersion: '4',
+      afterObjectVersion: '4',
       auditCompleteness: 'not_established',
     });
   });
@@ -263,10 +262,10 @@ describe('unknown meaning and its reach', () => {
     expect(plan.content.result).toBe('partial');
     expect(candidatesOf(plan)).toEqual({ a: '10000' });
     // No recorded read links g to a, yet g cannot be assumed untouched.
-    expect(unresolvedOf(plan)).toEqual(['product/g.price_cents: impact_scope_unknown']);
+    expect(unresolvedOf(plan)).toEqual(['product/g.product.price_cents: impact_scope_unknown']);
     expect(plan.content.unresolved[0]?.counterexample).toMatchObject({
       obligationRef: 'replay.impact_scope_closed',
-      observed: { content: { recordedCentsBefore: '10000', recordedCentsAfter: '10500' } },
+      observed: { content: { recordedValueBefore: '10000', recordedValueAfter: '10500' } },
     });
     expect(plan.content.allowedFootprint.map((field) => field.objectId)).toEqual(['a']);
   });
@@ -336,7 +335,13 @@ describe('unknown meaning and its reach', () => {
       baseline: { a: 10_000n },
       policy: standardPolicy(h, {
         terminalConstraints: [
-          { kind: 'uniform_price', ruleId: 'same-price', productIds: ['a', 'g'] },
+          {
+            kind: 'uniform_value',
+            ruleId: 'same-price',
+            fieldId: 'product.price_cents',
+            objectType: 'product',
+            objectIds: ['a', 'g'],
+          },
         ],
       }),
     });
@@ -345,7 +350,12 @@ describe('unknown meaning and its reach', () => {
     expect(codesOf(outcome)).toEqual(['replay/unresolved_domain_not_isolable']);
     expect(counterexamplesOf(outcome)[0]).toMatchObject({
       obligationRef: 'replay.unresolved_domain_isolated',
-      observed: { content: { repaired: ['a'], unresolved: ['g'] } },
+      observed: {
+        content: {
+          resolved: ['product/a.product.price_cents'],
+          unresolved: ['product/g.product.price_cents'],
+        },
+      },
     });
   });
 
@@ -370,7 +380,7 @@ describe('unknown meaning and its reach', () => {
     const plan = planOf(await h.compiler.compile(proposal));
     expect(plan.content.result).toBe('partial');
     expect(candidatesOf(plan)).toEqual({ b: '10000' });
-    expect(unresolvedOf(plan)).toEqual(['product/a.price_cents: history_gap']);
+    expect(unresolvedOf(plan)).toEqual(['product/a.product.price_cents: history_gap']);
     expect(plan.content.unresolved[0]?.counterexample).toMatchObject({
       obligationRef: 'replay.history_complete',
       expected: { ruleSource: { kind: 'completeness_certificate' }, value: null },
@@ -414,7 +424,12 @@ describe('unknown meaning and its reach', () => {
     await obscureOperation(h, wrong.operationId, 'a');
     const order = await createOrder(h, 'o-1', 'a');
     const frozen = await freeze(h, ['a']);
-    const pricing = await collect(h, frozen.ref, { tool: 'order.pricing', orderId: 'o-1' });
+    const pricing = await collect(h, frozen.ref, {
+      tool: 'reader.impacts',
+      objectType: 'product',
+      objectId: 'a',
+      fieldId: 'product.price_cents',
+    });
     const operationIds = [wrong.operationId, order.operationId];
     const { proposal } = await prepare(h, frozen, {
       incident: operationIds,
@@ -473,7 +488,7 @@ describe('baseline', () => {
     expect(codesOf(outcome)).toEqual(['preflight/baseline_insufficient']);
     expect(counterexamplesOf(outcome)[0]).toMatchObject({
       obligationRef: 'preflight.baseline_covers_incident',
-      affectedDomain: { objects: [{ objectId: 'b', field: 'price_cents' }] },
+      affectedDomain: { objects: [{ objectId: 'b', field: 'product.price_cents' }] },
       missingInputs: [{ kind: 'baseline_entry' }],
       // No price is made up for the missing baseline.
       expected: { value: null },
@@ -513,9 +528,9 @@ describe('baseline', () => {
     expect(counterexamplesOf(outcome)[0]).toMatchObject({
       expected: {
         ruleSource: { kind: 'baseline_confirmation' },
-        value: { trustedWatermark: '1', version: '1', priceCents: '9900' },
+        value: { trustedWatermark: '1', fieldVersion: '1', value: '9900' },
       },
-      observed: { sourceKind: 'snapshot', content: { version: '1', priceCents: '10000' } },
+      observed: { sourceKind: 'snapshot', content: { objectVersion: '1', value: '10000' } },
     });
   });
 });
@@ -539,13 +554,15 @@ describe('policy layers', () => {
       deltaReplayRules: [
         {
           ruleId: 'replay-all',
+          fieldId: 'product.price_cents',
           objects: EVERYTHING,
           watermark: ALWAYS,
           disposition: 'recompute_on_corrected_input',
         },
         {
           ruleId: 'freeze-a',
-          objects: { kind: 'products', productIds: ['a'] },
+          fieldId: 'product.price_cents',
+          objects: { kind: 'ids', objectType: 'product', ids: ['a'] },
           watermark: ALWAYS,
           disposition: 'do_not_recompute',
         },
@@ -575,9 +592,9 @@ describe('policy layers', () => {
     const plan = planOf(await h.compiler.compile(proposal));
     expect(plan.content.result).toBe('partial');
     expect(candidatesOf(plan)).toEqual({ e: '10000' });
-    expect(unresolvedOf(plan)).toEqual(['product/a.price_cents: policy_unclear']);
+    expect(unresolvedOf(plan)).toEqual(['product/a.product.price_cents: policy_unclear']);
     // a stays at its recorded 90.00; nothing is computed for it.
-    expect(plan.content.unresolved[0]).toMatchObject({ snapshotCents: '9000' });
+    expect(plan.content.unresolved[0]).toMatchObject({ snapshotValue: '9000' });
     expect(patchOf(plan)).toEqual({ e: '8000->10000' });
   });
 
@@ -586,6 +603,7 @@ describe('policy layers', () => {
       deltaReplayRules: [
         {
           ruleId: 'no-replay',
+          fieldId: 'product.price_cents',
           objects: EVERYTHING,
           watermark: ALWAYS,
           disposition: 'do_not_recompute',
@@ -594,13 +612,13 @@ describe('policy layers', () => {
     });
 
     const plan = planOf(await h.compiler.compile(proposal));
-    expect(unresolvedOf(plan)).toEqual(['product/a.price_cents: replay_not_permitted']);
+    expect(unresolvedOf(plan)).toEqual(['product/a.product.price_cents: replay_not_permitted']);
   });
 
   it('treats an operation outside the policy scope as undecided', async () => {
     const { proposal } = await deltaCase({
       scope: {
-        objects: { kind: 'products', productIds: ['e'] },
+        objects: { kind: 'ids', objectType: 'product', ids: ['e'] },
         fields: ['product.price_cents'],
         operationTypes: ['add_price_delta', 'batch_set_price', 'set_price'],
         watermark: ALWAYS,
@@ -608,7 +626,7 @@ describe('policy layers', () => {
     });
 
     const plan = planOf(await h.compiler.compile(proposal));
-    expect(unresolvedOf(plan)).toEqual(['product/a.price_cents: policy_unclear']);
+    expect(unresolvedOf(plan)).toEqual(['product/a.product.price_cents: policy_unclear']);
     expect(plan.content.unresolved[0]?.counterexample.observed?.content).toMatchObject({
       finding: 'product "a" is outside the policy scope',
     });
@@ -618,11 +636,12 @@ describe('policy layers', () => {
     const { proposal } = await deltaCase({
       terminalConstraints: [
         {
-          kind: 'price_range',
+          kind: 'value_range',
           ruleId: 'cap',
+          fieldId: 'product.price_cents',
           objects: EVERYTHING,
-          minCents: '0',
-          maxCents: '10500',
+          min: '0',
+          max: '10500',
         },
       ],
     });
@@ -634,22 +653,31 @@ describe('policy layers', () => {
       affectedDomain: { objects: [{ objectId: 'a' }] },
       expected: {
         ruleSource: { kind: 'policy_version' },
-        value: { minCents: '0', maxCents: '10500' },
+        value: { fieldId: 'product.price_cents', min: '0', max: '10500' },
       },
-      observed: { sourceKind: 'computation', content: { candidateCents: '11000' } },
+      observed: { sourceKind: 'computation', content: { candidateValue: '11000' } },
     });
   });
 
   it('checks a constraint shared by several products on their end prices', async () => {
     const violated = await deltaCase({
       terminalConstraints: [
-        { kind: 'uniform_price', ruleId: 'same-price', productIds: ['a', 'e'] },
+        {
+          kind: 'uniform_value',
+          ruleId: 'same-price',
+          fieldId: 'product.price_cents',
+          objectType: 'product',
+          objectIds: ['a', 'e'],
+        },
       ],
     });
     const outcome = await h.compiler.compile(violated.proposal);
     expect(codesOf(outcome)).toEqual(['replay/terminal_constraint_violated']);
     expect(counterexamplesOf(outcome)[0]?.observed?.content).toEqual({
-      endPricesCents: { a: '11000', e: '10000' },
+      endValues: {
+        'product/a.product.price_cents': '11000',
+        'product/e.product.price_cents': '10000',
+      },
     });
   });
 
@@ -657,11 +685,12 @@ describe('policy layers', () => {
     const { proposal } = await deltaCase({
       terminalConstraints: [
         {
-          kind: 'price_range',
+          kind: 'value_range',
           ruleId: 'cap',
+          fieldId: 'product.price_cents',
           objects: EVERYTHING,
-          minCents: '0',
-          maxCents: '11000',
+          min: '0',
+          max: '11000',
         },
       ],
     });
@@ -671,7 +700,11 @@ describe('policy layers', () => {
     ).toEqual({
       obligationId: 'terminal_constraint_holds:cap',
       kind: 'terminal_constraint_holds',
-      parameters: { ruleId: 'cap', constraint: 'price_range', productIds: ['a', 'e'] },
+      parameters: {
+        ruleId: 'cap',
+        constraint: 'value_range',
+        domains: ['product/a.product.price_cents', 'product/e.product.price_cents'],
+      },
     });
   });
 });
@@ -689,13 +722,15 @@ describe('amount bounds', () => {
     });
 
     const outcome = await h.compiler.compile(proposal);
-    expect(codesOf(outcome)).toEqual(['replay/negative_final_price']);
+    expect(codesOf(outcome)).toEqual(['replay/value_out_of_bounds']);
     expect(counterexamplesOf(outcome)[0]).toMatchObject({
       obligationRef: 'replay.amounts_within_bounds',
-      expected: { value: { minCents: '0', maxCents: '9223372036854775807' } },
+      expected: {
+        value: { fieldId: 'product.price_cents', min: '0', max: '9223372036854775807' },
+      },
       observed: {
         sourceKind: 'computation',
-        content: { replayedInputCents: '1000', deltaCents: '-5000', sum: '-4000' },
+        content: { replayedInputValue: '1000', delta: '-5000', sum: '-4000' },
       },
     });
   });
@@ -713,10 +748,10 @@ describe('amount bounds', () => {
     });
 
     const outcome = await h.compiler.compile(proposal);
-    expect(codesOf(outcome)).toEqual(['replay/amount_out_of_range']);
+    expect(codesOf(outcome)).toEqual(['replay/value_out_of_bounds']);
     expect(counterexamplesOf(outcome)[0]?.observed?.content).toMatchObject({
-      replayedInputCents: '9223372036854775000',
-      deltaCents: '1000',
+      replayedInputValue: '9223372036854775000',
+      delta: '1000',
       sum: '9223372036854776000',
     });
   });
@@ -817,11 +852,12 @@ describe('confirmations at compile time', () => {
       standardPolicy(h, {
         terminalConstraints: [
           {
-            kind: 'price_range',
+            kind: 'value_range',
             ruleId: 'cap',
+            fieldId: 'product.price_cents',
             objects: EVERYTHING,
-            minCents: '0',
-            maxCents: '99999',
+            min: '0',
+            max: '99999',
           },
         ],
       }),
@@ -893,11 +929,12 @@ describe('confirmations at compile time', () => {
       standardPolicy(h, {
         terminalConstraints: [
           {
-            kind: 'price_range',
+            kind: 'value_range',
             ruleId: 'cap',
+            fieldId: 'product.price_cents',
             objects: EVERYTHING,
-            minCents: '0',
-            maxCents: '99999',
+            min: '0',
+            max: '99999',
           },
         ],
       }),
@@ -981,8 +1018,10 @@ describe('references across cases and snapshots', () => {
     const incident = await setPrice(h, 'a', 8_000n);
     const frozen = await freeze(h, ['a']);
     const unrelated = await collect(h, frozen.ref, {
-      tool: 'product.version_history',
-      productId: 'z',
+      tool: 'field.history',
+      objectType: 'product',
+      objectId: 'z',
+      fieldId: 'product.price_cents',
     });
     const { proposal } = await prepare(h, frozen, {
       incident: [incident.operationId],
@@ -1033,6 +1072,6 @@ describe('references across cases and snapshots', () => {
       const outcome = await h.compiler.compile({ ...proposal, ...extra });
       expect(codesOf(outcome), JSON.stringify(extra)).toEqual(['preflight/invalid_proposal']);
     }
-    expect((await h.db.reader.readProduct('a'))?.priceCents).toBe(8_000n);
+    expect((await h.db.reader.readProduct('a'))?.fields['product.price_cents']).toBe(8_000n);
   });
 });

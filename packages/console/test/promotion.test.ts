@@ -41,11 +41,37 @@ const AUTOPILOT: IdentityContext = {
   source: AUTONOMY_IDENTITY_SOURCE,
 };
 
-/** Hand-written expectation: snapshot version and value -> repaired value, per written product. */
+const PRICE = 'product.price_cents';
+
+/** Hand-written expectation: snapshot field version and value -> repaired value, per written product. */
 const EXPECTED_TARGETS = [
-  { productId: 'a', expectedVersion: '3', fromCents: '9000', toCents: '11000' },
-  { productId: 'd', expectedVersion: '2', fromCents: '8000', toCents: '10000' },
-  { productId: 'e', expectedVersion: '2', fromCents: '8000', toCents: '10000' },
+  {
+    objectType: 'product',
+    objectId: 'a',
+    fieldId: PRICE,
+    expectedObjectVersion: '3',
+    snapshotFieldVersion: '3',
+    fromValue: '9000',
+    toValue: '11000',
+  },
+  {
+    objectType: 'product',
+    objectId: 'd',
+    fieldId: PRICE,
+    expectedObjectVersion: '2',
+    snapshotFieldVersion: '2',
+    fromValue: '8000',
+    toValue: '10000',
+  },
+  {
+    objectType: 'product',
+    objectId: 'e',
+    fieldId: PRICE,
+    expectedObjectVersion: '2',
+    snapshotFieldVersion: '2',
+    fromValue: '8000',
+    toValue: '10000',
+  },
 ];
 
 let h: VerifyHarness;
@@ -131,9 +157,15 @@ async function caseEvents(): Promise<{ type: string; principal: string }[]> {
 }
 
 /** TEST FIXTURE ONLY: registers a charter row as the owner (the charter entry is not part of this track). */
-async function registerCharter(promotion: AutonomyCharterInput['promotion']): Promise<void> {
+async function registerCharter(
+  promotion: AutonomyCharterInput['promotion'],
+  envelope: { maxAbsoluteChange: string; maxRelativeChangeBps?: number } = {
+    maxAbsoluteChange: '2000',
+    maxRelativeChangeBps: 2500,
+  },
+): Promise<void> {
   const body = autonomyCharterSchema.parse({
-    charterFormat: 1,
+    charterFormat: 2,
     name: 'test pricing autopilot',
     sourceEnvironment: h.sourceEnvironment,
     autopilotPrincipal: AUTOPILOT.principal,
@@ -148,19 +180,23 @@ async function registerCharter(promotion: AutonomyCharterInput['promotion']): Pr
       'promote_repair',
     ],
     intake: { acknowledgeDataEgress: true },
-    incidentRule: {
-      operationTypes: ['batch_set_price'],
-      direction: 'decrease',
-      minRelativeChangeBps: 1000,
-      onNoMatch: 'escalate',
+    fields: {
+      [PRICE]: {
+        incident: {
+          operationTypes: ['batch_set_price'],
+          direction: 'decrease',
+          minRelativeChangeBps: 1000,
+        },
+        approval: { maxAbsoluteChange: '5000', maxRelativeChangeBps: 5000 },
+        promotion: envelope,
+      },
     },
+    onNoMatch: 'escalate',
     baselineRule: { kind: 'version_before_first_incident' },
     replayPolicy: { policyVersionId: randomUUID() },
     clarification: { kind: 'record_unknown_intent', statement: 'No intent is known.' },
     approval: {
       maxChangedObjects: 10,
-      maxAbsoluteChangeCents: '5000',
-      maxRelativeChangeBps: 5000,
       maxUnresolvedDomains: 5,
       validForSeconds: 900,
     },
@@ -200,10 +236,9 @@ const ENVELOPE = {
   enabled: true,
   allowPartial: true,
   maxChangedObjects: 3,
-  maxAbsoluteChangeCents: '2000',
-  maxRelativeChangeBps: 2500,
   maxDriftReopens: 1,
 };
+const FIELD_ENVELOPE = { maxAbsoluteChange: '2000', maxRelativeChangeBps: 2500 };
 
 describe('promotion of a sealed repair to the source', () => {
   it('writes exactly the sealed difference through the guarded entry, leaves orders and unresolved domains alone, and checks the source', async () => {
@@ -239,10 +274,10 @@ describe('promotion of a sealed repair to the source', () => {
       drift: [],
       sourcePrincipal: `promotion:${step.promotionId}`,
     });
-    expect(promotion.writes.map((w) => [w.productId, w.priceCents, w.version])).toEqual([
-      ['a', '11000', '4'],
-      ['d', '10000', '3'],
-      ['e', '10000', '3'],
+    expect(promotion.writes.map((w) => [w.objectId, w.fieldId, w.value, w.versionAfter])).toEqual([
+      ['a', PRICE, '11000', '4'],
+      ['d', PRICE, '10000', '3'],
+      ['e', PRICE, '10000', '3'],
     ]);
 
     // One audited commit by the promoter login, recorded as batch_set_price v1.
@@ -336,9 +371,17 @@ describe('promotion of a sealed repair to the source', () => {
     if (result.kind !== 'drift_refused') throw new Error(`expected drift, got ${result.kind}`);
     expect(result.promotion).toMatchObject({
       status: 'drift_refused',
-      drift: [{ productId: 'd', expectedVersion: '2', sourceVersion: '3' }],
+      drift: [
+        {
+          objectType: 'product',
+          objectId: 'd',
+          fieldId: PRICE,
+          expectedFieldVersion: '2',
+          sourceFieldVersion: '3',
+        },
+      ],
       sourceCommitSeq: null,
-      batchId: null,
+      batchIds: [],
       writes: [],
     });
     expect(await sourceProducts()).toEqual(before);
@@ -432,7 +475,9 @@ describe('promotion of a sealed repair to the source', () => {
         statement: 'c was set to 90.00 on purpose',
         evidenceRefs: [],
         source: { kind: 'operations_review', reference: 'ticket 9' },
-        scope: { domains: [{ objectType: 'product', objectId: 'c', field: 'price_cents' }] },
+        scope: {
+          domains: [{ objectType: 'product', objectId: 'c', field: PRICE }],
+        },
       },
     });
     expect(clarified.ok).toBe(true);
@@ -466,12 +511,18 @@ describe('promotion of a sealed repair to the source', () => {
       stage: 'approval',
       rejection: { code: 'outside_charter_envelope' },
     });
-    await registerCharter({ ...ENVELOPE, maxAbsoluteChangeCents: '1999' });
+    await registerCharter(
+      { ...ENVELOPE },
+      { maxAbsoluteChange: '1999', maxRelativeChangeBps: 2500 },
+    );
     expect(await advancePromotion(stores, stepOf(report, AUTOPILOT))).toMatchObject({
       kind: 'escalate',
       rejection: { code: 'outside_charter_envelope' },
     });
-    await registerCharter({ ...ENVELOPE, maxRelativeChangeBps: 2499 });
+    await registerCharter(
+      { ...ENVELOPE },
+      { maxAbsoluteChange: '2000', maxRelativeChangeBps: 2499 },
+    );
     expect(await advancePromotion(stores, stepOf(report, AUTOPILOT))).toMatchObject({
       kind: 'escalate',
       rejection: { code: 'outside_charter_envelope' },
@@ -485,7 +536,7 @@ describe('promotion of a sealed repair to the source', () => {
     expect(await sourceProducts()).toEqual(before);
 
     // Within the envelope: approved under the charter in force; switched off before the write, nothing is written.
-    await registerCharter(ENVELOPE);
+    await registerCharter(ENVELOPE, FIELD_ENVELOPE);
     const step = stepOf(report, AUTOPILOT);
     const approved = await stores.promotions.approve(AUTOPILOT, {
       approvalId: step.approvalId,
@@ -523,7 +574,7 @@ describe('promotion of a sealed repair to the source', () => {
     const superseded = await stores.checks.check({ verifierId: 'verifier-2', promotionId });
     if (!superseded.ok) throw new Error(superseded.rejection.message);
     expect(superseded.value.conclusion).toBe('superseded_by_later_write');
-    expect(superseded.value.findings.map((f) => [f.productId, f.conclusion])).toEqual([
+    expect(superseded.value.findings.map((f) => [f.objectId, f.conclusion])).toEqual([
       ['a', 'superseded_by_later_write'],
       ['d', 'matches'],
       ['e', 'matches'],
@@ -538,10 +589,10 @@ describe('promotion of a sealed repair to the source', () => {
     const bypassed = await stores.checks.check({ verifierId: 'verifier-2', promotionId });
     if (!bypassed.ok) throw new Error(bypassed.rejection.message);
     expect(bypassed.value.conclusion).toBe('mismatch');
-    expect(bypassed.value.findings.find((f) => f.productId === 'e')).toMatchObject({
+    expect(bypassed.value.findings.find((f) => f.objectId === 'e')).toMatchObject({
       conclusion: 'mismatch',
-      sourceCents: '1',
-      sourceVersion: '3',
+      sourceValue: '1',
+      sourceFieldVersion: '3',
     });
     expect((await stores.promotions.describe(h.caseId)).checks.map((c) => c.conclusion)).toEqual([
       'matches',
@@ -552,8 +603,7 @@ describe('promotion of a sealed repair to the source', () => {
 
   it('keeps the guarded entry and each promotion step to its own role', async () => {
     const { report } = await sealed(h);
-    const guarded =
-      "SELECT aftercare.guarded_batch_set_price('x', ARRAY['a'], ARRAY[3]::bigint[], ARRAY[1]::bigint[])";
+    const guarded = "SELECT aftercare.guarded_restore_fields('x', '[]'::jsonb)";
     for (const pool of [
       h.db.writerPool,
       h.db.runtimePool,

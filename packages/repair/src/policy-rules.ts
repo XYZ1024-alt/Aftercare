@@ -1,13 +1,9 @@
-import type { ObjectSelector, PolicyBody, WatermarkRange } from '@aftercare/contracts';
+import { type PolicyBody, selectorCovers, type WatermarkRange } from '@aftercare/contracts';
 import { findSemantics, REPAIR_SEMANTICS_VERSION } from './semantics.ts';
 
 // Resolution of the typed policy rules. Rules are data: nothing here evaluates
 // an expression, and no rule can outrank another. Overlapping rules of one
 // layer must agree; if they do not, the answer is a conflict.
-
-export function selectorCovers(selector: ObjectSelector, productId: string): boolean {
-  return selector.kind === 'all_products' || selector.productIds.includes(productId);
-}
 
 export function rangeCovers(range: WatermarkRange, commitSeq: bigint): boolean {
   return (
@@ -16,11 +12,14 @@ export function rangeCovers(range: WatermarkRange, commitSeq: bigint): boolean {
   );
 }
 
+/** The one field domain an operation instantiation writes. */
 export interface RuleSubject {
   readonly operationType: string;
   readonly templateVersion: number;
   readonly commitSeq: bigint;
-  readonly productId: string;
+  readonly objectType: string;
+  readonly objectId: string;
+  readonly fieldId: string;
 }
 
 /** Why the policy version does not speak about this operation at all; null when it does. */
@@ -29,8 +28,11 @@ export function scopeGap(policy: PolicyBody, subject: RuleSubject): string | nul
   if (!(scope.operationTypes as readonly string[]).includes(subject.operationType)) {
     return `operation type "${subject.operationType}" is outside the policy scope`;
   }
-  if (!selectorCovers(scope.objects, subject.productId)) {
-    return `product "${subject.productId}" is outside the policy scope`;
+  if (!scope.fields.includes(subject.fieldId)) {
+    return `field "${subject.fieldId}" is outside the policy scope`;
+  }
+  if (!selectorCovers(scope.objects, subject.objectType, subject.objectId)) {
+    return `${subject.objectType} "${subject.objectId}" is outside the policy scope`;
   }
   if (!rangeCovers(scope.watermark, subject.commitSeq)) {
     return `commit ${subject.commitSeq} is outside the policy's watermark range`;
@@ -93,7 +95,8 @@ export function resolveDeltaReplay(policy: PolicyBody, subject: RuleSubject) {
   return resolve(
     policy.deltaReplayRules.filter(
       (rule) =>
-        selectorCovers(rule.objects, subject.productId) &&
+        rule.fieldId === subject.fieldId &&
+        selectorCovers(rule.objects, subject.objectType, subject.objectId) &&
         rangeCovers(rule.watermark, subject.commitSeq),
     ),
   );
@@ -103,8 +106,9 @@ export function resolveOverrideRetention(policy: PolicyBody, subject: RuleSubjec
   return resolve(
     policy.overrideRetentionRules.filter(
       (rule) =>
+        rule.fieldId === subject.fieldId &&
         (rule.operationTypes as readonly string[]).includes(subject.operationType) &&
-        selectorCovers(rule.objects, subject.productId) &&
+        selectorCovers(rule.objects, subject.objectType, subject.objectId) &&
         rangeCovers(rule.watermark, subject.commitSeq),
     ),
   );

@@ -222,7 +222,12 @@ export async function freeze(
   const { ref, certificate } = await makeCurrent(h, caseId);
   const evidenceIds: string[] = [];
   for (const productId of productIds) {
-    const history = await collect(h, ref, { tool: 'product.version_history', productId });
+    const history = await collect(h, ref, {
+      tool: 'field.history',
+      objectType: 'product',
+      objectId: productId,
+      fieldId: 'product.price_cents',
+    });
     evidenceIds.push(history.evidenceId);
   }
   return { ref, certificate, evidenceIds };
@@ -279,9 +284,9 @@ export async function confirmBaseline(
       entries: Object.entries(prices).map(([objectId, cents]) => ({
         objectType: 'product',
         objectId,
-        field: 'price_cents',
-        version: '1',
-        priceCents: cents.toString(),
+        fieldId: 'product.price_cents',
+        fieldVersion: '1',
+        value: cents.toString(),
       })),
       statement: 'These prices were correct before the incident.',
       evidenceRefs: [...frozen.evidenceIds],
@@ -290,7 +295,7 @@ export async function confirmBaseline(
   );
 }
 
-const EVERYTHING = { kind: 'all_products' } as const;
+const EVERYTHING = { kind: 'all', objectType: 'product' } as const;
 const ALWAYS = { fromInclusive: '0', toInclusive: null };
 
 export type PolicyInput = z.input<typeof import('@aftercare/contracts').policyBodySchema>;
@@ -301,7 +306,7 @@ export function standardPolicy(
   overrides: Partial<PolicyInput> = {},
 ): PolicyInput {
   return {
-    policyFormat: 1,
+    policyFormat: 2,
     sourceEnvironment: h.sourceEnvironment,
     scope: {
       objects: EVERYTHING,
@@ -312,11 +317,12 @@ export function standardPolicy(
     supportedTemplates: OPERATION_TYPES.map((operationType) => ({
       operationType,
       templateVersion: 1,
-      semanticsVersion: 1,
+      semanticsVersion: 2,
     })),
     deltaReplayRules: [
       {
         ruleId: 'replay-deltas',
+        fieldId: 'product.price_cents',
         objects: EVERYTHING,
         watermark: ALWAYS,
         disposition: 'recompute_on_corrected_input',
@@ -325,6 +331,7 @@ export function standardPolicy(
     overrideRetentionRules: [
       {
         ruleId: 'keep-overrides',
+        fieldId: 'product.price_cents',
         objects: EVERYTHING,
         watermark: ALWAYS,
         operationTypes: ['set_price', 'batch_set_price'],
@@ -464,14 +471,14 @@ export function codesOf(outcome: CompileOutcome): string[] {
 /** Candidate price per product id, in cents, as decimal text. */
 export function candidatesOf(plan: CompiledPlan): Record<string, string> {
   return Object.fromEntries(
-    plan.content.candidates.map((candidate) => [candidate.objectId, candidate.candidateCents]),
+    plan.content.candidates.map((candidate) => [candidate.objectId, candidate.candidateValue]),
   );
 }
 
 /** Patch per product id as "from->to". */
 export function patchOf(plan: CompiledPlan): Record<string, string> {
   return Object.fromEntries(
-    plan.content.patch.map((entry) => [entry.objectId, `${entry.fromCents}->${entry.toCents}`]),
+    plan.content.patch.map((entry) => [entry.objectId, `${entry.fromValue}->${entry.toValue}`]),
   );
 }
 

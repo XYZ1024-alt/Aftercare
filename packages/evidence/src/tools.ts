@@ -5,18 +5,26 @@ import type {
   EvidenceBody,
   EvidenceOutcome,
   EvidenceQuery,
+  FieldHistoryEntry,
   ObjectRef,
+  ObjectRow,
   Observations,
   OperationSummary,
-  ProductVersion,
   SnapshotRecord,
 } from '@aftercare/contracts';
-import type { JsonObject, SnapshotTable } from '@aftercare/domain';
+import {
+  DEFAULT_REGISTRY,
+  findField,
+  findObject,
+  type JsonObject,
+  SNAPSHOT_TABLES,
+  type SnapshotTable,
+} from '@aftercare/domain';
 import type {
   BatchKey,
+  FieldHistoryKey,
   OperationKey,
   PageRequest,
-  ProductVersionKey,
   SnapshotSession,
 } from '@aftercare/storage';
 import { z } from 'zod';
@@ -36,7 +44,7 @@ import {
 import { accepted, rejected } from './outcome.ts';
 
 /** Version of the evidence tools as a set: the statements, their ordering and their dependency extraction. */
-export const EVIDENCE_TOOL_VERSION = 1;
+export const EVIDENCE_TOOL_VERSION = 2;
 
 export interface ToolContext {
   readonly session: SnapshotSession;
@@ -67,7 +75,7 @@ const operationKeySchema: z.ZodType<OperationKey> = z.tuple([
   z.uuid(),
 ]);
 const batchKeySchema: z.ZodType<BatchKey> = z.tuple([z.string(), z.uuid()]);
-const productVersionKeySchema: z.ZodType<ProductVersionKey> = z.tuple([
+const fieldHistoryKeySchema: z.ZodType<FieldHistoryKey> = z.tuple([
   z.string(),
   z.string(),
   z.number().int(),
@@ -148,11 +156,96 @@ function singlePage(found: boolean): EvidenceBody['page'] {
   return { limit: 1, returned: found ? 1 : 0, hasMore: false, nextCursor: null };
 }
 
+/** A result set returned in one statement; the page covers all of it. */
+function wholeWindow(returned: number): PageWindow {
+  return {
+    afterKey: null,
+    lastKey: null,
+    limit: Math.max(1, returned),
+    returned,
+    hasMore: false,
+  };
+}
+
+function wholePage(returned: number): EvidenceBody['page'] {
+  return { limit: Math.max(1, returned), returned, hasMore: false, nextCursor: null };
+}
+
 const WATERMARK_CONDITIONS = (range: WatermarkRange) =>
   [
     { field: 'commit_seq', operator: 'gt' as const, value: range.afterExclusive },
     { field: 'commit_seq', operator: 'lte' as const, value: range.toInclusive },
   ] as const;
+
+/** The contract form of one object reference: object type is the closed registry set. */
+function objectRefOf(objectType: string, objectId: string): ObjectRef {
+  if (objectType === 'product' || objectType === 'order') {
+    return { objectType, objectId };
+  }
+  throw new Error(`object type "${objectType}" is not a registered object type`);
+}
+
+/** The registered field id of one written column, or null for a non-repairable column. */
+function registeredFieldId(objectType: string, column: string): string | null {
+  const fieldId = `${objectType}.${column}`;
+  return findField(DEFAULT_REGISTRY, fieldId) === undefined ? null : fieldId;
+}
+
+/**
+ * One row-version dependency per registered field a target write touched; a
+ * write of non-repairable columns only rests on the object version as a whole.
+ */
+function targetDependencies(target: OperationSummary['targets'][number]): RowVersionDependency[] {
+  const fieldIds = new Set(
+    target.fields
+      .map((column) => registeredFieldId(target.objectType, column))
+      .filter((fieldId): fieldId is string => fieldId !== null),
+  );
+  if (fieldIds.size === 0) {
+    return [
+      {
+        kind: 'row_version',
+        objectType: target.objectType,
+        objectId: target.objectId,
+        fieldId: null,
+        objectVersion: target.versionAfter,
+        via: 'audit_write',
+      },
+    ];
+  }
+  return [...fieldIds].map((fieldId) => ({
+    kind: 'row_version' as const,
+    objectType: target.objectType,
+    objectId: target.objectId,
+    fieldId,
+    objectVersion: target.versionAfter,
+    via: 'audit_write' as const,
+  }));
+}
+
+/** The snapshot table that holds one registered object type. */
+function objectTable(objectType: string): SnapshotTable {
+  const spec = findObject(DEFAULT_REGISTRY, objectType);
+  if (spec === undefined) {
+    throw new Error(`object type "${objectType}" has no registry entry`);
+  }
+  if (!(SNAPSHOT_TABLES as readonly string[]).includes(spec.tableName)) {
+    throw new Error(`object table "${spec.tableName}" is not a snapshot table`);
+  }
+  return spec.tableName as SnapshotTable;
+}
+
+/** The canonical object version recorded in an after image, when it holds one. */
+function recordedVersion(state: JsonObject): string | undefined {
+  const version = state.version;
+  if (typeof version === 'string' && /^(0|[1-9][0-9]*)$/.test(version)) {
+    return version;
+  }
+  if (typeof version === 'number' && Number.isSafeInteger(version) && version >= 0) {
+    return version.toString();
+  }
+  return undefined;
+}
 
 async function listOperations(
   query: QueryOf<'operations.list'>,
@@ -182,16 +275,7 @@ async function listOperations(
     page,
     rangeConclusion: concludeRange(window, guarantee),
     citedTemplates: rows,
-    rowVersions: rows.flatMap((operation) =>
-      operation.targets.map((target) => ({
-        kind: 'row_version' as const,
-        objectType: target.objectType,
-        objectId: target.objectId,
-        version: target.versionAfter,
-        fields: target.fields,
-        via: 'audit_write' as const,
-      })),
-    ),
+    rowVersions: rows.flatMap((operation) => operation.targets.flatMap(targetDependencies)),
     rangeDependencies: [
       predicateDependency(
         {
@@ -249,57 +333,62 @@ async function listBatches(
   });
 }
 
-async function productVersionHistory(
-  query: QueryOf<'product.version_history'>,
+async function fieldHistory(
+  query: QueryOf<'field.history'>,
   { session, snapshot, certificate }: ToolContext,
 ): Promise<EvidenceOutcome<ToolResult>> {
-  const identity = { tool: query.tool, productId: query.productId };
-  const read = await readPage<ProductVersion, ProductVersionKey>(
+  const identity = {
+    tool: query.tool,
+    objectType: query.objectType,
+    objectId: query.objectId,
+    fieldId: query.fieldId,
+  };
+  const read = await readPage<FieldHistoryEntry, FieldHistoryKey>(
     { snapshotId: snapshot.snapshotId, tool: query.tool, queryIdentity: identity },
     query,
-    productVersionKeySchema,
-    (page) => session.listProductVersions(query.productId, page),
-    (version) => [
-      version.versionAfter,
-      version.commitSeq,
-      version.ordinalInCommit,
-      version.operationId,
-    ],
+    fieldHistoryKeySchema,
+    (page) => session.listFieldHistory(query.objectType, query.objectId, query.fieldId, page),
+    (entry) => [entry.versionAfter, entry.commitSeq, entry.ordinalInCommit, entry.operationId],
   );
   if (!read.ok) {
     return read;
   }
   const { rows, window, afterKey, page } = read.value;
-  const product = await session.readProductRow(query.productId);
-  const object: ObjectRef = { objectType: 'product', objectId: query.productId };
-  // A version history speaks about the whole checked range of the snapshot.
+  // The row reader is product-only: a field history of any other object type
+  // has no row as the snapshot holds it.
+  const object: ObjectRow | null =
+    query.objectType === 'product' ? await session.readProductRow(query.objectId) : null;
+  const subject = objectRefOf(query.objectType, query.objectId);
+  // A field history speaks about the whole checked range of the snapshot.
   const range = checkedRangeOf(certificate);
-  const guarantee = coverageGuarantee(certificate, range, [object]);
+  const guarantee = coverageGuarantee(certificate, range, [subject]);
+  const field = findField(DEFAULT_REGISTRY, query.fieldId);
+  const column = field === undefined ? null : field.column;
 
   return accepted({
-    tables: ['products', 'operation_writes', 'operations'],
+    tables: [objectTable(query.objectType), 'operation_writes', 'operations'],
     query: { ...identity, limit: query.limit, afterKey: afterKey === null ? null : [...afterKey] },
-    observations: { tool: query.tool, product, versions: [...rows] },
+    observations: { tool: query.tool, object, versions: [...rows] },
     page,
     rangeConclusion: concludeRange(window, guarantee),
     citedTemplates: rows,
     rowVersions: [
-      ...(product === null
+      ...(object === null
         ? []
         : [
             {
               kind: 'row_version' as const,
-              ...object,
-              version: product.version,
-              fields: ['price_cents', 'version'],
+              ...subject,
+              fieldId: null,
+              objectVersion: object.version,
               via: 'business_row' as const,
             },
           ]),
-      ...rows.map((version) => ({
+      ...rows.map((entry) => ({
         kind: 'row_version' as const,
-        ...object,
-        version: version.versionAfter,
-        fields: version.fields,
+        ...subject,
+        fieldId: entry.fieldId,
+        objectVersion: entry.versionAfter,
         via: 'audit_write' as const,
       })),
     ],
@@ -308,8 +397,11 @@ async function productVersionHistory(
         {
           tables: ['operation_writes'],
           conditions: [
-            { field: 'object_type', operator: 'eq', value: 'product' },
-            { field: 'object_id', operator: 'eq', value: query.productId },
+            { field: 'object_type', operator: 'eq', value: query.objectType },
+            { field: 'object_id', operator: 'eq', value: query.objectId },
+            ...(column === null
+              ? []
+              : [{ field: 'field' as const, operator: 'eq' as const, value: column }]),
           ],
           orderBy: ['version_after', 'commit_seq', 'ordinal_in_commit', 'operation_id'],
         },
@@ -317,11 +409,17 @@ async function productVersionHistory(
       ),
       predicateDependency(
         {
-          tables: ['products'],
-          conditions: [{ field: 'product_id', operator: 'eq', value: query.productId }],
-          orderBy: ['product_id'],
+          tables: [objectTable(query.objectType)],
+          conditions: [
+            {
+              field: findObject(DEFAULT_REGISTRY, query.objectType)?.pkColumn ?? 'object_id',
+              operator: 'eq',
+              value: query.objectId,
+            },
+          ],
+          orderBy: [findObject(DEFAULT_REGISTRY, query.objectType)?.pkColumn ?? 'object_id'],
         },
-        singleWindow(product !== null),
+        singleWindow(object !== null),
       ),
       watermarkDependency(snapshot, range, guarantee),
     ],
@@ -355,16 +453,16 @@ async function operationDetail(
         kind: 'row_version' as const,
         objectType: read.objectType,
         objectId: read.objectId,
-        version: read.objectVersion,
-        fields: [read.field],
+        fieldId: registeredFieldId(read.objectType, read.field),
+        objectVersion: read.objectVersion,
         via: 'audit_read' as const,
       })),
       ...(operation?.writes ?? []).map((write) => ({
         kind: 'row_version' as const,
         objectType: write.objectType,
         objectId: write.objectId,
-        version: write.versionAfter,
-        fields: [write.field],
+        fieldId: registeredFieldId(write.objectType, write.field),
+        objectVersion: write.versionAfter,
         via: 'audit_write' as const,
       })),
     ],
@@ -382,77 +480,85 @@ async function operationDetail(
   });
 }
 
-async function orderPricing(
-  query: QueryOf<'order.pricing'>,
+async function readerImpacts(
+  query: QueryOf<'reader.impacts'>,
   { session, snapshot, certificate }: ToolContext,
 ): Promise<EvidenceOutcome<ToolResult>> {
-  const pricing = await session.readOrderPricing(query.orderId);
-  const window = singleWindow(pricing !== null);
+  const impacts = await session.listReaderImpacts(query.objectType, query.objectId, query.fieldId);
+  const window = wholeWindow(impacts.length);
   const range = checkedRangeOf(certificate);
-  const order: ObjectRef = { objectType: 'order', objectId: query.orderId };
-  const guarantee = coverageGuarantee(
-    certificate,
-    range,
-    pricing === null
-      ? [order]
-      : [order, { objectType: 'product', objectId: pricing.order.productId }],
+  const subject = objectRefOf(query.objectType, query.objectId);
+  const readers = impacts.map((impact) =>
+    objectRefOf(impact.readerObjectType, impact.readerObjectId),
+  );
+  const guarantee = coverageGuarantee(certificate, range, [subject, ...readers]);
+  const readersOfField = new Map(
+    (findField(DEFAULT_REGISTRY, query.fieldId)?.copyReaders ?? []).map((reader) => [
+      reader.objectType,
+      objectTable(reader.objectType),
+    ]),
   );
 
   const rowVersions: RowVersionDependency[] = [];
-  if (pricing !== null) {
+  for (const impact of impacts) {
     rowVersions.push({
       kind: 'row_version',
-      ...order,
-      version: pricing.order.version,
-      fields: ['product_id', 'quantity', 'unit_price_cents', 'price_version'],
-      via: 'business_row',
+      objectType: impact.readObjectType,
+      objectId: impact.readObjectId,
+      fieldId: impact.fieldId,
+      objectVersion: impact.readObjectVersion,
+      via: 'audit_read',
     });
-    for (const read of pricing.creation?.reads ?? []) {
+    if (impact.writtenBy !== null) {
       rowVersions.push({
         kind: 'row_version',
-        objectType: read.objectType,
-        objectId: read.objectId,
-        version: read.objectVersion,
-        fields: [read.field],
-        via: 'audit_read',
-      });
-    }
-    if (pricing.priceSource !== null) {
-      rowVersions.push({
-        kind: 'row_version',
-        objectType: 'product',
-        objectId: pricing.priceSource.productId,
-        version: pricing.priceSource.version,
-        fields: ['price_cents'],
+        objectType: impact.readObjectType,
+        objectId: impact.readObjectId,
+        fieldId: impact.fieldId,
+        objectVersion:
+          recordedVersion(impact.writtenBy.recordedAfterState) ?? impact.readObjectVersion,
         via: 'audit_write',
       });
     }
   }
 
+  // A reader row points at the read object through that object's primary key
+  // column (an order carries the product id it copied the price of).
+  const sourcePkColumn = findObject(DEFAULT_REGISTRY, query.objectType)?.pkColumn ?? 'object_id';
+  const readerPredicates = [...readersOfField.entries()].map(([readerType, table]) =>
+    predicateDependency(
+      {
+        tables: [table],
+        conditions: [{ field: sourcePkColumn, operator: 'eq', value: query.objectId }],
+        orderBy: [findObject(DEFAULT_REGISTRY, readerType)?.pkColumn ?? 'object_id'],
+      },
+      wholeWindow(impacts.filter((impact) => impact.readerObjectType === readerType).length),
+    ),
+  );
+
   return accepted({
-    tables: ['orders', 'operation_writes', 'operations', 'operation_reads'],
-    query: { tool: query.tool, orderId: query.orderId },
-    observations: { tool: query.tool, pricing },
-    page: singlePage(pricing !== null),
+    tables: [...readersOfField.values(), 'operation_writes', 'operations'],
+    query: {
+      tool: query.tool,
+      objectType: query.objectType,
+      objectId: query.objectId,
+      fieldId: query.fieldId,
+    },
+    observations: { tool: query.tool, impacts },
+    page: wholePage(impacts.length),
     rangeConclusion: concludeRange(window, guarantee),
-    citedTemplates: [
-      ...(pricing?.creation == null
+    citedTemplates: impacts.flatMap((impact) =>
+      impact.writtenBy === null
         ? []
-        : [{ operationType: 'create_order', templateVersion: pricing.creation.templateVersion }]),
-      ...(pricing?.priceSource == null ? [] : [pricing.priceSource]),
-    ],
+        : [
+            {
+              operationType: impact.writtenBy.operationType,
+              templateVersion: impact.writtenBy.templateVersion,
+            },
+          ],
+    ),
     rowVersions,
-    rangeDependencies: [
-      predicateDependency(
-        {
-          tables: ['orders'],
-          conditions: [{ field: 'order_id', operator: 'eq', value: query.orderId }],
-          orderBy: ['order_id'],
-        },
-        window,
-      ),
-      watermarkDependency(snapshot, range, guarantee),
-    ],
+    rangeDependencies: [...readerPredicates, watermarkDependency(snapshot, range, guarantee)],
   });
 }
 
@@ -466,11 +572,11 @@ export function runTool(
       return listOperations(query, context);
     case 'batches.list':
       return listBatches(query, context);
-    case 'product.version_history':
-      return productVersionHistory(query, context);
+    case 'field.history':
+      return fieldHistory(query, context);
     case 'operation.detail':
       return operationDetail(query, context);
-    case 'order.pricing':
-      return orderPricing(query, context);
+    case 'reader.impacts':
+      return readerImpacts(query, context);
   }
 }

@@ -49,15 +49,15 @@ interface HistoryView {
   }[];
 }
 
-/** Product histories exactly as a model was shown them. */
+/** Product field histories exactly as a model was shown them. */
 function historiesOf(view: ScriptView): HistoryView[] {
   return view
-    .results('get_product_history')
+    .results('get_field_history')
     .filter((result) => result.ok === true)
     .map((result) => {
       const observations = (result.data as JsonObject).observations as JsonObject;
       return {
-        productId: String((observations.product as JsonObject).productId),
+        productId: String((observations.object as JsonObject).objectId),
         versions: (observations.versions as JsonObject[]).map((version) => ({
           operationId: String(version.operationId),
           operationType: String(version.operationType),
@@ -112,7 +112,11 @@ describe('a batch that mixes a legitimate promotion with a wrong default price',
             supportingEvidenceIds: evidenceIdsOf(view, 'list_operations'),
           }),
           ...['p1', 'p2', 'p3', 'p4'].map((productId) =>
-            call('get_product_history', { productId }),
+            call('get_field_history', {
+              objectType: 'product',
+              objectId: productId,
+              fieldId: 'product.price_cents',
+            }),
           ),
         ],
       }),
@@ -122,7 +126,7 @@ describe('a batch that mixes a legitimate promotion with a wrong default price',
           call('assess_hypothesis', {
             hypothesisId: String(view.data('register_hypothesis').hypothesisId),
             assessment: 'refute',
-            evidenceIds: evidenceIdsOf(view, 'get_product_history'),
+            evidenceIds: evidenceIdsOf(view, 'get_field_history'),
             rationale: 'The histories of p3 and p4 show the same price before and after the batch.',
           }),
           call('ask_incident_scope', {
@@ -131,7 +135,7 @@ describe('a batch that mixes a legitimate promotion with a wrong default price',
             relevance:
               'Only confirmed operations are omitted; the other targets of the batch stay.',
             operationIds: changedByBatch(view).map((entry) => entry.operationId),
-            evidenceIds: evidenceIdsOf(view, 'get_product_history'),
+            evidenceIds: evidenceIdsOf(view, 'get_field_history'),
           }),
         ],
       }),
@@ -207,7 +211,7 @@ describe('two reports that read alike, over different records', () => {
       const listed = ((operations.data as JsonObject).observations as JsonObject)
         .operations as JsonObject[];
       if (
-        view.results('get_operation_detail').length + view.results('get_product_history').length ===
+        view.results('get_operation_detail').length + view.results('get_field_history').length ===
         0
       ) {
         return recorded.length === 0
@@ -220,10 +224,10 @@ describe('two reports that read alike, over different records', () => {
             }
           : {
               calls: listed.map((operation) =>
-                call('get_product_history', {
-                  productId: String(
-                    ((operation.targets as JsonObject[])[0] as JsonObject).objectId,
-                  ),
+                call('get_field_history', {
+                  objectType: 'product',
+                  objectId: String(((operation.targets as JsonObject[])[0] as JsonObject).objectId),
+                  fieldId: 'product.price_cents',
                 }),
               ),
             };
@@ -254,8 +258,8 @@ describe('two reports that read alike, over different records', () => {
     expect(await trace(h, batched.agentRunId)).toEqual([
       'list_batches:succeeded',
       'list_operations:succeeded',
-      'get_product_history:succeeded',
-      'get_product_history:succeeded',
+      'get_field_history:succeeded',
+      'get_field_history:succeeded',
       'request_pause:succeeded',
     ]);
     // Both paused where the rule said so; neither was led through a fixed list.
@@ -285,7 +289,7 @@ describe('an operation whose intent is not on record (c: 80.00 -> 90.00)', () =>
             proposition: 'What was the manual adjustment of product c meant to do?',
             relevance:
               'Its recorded template is not interpretable, so the price of c cannot be replayed.',
-            productIds: ['c'],
+            fieldScope: [{ objectType: 'product', objectId: 'c', fieldId: 'product.price_cents' }],
             evidenceIds: evidenceIdsOf(view, 'get_operation_detail'),
           }),
         ],
@@ -308,7 +312,16 @@ describe('an operation whose intent is not on record (c: 80.00 -> 90.00)', () =>
             phase,
             call('submit_repair_proposal', {
               ...proposal.args,
-              patch: [{ productId: 'c', toCents: '11000' }],
+              patch: [
+                {
+                  objectType: 'product',
+                  objectId: 'c',
+                  fieldId: 'product.price_cents',
+                  expectedObjectVersion: '3',
+                  fromValue: '9000',
+                  toValue: '11000',
+                },
+              ],
             }),
           ],
         };
@@ -327,7 +340,7 @@ describe('an operation whose intent is not on record (c: 80.00 -> 90.00)', () =>
     const question = await h.openQuestion(run.agentRunId);
     expect(question.body).toMatchObject({
       kind: 'clarification',
-      scope: [{ objectType: 'product', objectId: 'c', field: 'price_cents' }],
+      scope: [{ objectType: 'product', objectId: 'c', fieldId: 'product.price_cents' }],
     });
     expect((await h.db.caseStore.readCaseState(run.caseId))?.run.phase).toBe('awaiting_input');
     const clarified = await h.answer(OPERATOR_SESSION, {
@@ -344,7 +357,7 @@ describe('an operation whose intent is not on record (c: 80.00 -> 90.00)', () =>
     );
     expect(ended.status).toBe('partially_resolved');
     const delivery = await h.service.inspection.delivery(run.agentRunId);
-    expect(delivery).toMatchObject({ unresolvedDomains: ['product/c.price_cents'] });
+    expect(delivery).toMatchObject({ unresolvedDomains: ['product/c.product.price_cents'] });
     // c is exactly what the snapshot held: 90.00 at version 3. Not 110.00, not 100.00.
     expect((await branchPricesOf(h, run.caseId))[0]?.c).toBe('9000@3');
     const [plan] = await h.agentStore.listPlans(run.caseId);
@@ -410,7 +423,7 @@ describe('new evidence overturns a hypothesis a plan rested on', () => {
           call('assess_hypothesis', {
             hypothesisId: String(view.data('register_hypothesis').hypothesisId),
             assessment: 'support',
-            evidenceIds: evidenceIdsOf(view, 'get_product_history'),
+            evidenceIds: evidenceIdsOf(view, 'get_field_history'),
             rationale: 'Every product history shows the batch as the first change.',
           }),
         ],
@@ -429,13 +442,20 @@ describe('new evidence overturns a hypothesis a plan rested on', () => {
       }),
       steps.branch,
       // New evidence, and with it the hypothesis falls.
-      () => ({ calls: [call('get_order_pricing', { orderId: 'order-e' })] }),
+      () => ({
+        calls: [
+          call('get_reader_impacts', {
+            objectId: 'e',
+            fieldId: 'product.price_cents',
+          }),
+        ],
+      }),
       (view) => ({
         calls: [
           call('assess_hypothesis', {
             hypothesisId: String(view.data('register_hypothesis').hypothesisId),
             assessment: 'refute',
-            evidenceIds: evidenceIdsOf(view, 'get_order_pricing'),
+            evidenceIds: evidenceIdsOf(view, 'get_reader_impacts'),
             rationale: 'An order was struck later: the batch is not the only relevant event.',
           }),
         ],

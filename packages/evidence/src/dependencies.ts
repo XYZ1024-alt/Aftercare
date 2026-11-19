@@ -7,6 +7,7 @@ import type {
   SnapshotRecord,
 } from '@aftercare/contracts';
 import type { SnapshotTable } from '@aftercare/domain';
+import { isObjectType } from './checker/outcome.ts';
 
 // Dependency RECORDS only: what a result rests on. No dependency graph is
 // built and no staleness is propagated here.
@@ -39,6 +40,12 @@ export function checkedRangeOf(certificate: Certificate): WatermarkRange {
  * "established" only when the certificate found nothing wrong with the scope
  * the statement is about. `objects`: the objects the statement concerns, or
  * 'any' when it concerns whatever lies in the range.
+ *
+ * The guarantee stays object-level on purpose (design plan §11.2): a finding
+ * about one field makes its whole object investigation_only, and a certificate
+ * never claims more than that about a field. Callers name the objects a field
+ * statement concerns; the field itself is carried by the row-version
+ * dependencies, not by this guarantee.
  */
 export function coverageGuarantee(
   certificate: Certificate,
@@ -174,35 +181,46 @@ export function semanticsDependency(
   };
 }
 
-/** Merges row-version dependencies on the same object version and origin, in a stable order. */
+/**
+ * Merges row-version dependencies that state the same fact, in a stable order.
+ * The field is part of the identity: two fields of one object at one version
+ * are two different dependencies. Version and origin stay in the key because
+ * one dependency carries exactly one object version and one way of reading it;
+ * merging across either would silently drop a fact.
+ */
 export function mergeRowVersions(
   dependencies: readonly RowVersionDependency[],
 ): RowVersionDependency[] {
-  const merged = new Map<string, RowVersionDependency & { fields: string[] }>();
+  const merged = new Map<string, RowVersionDependency>();
   for (const dependency of dependencies) {
     const key = [
       dependency.objectType,
       dependency.objectId,
-      dependency.version.padStart(20, '0'),
+      dependency.fieldId ?? '*',
+      dependency.objectVersion.padStart(20, '0'),
       dependency.via,
     ].join('/');
-    const existing = merged.get(key);
-    if (existing === undefined) {
-      merged.set(key, { ...dependency, fields: [...dependency.fields] });
-    } else {
-      existing.fields.push(...dependency.fields);
+    if (!merged.has(key)) {
+      merged.set(key, { ...dependency });
     }
   }
   return [...merged.entries()]
     .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
-    .map(([, dependency]) => ({ ...dependency, fields: [...new Set(dependency.fields)].sort() }));
+    .map(([, dependency]) => dependency);
 }
 
 /** Every business object version the row-version dependencies mention. */
 export function objectVersionsOf(dependencies: readonly RowVersionDependency[]): ObjectVersion[] {
   const versions = new Map<string, ObjectVersion>();
-  for (const { objectType, objectId, version } of dependencies) {
-    versions.set(`${objectType}/${objectId}/${version}`, { objectType, objectId, version });
+  for (const { objectType, objectId, objectVersion } of dependencies) {
+    if (!isObjectType(objectType)) {
+      continue;
+    }
+    versions.set(`${objectType}/${objectId}/${objectVersion}`, {
+      objectType,
+      objectId,
+      version: objectVersion,
+    });
   }
   return [...versions.values()];
 }

@@ -1,4 +1,4 @@
-import type { JsonObject } from '@aftercare/domain';
+import { fieldIdOf, type JsonObject } from '@aftercare/domain';
 import { z } from 'zod';
 import type { ModelAdapter, ModelFailure, ModelOutcome, ModelRequest } from './adapter.ts';
 import { SCRIPTED_USAGE, type ScriptedCall, scriptView } from './scripted.ts';
@@ -29,7 +29,10 @@ const versionSchema = z.looseObject({
   operationId: z.uuid(),
   versionBefore: z.string().nullable(),
   versionAfter: z.string(),
+  recordedAfterState: z.record(z.string(), z.json()),
 });
+/** The pricing test double reads the one registered product price field. */
+const PRICE_FIELD_ID = fieldIdOf('product', 'price_cents');
 const evidenceResultSchema = z.looseObject({
   ok: z.literal(true),
   source: z.looseObject({ refs: z.looseObject({ snapshotId: z.uuid() }) }),
@@ -37,7 +40,7 @@ const evidenceResultSchema = z.looseObject({
     evidenceId: z.uuid(),
     observations: z.looseObject({
       operations: z.array(operationSchema).optional(),
-      product: z.looseObject({ productId: z.string() }).nullable().optional(),
+      object: z.looseObject({ objectType: z.string(), objectId: z.string() }).nullable().optional(),
       versions: z.array(versionSchema).optional(),
     }),
     page: z.looseObject({ hasMore: z.boolean(), nextCursor: z.string().nullable() }),
@@ -92,7 +95,15 @@ const stateSchema = z.looseObject({
 
 const planDataSchema = z.looseObject({
   planId: z.uuid(),
-  unresolved: z.array(z.looseObject({ domain: z.looseObject({ objectId: z.string() }) })),
+  unresolved: z.array(
+    z.looseObject({
+      domain: z.looseObject({
+        objectType: z.string(),
+        objectId: z.string(),
+        field: z.string().nullable(),
+      }),
+    }),
+  ),
 });
 
 export type ProtocolDriverFault =
@@ -236,26 +247,37 @@ function decide(request: ModelRequest): Step {
     );
   }
 
-  // 2. The histories of the products the batch operations wrote.
-  const histories = evidenceOf('get_product_history');
+  // 2. The field histories of the products the batch operations wrote.
+  const histories = evidenceOf('get_field_history');
   const historyOf = new Map(
-    histories.flatMap((result) =>
-      result.data.observations.product?.productId === undefined
-        ? []
-        : [[result.data.observations.product.productId, result] as const],
-    ),
+    histories.flatMap((result) => {
+      const { object } = result.data.observations;
+      return object?.objectType === 'product' ? [[object.objectId, result] as const] : [];
+    }),
   );
   const missing = productsOf(batchOperations.map((operation) => operation.operationId)).filter(
     (productId) => !historyOf.has(productId),
   );
   if (missing.length > 0) {
     return {
-      text: `Reading the version history of ${missing.length} product(s) the batch wrote.`,
-      calls: missing
-        .slice(0, 20)
-        .map((productId) => ({ tool: 'get_product_history', args: { productId, limit: 100 } })),
+      text: `Reading the field history of ${missing.length} product(s) the batch wrote.`,
+      calls: missing.slice(0, 20).map((productId) => ({
+        tool: 'get_field_history',
+        args: {
+          objectType: 'product',
+          objectId: productId,
+          fieldId: PRICE_FIELD_ID,
+          limit: 100,
+        },
+      })),
     };
   }
+
+  /** The last recorded write of the field at or before an object version. */
+  const versionAtOrBefore = (result: EvidenceResult, objectVersion: string) =>
+    (result.data.observations.versions ?? [])
+      .filter((version) => BigInt(version.versionAfter) <= BigInt(objectVersion))
+      .at(-1) ?? null;
 
   // 3. The three business statements, each from an authorised human.
   const inForce = state.confirmations.filter(
@@ -279,7 +301,7 @@ function decide(request: ModelRequest): Step {
           tool: 'ask_incident_scope',
           args: {
             proposition:
-              'Which of these batch operations applied a wrong price? Confirm only the erroneous ones.',
+              'Which of these batch operations applied a wrong value? Confirm only the erroneous ones.',
             relevance:
               'Only operations confirmed as erroneous are omitted when the history is replayed.',
             operationIds: batchOperations.map((operation) => operation.operationId).slice(0, 200),
@@ -296,14 +318,24 @@ function decide(request: ModelRequest): Step {
       return finish('unresolved', 'The baseline was not confirmed.', ['baseline']);
     }
     const entries = incidentProducts.flatMap((productId) => {
-      const first = historyOf
-        .get(productId)
-        ?.data.observations.versions?.find((version) =>
-          incidentOperationIds.includes(version.operationId),
-        );
-      return first?.versionBefore === null || first === undefined
+      const history = historyOf.get(productId);
+      const first = history?.data.observations.versions?.find((version) =>
+        incidentOperationIds.includes(version.operationId),
+      );
+      if (history === undefined || first === undefined || first.versionBefore === null) {
+        return [];
+      }
+      const baselineVersion = versionAtOrBefore(history, first.versionBefore);
+      return baselineVersion === null
         ? []
-        : [{ productId, version: first.versionBefore }];
+        : [
+            {
+              objectType: 'product',
+              objectId: productId,
+              fieldId: PRICE_FIELD_ID,
+              fieldVersion: baselineVersion.versionAfter,
+            },
+          ];
     });
     const firstIncident = operations
       .filter((operation) => incidentOperationIds.includes(operation.operationId))
@@ -317,13 +349,13 @@ function decide(request: ModelRequest): Step {
       );
     }
     return guarded({
-      text: `Asking whether the versions right before the confirmed operations held correct prices (${entries.length} product(s)).`,
+      text: `Asking whether the field versions right before the confirmed operations held correct values (${entries.length} product(s)).`,
       calls: [
         {
           tool: 'ask_baseline',
           args: {
             proposition:
-              'Were these prices, as recorded right before the confirmed operations, correct?',
+              'Were these values, as recorded right before the confirmed operations, correct?',
             relevance: 'The replay starts from a confirmed baseline.',
             trustedWatermark: (firstIncident - 1n).toString(),
             entries,
@@ -423,9 +455,30 @@ function decide(request: ModelRequest): Step {
         : [];
     })
     .at(-1);
-  const unresolvedProducts = [
-    ...new Set((compiled?.unresolved ?? []).map((entry) => entry.domain.objectId)),
-  ].sort();
+  const unresolvedFields = [
+    ...new Map(
+      (compiled?.unresolved ?? []).flatMap((entry) =>
+        entry.domain.field === null
+          ? []
+          : [
+              [
+                `${entry.domain.objectType}/${entry.domain.objectId}.${entry.domain.field}`,
+                {
+                  objectType: entry.domain.objectType,
+                  objectId: entry.domain.objectId,
+                  fieldId: entry.domain.field,
+                },
+              ] as const,
+            ],
+      ),
+    ).values(),
+  ].sort((left, right) =>
+    `${left.objectType}/${left.objectId}.${left.fieldId}` <
+    `${right.objectType}/${right.objectId}.${right.fieldId}`
+      ? -1
+      : 1,
+  );
+  const unresolvedProducts = [...new Set(unresolvedFields.map((entry) => entry.objectId))].sort();
   if (
     plan.lifecycle === 'compiled' &&
     unresolvedProducts.length > 0 &&
@@ -438,10 +491,10 @@ function decide(request: ModelRequest): Step {
         {
           tool: 'ask_clarification',
           args: {
-            proposition: `What was the later price change on ${unresolvedProducts.join(', ')} meant to do? The records do not say.`,
+            proposition: `What was the later change on ${unresolvedFields.map((entry) => entry.fieldId).join(', ')} meant to do? The records do not say.`,
             relevance:
               'Without a rule for it the domain stays unresolved; the statement is recorded with the plan.',
-            productIds: unresolvedProducts.slice(0, 200),
+            fieldScope: unresolvedFields.slice(0, 200),
             evidenceIds: unresolvedProducts
               .flatMap(
                 (productId) =>

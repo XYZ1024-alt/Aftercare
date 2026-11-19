@@ -121,10 +121,22 @@ describe('eligibility degrades with the kind of damage', () => {
     const damaged = accepted(
       await harness.evidence.collect({
         ...ref,
-        query: { tool: 'product.version_history', productId: GADGET },
+        query: {
+          tool: 'field.history',
+          objectType: 'product',
+          objectId: GADGET,
+          fieldId: 'product.price_cents',
+        },
       }),
     );
-    expect(damaged.observations).toMatchObject({ product: { priceCents: '7777', version: '2' } });
+    expect(damaged.observations).toMatchObject({
+      object: {
+        objectType: 'product',
+        objectId: GADGET,
+        version: '2',
+        fields: { 'product.price_cents': '7777' },
+      },
+    });
     expect(damaged.rangeConclusion).toEqual({
       kind: 'entire_range',
       matched: 1,
@@ -138,7 +150,12 @@ describe('eligibility degrades with the kind of damage', () => {
     const intact = accepted(
       await harness.evidence.collect({
         ...ref,
-        query: { tool: 'product.version_history', productId: WIDGET },
+        query: {
+          tool: 'field.history',
+          objectType: 'product',
+          objectId: WIDGET,
+          fieldId: 'product.price_cents',
+        },
       }),
     );
     expect(intact.rangeConclusion).toEqual({
@@ -261,7 +278,12 @@ describe('eligibility degrades with the kind of damage', () => {
     const history = accepted(
       await harness.evidence.collect({
         ...ref,
-        query: { tool: 'product.version_history', productId: WIDGET },
+        query: {
+          tool: 'field.history',
+          objectType: 'product',
+          objectId: WIDGET,
+          fieldId: 'product.price_cents',
+        },
       }),
     );
     expect(dependenciesOf(history, 'semantics')[0]?.templates).toEqual([
@@ -271,7 +293,15 @@ describe('eligibility degrades with the kind of damage', () => {
     expect(history.rangeConclusion).toMatchObject({ auditCompleteness: 'not_established' });
     // The order struck its price from that version, so it inherits the doubt.
     const pricing = accepted(
-      await harness.evidence.collect({ ...ref, query: { tool: 'order.pricing', orderId: ORDER } }),
+      await harness.evidence.collect({
+        ...ref,
+        query: {
+          tool: 'reader.impacts',
+          objectType: 'product',
+          objectId: WIDGET,
+          fieldId: 'product.price_cents',
+        },
+      }),
     );
     expect(dependenciesOf(pricing, 'watermark_range')[0]?.guarantee.unmet).toEqual([
       `product/${WIDGET}_is_investigation_only`,
@@ -330,7 +360,12 @@ describe('eligibility degrades with the kind of damage', () => {
       rejectionOf(
         await harness.evidence.collect({
           ...ref,
-          query: { tool: 'order.pricing', orderId: ORDER },
+          query: {
+            tool: 'field.history',
+            objectType: 'product',
+            objectId: WIDGET,
+            fieldId: 'product.price_cents',
+          },
         }),
       ).code,
     ).toBe('snapshot_quarantined');
@@ -453,7 +488,12 @@ describe('eligibility degrades with the kind of damage', () => {
       rejectionOf(
         await harness.evidence.collect({
           ...ref,
-          query: { tool: 'product.version_history', productId: WIDGET },
+          query: {
+            tool: 'field.history',
+            objectType: 'product',
+            objectId: WIDGET,
+            fieldId: 'product.price_cents',
+          },
         }),
       ).code,
     ).toBe('snapshot_quarantined');

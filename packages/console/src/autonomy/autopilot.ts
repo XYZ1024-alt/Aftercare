@@ -7,19 +7,24 @@ import type {
   AutonomyEnrollment,
   VerificationReport,
 } from '@aftercare/contracts';
-import type { JsonObject } from '@aftercare/domain';
-import { z } from 'zod';
+import {
+  DEFAULT_REGISTRY,
+  fieldsOf,
+  findField,
+  type JsonObject,
+  parseFieldValue,
+} from '@aftercare/domain';
 import type { ConsoleContext } from '../context.ts';
 import { sendWebhook } from './delivery.ts';
 import {
   approvalVerdict,
+  type BaselineValue,
   baselineVerdict,
   driftReopenDecision,
+  type FieldStep,
   type IncidentCandidate,
   incidentVerdict,
-  type PriceStep,
   recoveryVerdict,
-  type VersionPrice,
 } from './rules.ts';
 import { autopilotIdentity, startAutonomousRun } from './start.ts';
 
@@ -77,13 +82,11 @@ interface Plan {
   readonly act: () => Promise<{ readonly applied: boolean; readonly outcome: JsonObject }>;
 }
 
-const centsSchema = z.string().regex(/^(0|[1-9]\d*)$/);
-
 interface HistoryVersion {
   readonly versionBefore: string | null;
   readonly versionAfter: string;
   readonly operationId: string;
-  readonly cents: string | null;
+  readonly value: string | null;
 }
 
 const ENDED_WITHOUT_RESULT = new Set(['unresolved', 'failed', 'cancelled']);
@@ -149,8 +152,18 @@ export function createAutopilot(
     act: async () => ({ applied: true, outcome: { handedTo: 'a person', reason } }),
   });
 
-  /** Every recorded version of a product in the snapshot, read through the evidence service. */
-  async function historyOf(caseId: string, snapshotId: string, productId: string) {
+  /** Every recorded write of one field of one object, read through the evidence service. */
+  async function historyOf(
+    caseId: string,
+    snapshotId: string,
+    objectType: string,
+    objectId: string,
+    fieldId: string,
+  ) {
+    const field = findField(DEFAULT_REGISTRY, fieldId);
+    if (field === undefined) {
+      throw new Error(`${fieldId} is not a registered repairable field`);
+    }
     const versions: HistoryVersion[] = [];
     const evidenceIds: string[] = [];
     let cursor: string | null = null;
@@ -159,29 +172,32 @@ export function createAutopilot(
         caseId,
         snapshotId,
         query: {
-          tool: 'product.version_history',
-          productId,
+          tool: 'field.history',
+          objectType,
+          objectId,
+          fieldId,
           limit: 100,
           ...(cursor === null ? {} : { cursor }),
         },
       });
       if (!collected.ok) {
         throw new Error(
-          `the history of ${productId} could not be read: ${collected.rejection.code}: ${collected.rejection.message}`,
+          `the history of ${objectType}/${objectId}.${fieldId} could not be read: ${collected.rejection.code}: ${collected.rejection.message}`,
         );
       }
       const { observations, page, evidenceId } = collected.value;
-      if (observations.tool !== 'product.version_history') {
-        throw new Error(`a version history request returned ${observations.tool}`);
+      if (observations.tool !== 'field.history') {
+        throw new Error(`a field history request returned ${observations.tool}`);
       }
       evidenceIds.push(evidenceId);
       for (const version of observations.versions) {
-        const cents = centsSchema.safeParse(version.recordedAfterState.price_cents);
+        const raw = version.recordedAfterState[field.column];
+        const parsed = typeof raw === 'string' ? parseFieldValue(field, raw) : null;
         versions.push({
           versionBefore: version.versionBefore,
           versionAfter: version.versionAfter,
           operationId: version.operationId,
-          cents: cents.success ? cents.data : null,
+          value: parsed?.ok === true ? parsed.value.toString() : null,
         });
       }
       cursor = page.hasMore ? page.nextCursor : null;
@@ -189,12 +205,25 @@ export function createAutopilot(
     return { versions, evidenceIds };
   }
 
-  const productOf = (object: string): string | null =>
-    object.startsWith('product/') ? object.slice('product/'.length) : null;
-
-  const priceAt = (versions: readonly HistoryVersion[], version: string | null): bigint | null => {
-    const cents = versions.find((entry) => entry.versionAfter === version)?.cents ?? null;
-    return cents === null ? null : BigInt(cents);
+  /**
+   * The last recorded write of the field at or before an object version,
+   * with its value. The object version of a write of another field is not a
+   * field version: the lookup compares fieldVersion <= objectVersion.
+   */
+  const valueAt = (
+    versions: readonly HistoryVersion[],
+    objectVersion: string | null,
+  ): BaselineValue | null => {
+    if (objectVersion === null) return null;
+    const entry = versions
+      .filter(
+        (candidate) =>
+          candidate.value !== null && BigInt(candidate.versionAfter) <= BigInt(objectVersion),
+      )
+      .at(-1);
+    return entry === undefined || entry.value === null
+      ? null
+      : { fieldVersion: entry.versionAfter, value: entry.value };
   };
 
   /** What the charter says about one open question. */
@@ -245,42 +274,60 @@ export function createAutopilot(
 
     switch (body.kind) {
       case 'incident_scope': {
-        const rule = charter.body.incidentRule;
         const snapshotId = body.bound.snapshotId;
         const histories = new Map<string, HistoryVersion[]>();
         const evidenceIds: string[] = [];
         const candidates: IncidentCandidate[] = [];
         for (const candidate of body.candidates) {
-          const steps: PriceStep[] = [];
-          for (const productId of candidate.objects.flatMap((object) => productOf(object) ?? [])) {
-            let versions = histories.get(productId);
-            if (versions === undefined) {
-              const read = await historyOf(caseId, snapshotId, productId);
-              versions = read.versions;
-              histories.set(productId, versions);
-              evidenceIds.push(...read.evidenceIds);
-            }
-            const written = versions.find((entry) => entry.operationId === candidate.operationId);
-            if (written?.cents !== null && written !== undefined) {
+          const steps: FieldStep[] = [];
+          for (const object of candidate.objects) {
+            const [objectType, objectId] = object.split('/');
+            if (objectType === undefined || objectId === undefined) continue;
+            for (const field of fieldsOf(DEFAULT_REGISTRY, objectType)) {
+              const key = `${objectType}/${objectId}.${field.fieldId}`;
+              let versions = histories.get(key);
+              if (versions === undefined) {
+                const read = await historyOf(
+                  caseId,
+                  snapshotId,
+                  objectType,
+                  objectId,
+                  field.fieldId,
+                );
+                versions = read.versions;
+                histories.set(key, versions);
+                evidenceIds.push(...read.evidenceIds);
+              }
+              const written = versions.find((entry) => entry.operationId === candidate.operationId);
+              if (written === undefined || written.value === null) continue;
+              const before = valueAt(versions, written.versionBefore);
               steps.push({
-                objectId: productId,
-                beforeCents: priceAt(versions, written.versionBefore),
-                afterCents: BigInt(written.cents),
+                fieldId: field.fieldId,
+                operationType: candidate.operationType,
+                fromValue: before === null ? null : BigInt(before.value),
+                toValue: BigInt(written.value),
               });
             }
           }
-          candidates.push({
-            operationId: candidate.operationId,
-            operationType: candidate.operationType,
-            steps,
-          });
+          candidates.push({ operationId: candidate.operationId, steps });
         }
-        const verdict = incidentVerdict(rule, candidates);
+        const verdict = incidentVerdict(charter.body.fields, candidates);
         const input = {
           confirmed: [...verdict.confirmed],
           rejected: verdict.rejected.map((entry) => ({ ...entry })),
+          escalated: verdict.escalated.map((entry) => ({ ...entry })),
           evidenceIds,
         };
+        const reason = [
+          ...verdict.escalated.map((entry) => entry.reason),
+          ...verdict.rejected.map((entry) => entry.reason),
+        ]
+          .join('; ')
+          .slice(0, 2000);
+        // A candidate writes a field the charter has no rule for: a person decides the question.
+        if (verdict.escalated.length > 0) {
+          return escalation(subject, 'incidentRule', reason, input);
+        }
         if (verdict.confirmed.length > 0) {
           return answering('incidentRule', 'answer', input, {
             decision: 'confirm_operations',
@@ -289,11 +336,12 @@ export function createAutopilot(
             source,
           });
         }
-        const reason = `no offered operation matches the incident rule: ${verdict.rejected
-          .map((entry) => entry.reason)
-          .join('; ')}`.slice(0, 2000);
-        return rule.onNoMatch === 'decline'
-          ? declining('incidentRule', input, reason)
+        return charter.body.onNoMatch === 'decline'
+          ? declining(
+              'incidentRule',
+              input,
+              `no offered operation matches the incident rule: ${reason}`,
+            )
           : escalation(subject, 'incidentRule', reason, input);
       }
       case 'baseline': {
@@ -307,20 +355,25 @@ export function createAutopilot(
               : [],
           ),
         );
-        const expected = new Map<string, VersionPrice>();
+        const expected = new Map<string, BaselineValue>();
         const evidenceIds: string[] = [];
         for (const entry of body.entries) {
-          const read = await historyOf(caseId, snapshotId, entry.objectId);
+          const read = await historyOf(
+            caseId,
+            snapshotId,
+            entry.objectType,
+            entry.objectId,
+            entry.fieldId,
+          );
           evidenceIds.push(...read.evidenceIds);
           const first = read.versions
             .filter((version) => incident.has(version.operationId))
             .sort((left, right) =>
               BigInt(left.versionAfter) < BigInt(right.versionAfter) ? -1 : 1,
             )[0];
-          const before = first?.versionBefore ?? null;
-          const cents = priceAt(read.versions, before);
-          if (before !== null && cents !== null) {
-            expected.set(entry.objectId, { version: before, cents: cents.toString() });
+          const baseline = valueAt(read.versions, first?.versionBefore ?? null);
+          if (baseline !== null) {
+            expected.set(`${entry.objectType}/${entry.objectId}.${entry.fieldId}`, baseline);
           }
         }
         const verdict = baselineVerdict(body.entries, expected);
@@ -365,7 +418,12 @@ export function createAutopilot(
         );
       case 'execution_approval': {
         const envelope = charter.body.approval;
-        const verdict = approvalVerdict(envelope, body.changes, body.unresolvedDomains);
+        const verdict = approvalVerdict(
+          charter.body.fields,
+          envelope,
+          body.changes,
+          body.unresolvedDomains,
+        );
         const input = {
           contractId: body.contractId,
           executionDigest: body.executionDigest,

@@ -108,7 +108,7 @@ describe('a batch that mixes legitimate and erroneous targets', () => {
     value(first.reply);
     let view = await answerUntilApproval(c, operator, caseId);
     const plan = view.plans.at(-1);
-    expect(plan?.content?.patch.map((entry) => [entry.objectId, entry.toCents])).toEqual([
+    expect(plan?.content?.patch.map((entry) => [entry.objectId, entry.toValue])).toEqual([
       ['p1', '10000'],
       ['p2', '10000'],
     ]);
@@ -159,7 +159,7 @@ describe('a batch that mixes legitimate and erroneous targets', () => {
     const done = await operator.view(caseId);
     expect(done.stage.stage).toBe('verified_sealed');
     expect(
-      done.reports.at(-1)?.body.objects.modified.map((entry) => [entry.objectId, entry.centsAfter]),
+      done.reports.at(-1)?.body.objects.modified.map((entry) => [entry.objectId, entry.valueAfter]),
     ).toEqual([['p1', '10000']]);
     expect(done.plans.map((entry) => entry.status.validity)).toEqual(['stale', 'valid']);
   }, 60_000);
@@ -174,7 +174,12 @@ describe('a sealed result and what comes after it', () => {
     await collect(
       c.h,
       { caseId, snapshotId: view.snapshot?.snapshotId ?? '' },
-      { tool: 'order.pricing', orderId: 'order-d' },
+      {
+        tool: 'reader.impacts',
+        objectType: 'product',
+        objectId: 'd',
+        fieldId: 'product.price_cents',
+      },
     );
 
     const stale = await operator.view(caseId);
@@ -313,7 +318,7 @@ describe('a sealed result and what comes after it', () => {
     expect(served.headers.get('x-aftercare-notice')).toBe(
       'a downloaded file cannot be recalled; a later revocation marks the registry only',
     );
-    expect(await served.text()).toContain('UNRESOLVED product/c.price_cents');
+    expect(await served.text()).toContain('UNRESOLVED product/c.product.price_cents');
     // The approver may approve; that is not a licence to download or to export.
     expect((await download(approver, caseId, file.artefactId)).status).toBe(403);
     expect(
@@ -390,13 +395,13 @@ describe('a sealed result and what comes after it', () => {
       (contract) => contract.contractId === prepared.contractId,
     );
     expect(undo).toMatchObject({ kind: 'undo', status: 'bound', approvals: [] });
-    expect(undo?.changes.map((change) => [change.field, change.fromCents, change.toCents])).toEqual(
-      [
-        ['product/a.price_cents', '11000', '9000'],
-        ['product/d.price_cents', '10000', '8000'],
-        ['product/e.price_cents', '10000', '8000'],
-      ],
-    );
+    expect(
+      undo?.changes.map((change) => [change.fieldId, change.fromValue, change.toValue]),
+    ).toEqual([
+      ['product.price_cents', '11000', '9000'],
+      ['product.price_cents', '10000', '8000'],
+      ['product.price_cents', '10000', '8000'],
+    ]);
     // Nothing happens without an approval: the worker is running and leaves it alone.
     await new Promise((resolve) => setTimeout(resolve, 400));
     expect((await operator.view(caseId)).execution.applications).toHaveLength(1);
@@ -427,7 +432,7 @@ describe('a sealed result and what comes after it', () => {
     expect(
       current.reports
         .at(-1)
-        ?.body.objects.modified.map((entry) => [entry.objectId, entry.centsAfter]),
+        ?.body.objects.modified.map((entry) => [entry.objectId, entry.valueAfter]),
     ).toEqual([
       ['a', '9000'],
       ['d', '8000'],

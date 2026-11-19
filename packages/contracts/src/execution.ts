@@ -2,6 +2,7 @@ import { digestJson, type JsonObject } from '@aftercare/domain';
 import { z } from 'zod';
 import { PLAN_LIFECYCLES, RUN_PHASES, STATUS_REASONS, VALIDITIES } from './case-state.ts';
 import { terminalConstraintSchema } from './policy.ts';
+import { fieldIdSchema, objectIdSchema, objectTypeSchema } from './primitives.ts';
 import { planContentSchema, repairFieldRefSchema } from './repair.ts';
 import { instantSchema, int64TextSchema, jsonObjectSchema, sha256HexSchema } from './wire.ts';
 
@@ -55,7 +56,8 @@ export const APPROVAL_STATES = [
 export type ApprovalState = (typeof APPROVAL_STATES)[number];
 
 const branchTableManifestSchema = z.strictObject({
-  table: z.enum(['products', 'orders']),
+  /** The registered table name the branch holds. */
+  table: z.string().min(1),
   rowCount: int64TextSchema,
   digest: sha256HexSchema,
 });
@@ -80,12 +82,16 @@ export const executionBranchSchema = z.strictObject({
 });
 export type ExecutionBranch = z.output<typeof executionBranchSchema>;
 
-/** One product price the contract pins: the branch must hold exactly this when it is applied. */
+/** One field value the contract pins: the branch must hold exactly this when it is applied. */
 export const inputVersionSchema = z.strictObject({
-  objectType: z.literal('product'),
-  objectId: z.string(),
-  version: int64TextSchema,
-  cents: int64TextSchema,
+  objectType: objectTypeSchema,
+  objectId: objectIdSchema,
+  fieldId: fieldIdSchema,
+  /** The object version of the object at the snapshot. */
+  objectVersion: int64TextSchema,
+  /** The last write of this field at or before that object version. */
+  fieldVersion: int64TextSchema,
+  value: int64TextSchema,
 });
 
 /** The patch, exactly as the plan stores it. */
@@ -97,7 +103,7 @@ const patchEntrySchema = planContentSchema.shape.patch.element;
  * against those records when it is bound. Nothing in it is a new value.
  */
 export const repairContractBodySchema = z.strictObject({
-  contractFormat: z.literal(1),
+  contractFormat: z.literal(2),
   caseId: z.uuid(),
   runId: z.uuid(),
   planId: z.uuid(),
@@ -120,13 +126,15 @@ export const repairContractBodySchema = z.strictObject({
     confirmationDigests: z.array(sha256HexSchema),
     evidence: planContentSchema.shape.inputs.shape.evidence,
   }),
-  /** Every product version the plan read (candidates and unresolved domains). */
+  /** Every field value the plan read (candidates and unresolved domains). */
   inputVersions: z.array(inputVersionSchema),
   /** The branch content the contract was bound to, table by table. */
   scopeGuard: z.strictObject({
     branchContentDigest: sha256HexSchema,
-    products: z.strictObject({ rowCount: int64TextSchema, digest: sha256HexSchema }),
-    orders: z.strictObject({ rowCount: int64TextSchema, digest: sha256HexSchema }),
+    tables: z.record(
+      z.string(),
+      z.strictObject({ rowCount: int64TextSchema, digest: sha256HexSchema }),
+    ),
   }),
   allowedFootprint: z.array(repairFieldRefSchema),
   patch: z.array(patchEntrySchema),
@@ -142,7 +150,7 @@ export const repairContractBodySchema = z.strictObject({
     }),
     plan: planContentSchema.shape.versions,
     executor: z.strictObject({ id: z.string(), version: z.number().int() }),
-    branchFormat: z.literal(1),
+    branchFormat: z.literal(2),
   }),
   /** What the execution transaction must check itself, and what stage six must verify afterwards. */
   inTransactionChecks: z.array(z.string().min(1)),
@@ -157,7 +165,7 @@ const undoConflictCheckSchema = z.strictObject({
   check: z.enum([
     'target_is_successor_of_sealed_branch',
     'repaired_versions_unchanged_on_target',
-    'no_order_read_repaired_version',
+    'no_reader_of_repaired_value',
     'unrelated_changes_preserved',
   ]),
   holds: z.literal(true),
@@ -171,7 +179,7 @@ const undoConflictCheckSchema = z.strictObject({
  * request names the application and the target only.
  */
 export const undoContractBodySchema = z.strictObject({
-  contractFormat: z.literal(1),
+  contractFormat: z.literal(2),
   kind: z.literal('undo'),
   caseId: z.uuid(),
   runId: z.uuid(),
@@ -190,8 +198,10 @@ export const undoContractBodySchema = z.strictObject({
   inputVersions: z.array(inputVersionSchema),
   scopeGuard: z.strictObject({
     branchContentDigest: sha256HexSchema,
-    products: z.strictObject({ rowCount: int64TextSchema, digest: sha256HexSchema }),
-    orders: z.strictObject({ rowCount: int64TextSchema, digest: sha256HexSchema }),
+    tables: z.record(
+      z.string(),
+      z.strictObject({ rowCount: int64TextSchema, digest: sha256HexSchema }),
+    ),
   }),
   allowedFootprint: z.array(repairFieldRefSchema),
   patch: z.array(patchEntrySchema),
@@ -209,7 +219,7 @@ export const undoContractBodySchema = z.strictObject({
     }),
     plan: planContentSchema.shape.versions,
     executor: z.strictObject({ id: z.string(), version: z.number().int() }),
-    branchFormat: z.literal(1),
+    branchFormat: z.literal(2),
   }),
   inTransactionChecks: z.array(z.string().min(1)),
   postVerificationObligations: z.array(z.string().min(1)),
@@ -329,14 +339,15 @@ export const executionAttemptSchema = z.strictObject({
 });
 export type ExecutionAttempt = z.output<typeof executionAttemptSchema>;
 
+/** One field one application wrote: the object versions it moved between and the values. */
 export const writtenFieldSchema = z.strictObject({
-  objectType: z.literal('product'),
-  objectId: z.string(),
-  field: z.literal('price_cents'),
+  objectType: objectTypeSchema,
+  objectId: objectIdSchema,
+  fieldId: fieldIdSchema,
   versionBefore: int64TextSchema,
   versionAfter: int64TextSchema,
-  centsBefore: int64TextSchema,
-  centsAfter: int64TextSchema,
+  valueBefore: int64TextSchema,
+  valueAfter: int64TextSchema,
 });
 
 export const repairApplicationSchema = z.strictObject({

@@ -41,9 +41,12 @@ export function renderReport(report: VerificationReport): string {
     '',
     ...body.objects.modified.map(
       (m) =>
-        `- modified product/${m.objectId}.price_cents: ${m.centsBefore}@${m.versionBefore} -> ${m.centsAfter}@${m.versionAfter}`,
+        `- modified ${m.objectType}/${m.objectId}.${m.fieldId}: ${m.valueBefore}@${m.versionBefore} -> ${m.valueAfter}@${m.versionAfter}`,
     ),
-    ...body.objects.preserved.map((p) => `- preserved ${p.field}: ${p.cents}@${p.version}`),
+    ...body.objects.preserved.map(
+      (p) =>
+        `- preserved ${p.objectType}/${p.objectId}.${p.fieldId}: ${p.value}@${p.objectVersion}`,
+    ),
     ...body.objects.unresolved.map(
       (u) => `- UNRESOLVED ${u}: left as the snapshot holds it; not decided by this repair`,
     ),

@@ -593,10 +593,37 @@ export async function registerCharter(
     });
   }
   const body = adjust(demoCharter(h.sourceEnvironment, policyVersionId));
-  return h.db.authorities.registerCharter({
+  const charterId = crypto.randomUUID();
+  const digest = charterDigest(body);
+  // Registered through the same entry the deployment uses: 0023 accepts
+  // charter format 2 and the entry grants exactly the delegated capabilities.
+  const charter = await h.db.authorities.registerCharter({
     registeredBy: { principal: CHARTER_OWNER, source: 'integration-test' },
-    charterId: crypto.randomUUID(),
+    charterId,
     body,
-    digest: charterDigest(body),
+    digest,
   });
+  if (charter.autopilotPrincipal !== body.autopilotPrincipal) {
+    throw new Error('the registered charter came back with another autopilot principal');
+  }
+  for (const capability of body.delegated) {
+    await h.db.authorities.grant({
+      principal: body.autopilotPrincipal,
+      capability,
+      sourceEnvironment: h.sourceEnvironment,
+      basis: `charter:${charterId}`,
+    });
+  }
+  return {
+    charterId,
+    sourceEnvironment: h.sourceEnvironment,
+    autopilotPrincipal: body.autopilotPrincipal,
+    revision: 1,
+    body,
+    digest,
+    registeredBy: CHARTER_OWNER,
+    identitySource: 'integration-test',
+    registeredAt: new Date().toISOString(),
+    retirement: null,
+  };
 }

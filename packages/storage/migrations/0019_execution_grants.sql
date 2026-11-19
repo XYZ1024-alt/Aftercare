@@ -9,9 +9,11 @@
 --                            nothing else: no table, no control function, no
 --                            source, no snapshot.
 --   aftercare_sandbox_owner  (no login) executes the exec_* coordination
---                            entries; may SELECT/UPDATE(price_cents, version)
---                            the products table of registered branches
---                            (granted per branch at creation). Nothing on the
+--                            entries; may SELECT every registered table of a
+--                            branch and UPDATE the registered repairable
+--                            columns plus the version column of a repairable
+--                            table (granted per branch at creation, from
+--                            aftercare.repairable_fields). Nothing on the
 --                            source schema, on snapshot schemas, on control
 --                            tables.
 --   aftercare_investigator   reads branch schemas (granted per branch): the
@@ -32,6 +34,10 @@ GRANT SELECT ON
 TO aftercare_runtime;
 
 GRANT EXECUTE ON FUNCTION aftercare_control.describe_execution(uuid) TO aftercare_runtime;
+GRANT EXECUTE ON FUNCTION aftercare_control.branch_rows(
+  aftercare_control.execution_branches, text) TO aftercare_runtime;
+-- The product-typed wrapper of the stage that knew only products; it reads
+-- through branch_rows() and goes away with the next batch's Runtime reads.
 GRANT EXECUTE ON FUNCTION aftercare_control.branch_products(aftercare_control.execution_branches) TO aftercare_runtime;
 GRANT EXECUTE ON FUNCTION aftercare_control.branch_json(aftercare_control.execution_branches) TO aftercare_runtime;
 GRANT EXECUTE ON FUNCTION aftercare_control.contract_json(aftercare_control.execution_contracts) TO aftercare_runtime;

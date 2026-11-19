@@ -51,9 +51,10 @@ describe('plan -> branch -> contract -> approval -> application', () => {
       snapshotId: h.frozen.ref.snapshotId,
       snapshotContentDigest: snapshot.contentDigest,
     });
+    // The branch copies the registry in object-type order, so the manifest is orders then products.
     expect(branch.manifest.map((m) => [m.table, m.rowCount])).toEqual([
-      ['products', '5'],
       ['orders', '1'],
+      ['products', '5'],
     ]);
     expect(await branchPrices(h, branch.branchId)).toEqual({
       a: '9000@3',
@@ -80,20 +81,80 @@ describe('plan -> branch -> contract -> approval -> application', () => {
       body: {
         patch: plan.content.patch,
         allowedFootprint: plan.content.allowedFootprint,
-        unresolvedDomains: ['product/c.price_cents'],
+        unresolvedDomains: ['product/c.product.price_cents'],
         scopeGuard: { branchContentDigest: branch.contentDigest },
       },
     });
     const review = reviewContract(contract);
     expect(review.changes).toEqual([
-      { field: 'product/a.price_cents', fromCents: '9000', toCents: '11000', expectedVersion: '3' },
-      { field: 'product/d.price_cents', fromCents: '8000', toCents: '10000', expectedVersion: '2' },
-      { field: 'product/e.price_cents', fromCents: '8000', toCents: '10000', expectedVersion: '2' },
+      {
+        objectType: 'product',
+        objectId: 'a',
+        fieldId: 'product.price_cents',
+        fromValue: '9000',
+        toValue: '11000',
+        expectedObjectVersion: '3',
+      },
+      {
+        objectType: 'product',
+        objectId: 'd',
+        fieldId: 'product.price_cents',
+        fromValue: '8000',
+        toValue: '10000',
+        expectedObjectVersion: '2',
+      },
+      {
+        objectType: 'product',
+        objectId: 'e',
+        fieldId: 'product.price_cents',
+        fromValue: '8000',
+        toValue: '10000',
+        expectedObjectVersion: '2',
+      },
     ]);
-    expect(review.untouched).toEqual(['product/c.price_cents']);
-    expect(review.inputVersions.map((v) => v.field)).toEqual(
-      ['a', 'b', 'c', 'd', 'e'].map((id) => `product/${id}.price_cents`),
-    );
+    expect(review.untouched).toEqual(['product/c.product.price_cents']);
+    expect(review.inputVersions).toEqual([
+      {
+        objectType: 'product',
+        objectId: 'a',
+        fieldId: 'product.price_cents',
+        objectVersion: '3',
+        fieldVersion: '3',
+        value: '9000',
+      },
+      {
+        objectType: 'product',
+        objectId: 'b',
+        fieldId: 'product.price_cents',
+        objectVersion: '3',
+        fieldVersion: '3',
+        value: '9500',
+      },
+      {
+        objectType: 'product',
+        objectId: 'c',
+        fieldId: 'product.price_cents',
+        objectVersion: '3',
+        fieldVersion: '3',
+        value: '9000',
+      },
+      {
+        objectType: 'product',
+        objectId: 'd',
+        fieldId: 'product.price_cents',
+        objectVersion: '2',
+        fieldVersion: '2',
+        value: '8000',
+      },
+      {
+        objectType: 'product',
+        objectId: 'e',
+        fieldId: 'product.price_cents',
+        objectVersion: '2',
+        fieldVersion: '2',
+        value: '8000',
+      },
+    ]);
 
     const applicabilityBound = required(
       await h.inspection.planApplicability({ caseId: h.caseId, planId: plan.planId }),
@@ -141,29 +202,29 @@ describe('plan -> branch -> contract -> approval -> application', () => {
       {
         objectType: 'product',
         objectId: 'a',
-        field: 'price_cents',
+        fieldId: 'product.price_cents',
         versionBefore: '3',
         versionAfter: '4',
-        centsBefore: '9000',
-        centsAfter: '11000',
+        valueBefore: '9000',
+        valueAfter: '11000',
       },
       {
         objectType: 'product',
         objectId: 'd',
-        field: 'price_cents',
+        fieldId: 'product.price_cents',
         versionBefore: '2',
         versionAfter: '3',
-        centsBefore: '8000',
-        centsAfter: '10000',
+        valueBefore: '8000',
+        valueAfter: '10000',
       },
       {
         objectType: 'product',
         objectId: 'e',
-        field: 'price_cents',
+        fieldId: 'product.price_cents',
         versionBefore: '2',
         versionAfter: '3',
-        centsBefore: '8000',
-        centsAfter: '10000',
+        valueBefore: '8000',
+        valueAfter: '10000',
       },
     ]);
     expect(result.application.checks.map((c) => c.check)).toEqual(
@@ -187,20 +248,20 @@ describe('plan -> branch -> contract -> approval -> application', () => {
       e: '10000@3',
     });
     const { rows: orders } = await h.db.investigatorPool.query(
-      `SELECT order_id, unit_price_cents::text AS cents, price_version::text AS v FROM ${branch.schemaName}.orders`,
+      `SELECT order_id, unit_price_cents::text AS cents, product_version::text AS v FROM ${branch.schemaName}.orders`,
     );
     expect(orders).toEqual([{ order_id: 'order-d', cents: '8000', v: '2' }]);
 
     // Repair-made versions are recorded as such, linked to the application — never as business audit.
     const { rows: versions } = await h.db.runtimePool.query(
-      `SELECT object_id, version_before::text AS b, version_after::text AS a, cents_after::text AS c
+      `SELECT object_id, field_id, version_before::text AS b, version_after::text AS a, value_after::text AS v
          FROM aftercare_control.repair_field_versions WHERE application_id = $1 ORDER BY object_id`,
       [result.application.applicationId],
     );
     expect(versions).toEqual([
-      { object_id: 'a', b: '3', a: '4', c: '11000' },
-      { object_id: 'd', b: '2', a: '3', c: '10000' },
-      { object_id: 'e', b: '2', a: '3', c: '10000' },
+      { object_id: 'a', field_id: 'product.price_cents', b: '3', a: '4', v: '11000' },
+      { object_id: 'd', field_id: 'product.price_cents', b: '2', a: '3', v: '10000' },
+      { object_id: 'e', field_id: 'product.price_cents', b: '2', a: '3', v: '10000' },
     ]);
 
     // Source and snapshot are untouched; the plan is applied and the run waits for verification.

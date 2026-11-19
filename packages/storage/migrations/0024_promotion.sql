@@ -5,11 +5,12 @@
 -- business data, through one more controlled entry of the source schema, and
 -- only where the source still holds what the snapshot held:
 --
---   aftercare.guarded_batch_set_price   the entry: the protocol of batch_set_price (same lock,
---                                       audit and watermark, recorded as batch_set_price v1), plus an
---                                       expected version per target compared under the lock. One
---                                       mismatch and nothing is written (AC009, the drift in DETAIL).
---                                       Granted to nobody: only aftercare_promotion.promote calls it.
+--   aftercare.guarded_restore_fields    the entry: one controlled commit, one batch per field,
+--                                       one absolute field write per target, all through the
+--                                       registry and aftercare.apply_field_write(). A field written
+--                                       after the snapshot field version refuses the whole call
+--                                       (AC009, the drift in DETAIL). Granted to nobody: only
+--                                       aftercare_promotion.promote calls it.
 --   aftercare_control.approve_promotion an explicit approval of one report by a principal holding
 --                                       promote_repair; an autopilot is held to its charter envelope.
 --   aftercare_promotion.promote         the promoter's one entry: targets from the application
@@ -31,95 +32,214 @@
 -- approval, AC733 already promoted, AC734 promotion or approval id reused,
 -- AC735 deployment on hold.
 
+-- ── 0. Registry-driven batch/operation link ────────────────────────────────
+-- 0001 still carries the price-era CHECKs and the one-batch-per-commit UNIQUE
+-- constraint. A promotion commits one batch per promoted field in one commit,
+-- and a future batch operation type comes from aftercare.repairable_fields,
+-- so the fixed lists and the single-batch rule go. The batch link is checked
+-- against aftercare.operation_templates.is_batch instead (a CHECK cannot query).
+ALTER TABLE aftercare.batches DROP CONSTRAINT IF EXISTS batches_commit_seq_key;
+ALTER TABLE aftercare.batches DROP CONSTRAINT IF EXISTS batches_operation_type_known;
+ALTER TABLE aftercare.operations DROP CONSTRAINT IF EXISTS operations_type_known;
+ALTER TABLE aftercare.operations DROP CONSTRAINT IF EXISTS operations_batch_link;
+
+CREATE FUNCTION aftercare.assert_operation_batch_link() RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog, pg_temp
+AS $$
+DECLARE
+  v_is_batch boolean;
+BEGIN
+  SELECT t.is_batch INTO v_is_batch
+    FROM aftercare.operation_templates AS t
+   WHERE t.operation_type = NEW.operation_type AND t.template_version = NEW.template_version;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'operation template %/% is not registered', NEW.operation_type, NEW.template_version
+      USING ERRCODE = 'AC001';
+  END IF;
+  IF v_is_batch IS DISTINCT FROM (NEW.batch_id IS NOT NULL) THEN
+    RAISE EXCEPTION 'operation type % is % a batch operation, but the row % a batch',
+      NEW.operation_type, CASE WHEN v_is_batch THEN '' ELSE 'not' END,
+      CASE WHEN NEW.batch_id IS NULL THEN 'has no' ELSE 'names' END USING ERRCODE = 'AC001';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+CREATE TRIGGER operations_batch_link BEFORE INSERT OR UPDATE ON aftercare.operations
+  FOR EACH ROW EXECUTE FUNCTION aftercare.assert_operation_batch_link();
+
 -- ── 1. The guarded entry of the source schema ───────────────────────────────
 
-CREATE FUNCTION aftercare.guarded_batch_set_price(
-  p_principal text,
-  p_product_ids text[],
-  p_expected_versions bigint[],
-  p_prices_cents bigint[]
-) RETURNS jsonb
+-- One controlled, all-or-nothing restore of any registered repairable fields.
+-- Targets are named per (objectType, objectId, fieldId), never per column or
+-- table: the column and table come from aftercare.repairable_fields /
+-- aftercare.object_types. One begin_commit, one batch per field, operations
+-- numbered 1..N across the whole commit, and one absolute field write per
+-- target through aftercare.apply_field_write().
+--
+-- Drift is field-level: a target is refused when the field was written after
+-- the snapshot field version the target names, or when the source no longer
+-- holds the value the target says it holds. Another field of the same object
+-- moving does not block the restore. Any drift refuses the whole call
+-- (AC009) with one entry per drifting target in DETAIL.
+--
+-- Granted to nobody: only aftercare_promotion.promote() calls it.
+CREATE FUNCTION aftercare.guarded_restore_fields(p_principal text, p_targets jsonb)
+RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp
 AS $$
 DECLARE
-  v_target_count integer;
-  v_commit_seq   bigint;
-  v_batch_id     uuid := gen_random_uuid();
-  v_version      bigint;
-  v_drift        jsonb := '[]'::jsonb;
-  v_targets      jsonb := '[]'::jsonb;
+  c_max_targets constant integer := 500;
+  v_commit_seq  bigint;
+  v_target      jsonb;
+  v_group       record;
+  v_field       record;
+  v_batch_id    uuid;
+  v_batch_ids   uuid[] := ARRAY[]::uuid[];
+  v_template    integer;
+  v_operations  jsonb := '[]'::jsonb;
+  v_drift       jsonb := '[]'::jsonb;
+  v_write       jsonb;
+  v_ordinal     integer := 0;
+  v_version     bigint;
+  v_current     text;
+  v_field_version bigint;
 BEGIN
-  IF p_product_ids IS NULL OR p_expected_versions IS NULL OR p_prices_cents IS NULL
-     OR array_ndims(p_product_ids) IS DISTINCT FROM 1
-     OR array_ndims(p_expected_versions) IS DISTINCT FROM 1
-     OR array_ndims(p_prices_cents) IS DISTINCT FROM 1
-     OR cardinality(p_product_ids) <> cardinality(p_prices_cents)
-     OR cardinality(p_product_ids) <> cardinality(p_expected_versions) THEN
-    RAISE EXCEPTION 'guarded batch targets must be three non-empty one-dimensional arrays of equal length'
+  IF p_targets IS NULL OR jsonb_typeof(p_targets) IS DISTINCT FROM 'array' THEN
+    RAISE EXCEPTION 'guarded restore targets must be a JSON array' USING ERRCODE = 'AC001';
+  END IF;
+  IF jsonb_array_length(p_targets) = 0 OR jsonb_array_length(p_targets) > c_max_targets THEN
+    RAISE EXCEPTION 'guarded restore has % targets; 1..% are allowed', jsonb_array_length(p_targets), c_max_targets
       USING ERRCODE = 'AC001';
   END IF;
-
-  v_target_count := cardinality(p_product_ids);
-  IF v_target_count > 500 THEN
-    RAISE EXCEPTION 'batch has % targets; at most 500 are allowed', v_target_count
-      USING ERRCODE = 'AC001';
+  IF (SELECT count(DISTINCT (t ->> 'objectType', t ->> 'objectId', t ->> 'fieldId'))
+        FROM jsonb_array_elements(p_targets) AS t) <> jsonb_array_length(p_targets) THEN
+    RAISE EXCEPTION 'guarded restore names one field of one object more than once' USING ERRCODE = 'AC001';
   END IF;
 
-  IF array_position(p_product_ids, NULL) IS NOT NULL
-     OR array_position(p_expected_versions, NULL) IS NOT NULL THEN
-    RAISE EXCEPTION 'batch product ids and expected versions must not be null' USING ERRCODE = 'AC001';
-  END IF;
-
-  IF (SELECT count(DISTINCT t.product_id) FROM unnest(p_product_ids) AS t (product_id)) <> v_target_count THEN
-    RAISE EXCEPTION 'batch targets must reference distinct products' USING ERRCODE = 'AC001';
-  END IF;
-
-  FOR i IN 1..v_target_count LOOP
-    PERFORM aftercare.assert_object_id('product', p_product_ids[i]);
-    PERFORM aftercare.assert_price(p_prices_cents[i]);
+  -- Every identity and every value is checked against the registry before the
+  -- controlled-write lock is taken, so a malformed target never advances the
+  -- watermark.
+  FOR v_target IN SELECT t FROM jsonb_array_elements(p_targets) AS t LOOP
+    SELECT f.field_id, f.object_type, f.column_name, f.value_kind, f.batch_operation_type, f.batch_param_name,
+           t.table_name, t.pk_column, t.version_column
+      INTO v_field
+      FROM aftercare.repairable_fields AS f
+      JOIN aftercare.object_types AS t ON t.object_type = f.object_type
+     WHERE f.field_id = v_target ->> 'fieldId'
+       AND f.object_type = v_target ->> 'objectType';
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'target field % of % is not a registered repairable field',
+        v_target ->> 'fieldId', v_target ->> 'objectType' USING ERRCODE = 'AC001';
+    END IF;
+    IF v_field.value_kind <> 'int64' THEN
+      RAISE EXCEPTION 'target field % has unsupported value kind %', v_field.field_id, v_field.value_kind
+        USING ERRCODE = 'AC001';
+    END IF;
+    PERFORM aftercare.assert_object_id(v_field.object_type, v_target ->> 'objectId');
+    IF (v_target ->> 'expectedObjectVersion') !~ '^(0|[1-9][0-9]*)$'
+       OR (v_target ->> 'snapshotFieldVersion') !~ '^(0|[1-9][0-9]*)$'
+       OR (v_target ->> 'fromValue') !~ '^(0|-?[1-9][0-9]*)$'
+       OR (v_target ->> 'toValue') !~ '^(0|-?[1-9][0-9]*)$' THEN
+      RAISE EXCEPTION 'target % of % carries a non-canonical version or value',
+        v_field.field_id, v_target ->> 'objectId' USING ERRCODE = 'AC001';
+    END IF;
+    PERFORM aftercare.assert_field_value(v_field.field_id, v_target ->> 'fromValue');
+    PERFORM aftercare.assert_field_value(v_field.field_id, v_target ->> 'toValue');
   END LOOP;
 
   v_commit_seq := aftercare.begin_commit(p_principal);
 
-  -- Under the controlled-write lock nothing else can write: every expected
-  -- version is compared before the first write, and one mismatch refuses all.
-  FOR i IN 1..v_target_count LOOP
-    SELECT p.version INTO v_version
-      FROM aftercare.products AS p
-     WHERE p.product_id = p_product_ids[i]
-       FOR UPDATE;
-    IF v_version IS DISTINCT FROM p_expected_versions[i] THEN
+  -- Field-level drift, under the controlled-write lock: every target row is
+  -- locked and its current field version and value are compared with the
+  -- snapshot the promotion was approved against. One drifting target refuses
+  -- the whole restore.
+  FOR v_target IN SELECT t FROM jsonb_array_elements(p_targets) AS t LOOP
+    SELECT f.field_id, f.object_type, f.column_name,
+           t.table_name, t.pk_column, t.version_column
+      INTO v_field
+      FROM aftercare.repairable_fields AS f
+      JOIN aftercare.object_types AS t ON t.object_type = f.object_type
+     WHERE f.field_id = v_target ->> 'fieldId'
+       AND f.object_type = v_target ->> 'objectType';
+
+    EXECUTE format('SELECT t.%1$I, t.%2$I::text FROM aftercare.%3$I AS t WHERE t.%4$I = $1 FOR UPDATE',
+                   v_field.version_column, v_field.column_name, v_field.table_name, v_field.pk_column)
+      INTO v_version, v_current USING v_target ->> 'objectId';
+    IF NOT FOUND THEN
       v_drift := v_drift || jsonb_build_array(jsonb_build_object(
-        'productId', p_product_ids[i],
-        'expectedVersion', p_expected_versions[i]::text,
-        'sourceVersion', v_version::text));
+        'objectType', v_field.object_type, 'objectId', v_target ->> 'objectId', 'fieldId', v_field.field_id,
+        'expectedFieldVersion', v_target ->> 'snapshotFieldVersion', 'sourceFieldVersion', NULL));
+      CONTINUE;
+    END IF;
+
+    -- The last audited write of this field is its field version. Another
+    -- field of the object moving leaves it unchanged, so it does not drift.
+    SELECT max(w.version_after) INTO v_field_version
+      FROM aftercare.operation_writes AS w
+     WHERE w.object_type = v_field.object_type AND w.object_id = v_target ->> 'objectId'
+       AND w.field = v_field.column_name;
+    IF (v_field_version IS NOT NULL AND v_field_version > (v_target ->> 'snapshotFieldVersion')::bigint)
+       OR v_current IS DISTINCT FROM (v_target ->> 'fromValue') THEN
+      v_drift := v_drift || jsonb_build_array(jsonb_build_object(
+        'objectType', v_field.object_type, 'objectId', v_target ->> 'objectId', 'fieldId', v_field.field_id,
+        'expectedFieldVersion', v_target ->> 'snapshotFieldVersion',
+        'sourceFieldVersion', v_field_version::text));
     END IF;
   END LOOP;
   IF jsonb_array_length(v_drift) > 0 THEN
-    RAISE EXCEPTION '% of % targets are no longer at their expected version', jsonb_array_length(v_drift),
-      v_target_count USING ERRCODE = 'AC009', DETAIL = v_drift::text;
+    RAISE EXCEPTION '% of % targets drifted from the snapshot', jsonb_array_length(v_drift), jsonb_array_length(p_targets)
+      USING ERRCODE = 'AC009', DETAIL = v_drift::text;
   END IF;
 
-  INSERT INTO aftercare.batches (batch_id, commit_seq, operation_type, template_version, target_count)
-  VALUES (v_batch_id, v_commit_seq, 'batch_set_price', 1, v_target_count);
+  -- One batch per field, in field-id order; one absolute write per target,
+  -- with ordinals continuous across the whole commit. The batch operation
+  -- type, its parameter name and its template come from the registry.
+  FOR v_group IN
+    SELECT f.field_id, f.batch_operation_type, f.batch_param_name,
+           jsonb_agg(t ORDER BY t ->> 'objectType', t ->> 'objectId') AS targets
+      FROM jsonb_array_elements(p_targets) AS t
+      JOIN aftercare.repairable_fields AS f ON f.field_id = t ->> 'fieldId'
+     GROUP BY f.field_id, f.batch_operation_type, f.batch_param_name
+     ORDER BY f.field_id
+  LOOP
+    SELECT max(o.template_version) INTO v_template
+      FROM aftercare.operation_templates AS o
+     WHERE o.operation_type = v_group.batch_operation_type;
+    IF v_template IS NULL THEN
+      RAISE EXCEPTION 'batch operation type % of field % is not a registered template',
+        v_group.batch_operation_type, v_group.field_id USING ERRCODE = 'AC001';
+    END IF;
+    v_batch_id := gen_random_uuid();
+    v_batch_ids := v_batch_ids || v_batch_id;
+    INSERT INTO aftercare.batches (batch_id, commit_seq, operation_type, template_version, target_count)
+    VALUES (v_batch_id, v_commit_seq, v_group.batch_operation_type, v_template,
+            jsonb_array_length(v_group.targets));
 
-  FOR i IN 1..v_target_count LOOP
-    v_targets := v_targets || jsonb_build_array(
-      aftercare.apply_price_write(
-        v_commit_seq, i, 'batch_set_price', v_batch_id, p_product_ids[i], p_prices_cents[i]));
+    FOR v_target IN SELECT t FROM jsonb_array_elements(v_group.targets) AS t LOOP
+      v_ordinal := v_ordinal + 1;
+      v_write := aftercare.apply_field_write(
+        v_commit_seq, v_ordinal, v_group.batch_operation_type, v_template, v_batch_id,
+        v_group.field_id, 'absolute', v_group.batch_param_name,
+        v_target ->> 'objectId', (v_target ->> 'toValue')::bigint);
+      v_operations := v_operations || jsonb_build_array(jsonb_build_object(
+        'objectType', v_target ->> 'objectType', 'objectId', v_target ->> 'objectId',
+        'fieldId', v_group.field_id, 'operationId', v_write ->> 'operationId',
+        'versionBefore', ((v_write ->> 'version')::bigint - 1)::text,
+        'versionAfter', v_write ->> 'version', 'value', v_write ->> 'value'));
+    END LOOP;
   END LOOP;
 
   RETURN jsonb_build_object(
-    'batchId', v_batch_id,
     'commitSeq', v_commit_seq::text,
-    'targets', v_targets);
+    'batchIds', to_jsonb(v_batch_ids),
+    'operations', v_operations);
 END;
 $$;
 
-REVOKE ALL ON FUNCTION aftercare.guarded_batch_set_price(text, text[], bigint[], bigint[]) FROM PUBLIC;
-
+REVOKE ALL ON FUNCTION aftercare.guarded_restore_fields(text, jsonb) FROM PUBLIC;
 -- ── 2. Control records ──────────────────────────────────────────────────────
 
 -- An explicit approval of the promotion of one report. The targets are derived
@@ -164,7 +284,8 @@ CREATE TABLE aftercare_control.promotions (
   targets           jsonb       NOT NULL,
   drift             jsonb       NOT NULL,
   source_commit_seq bigint,
-  batch_id          uuid,
+  -- One batch per promoted field, all in the one source commit.
+  batch_ids         uuid[]      NOT NULL DEFAULT ARRAY[]::uuid[],
   writes            jsonb       NOT NULL,
   recorded_revision bigint      NOT NULL,
   recorded_at       timestamptz NOT NULL,
@@ -175,7 +296,7 @@ CREATE TABLE aftercare_control.promotions (
     REFERENCES aftercare_control.promotion_approvals (case_id, approval_id),
   CONSTRAINT promotions_status_known CHECK (status IN ('applied', 'drift_refused')),
   CONSTRAINT promotions_applied_record CHECK (
-    (status = 'applied') = (source_commit_seq IS NOT NULL AND batch_id IS NOT NULL)
+    (status = 'applied') = (source_commit_seq IS NOT NULL AND cardinality(batch_ids) > 0)
     AND (status = 'applied') = (jsonb_array_length(writes) > 0)
     AND (status = 'drift_refused') = (jsonb_array_length(drift) > 0))
 );
@@ -235,6 +356,7 @@ SET search_path = pg_catalog, pg_temp
 AS $$
   SELECT jsonb_build_object(
     'promotionId', p_promotion.promotion_id,
+    'promotionFormat', 2,
     'caseId', p_promotion.case_id,
     'reportId', p_promotion.report_id,
     'approvalId', p_promotion.approval_id,
@@ -244,7 +366,7 @@ AS $$
     'targets', p_promotion.targets,
     'drift', p_promotion.drift,
     'sourceCommitSeq', p_promotion.source_commit_seq::text,
-    'batchId', p_promotion.batch_id,
+    'batchIds', to_jsonb(p_promotion.batch_ids),
     'writes', p_promotion.writes,
     'recordedRevision', p_promotion.recorded_revision::text,
     'recordedAt', aftercare_control.instant_text(p_promotion.recorded_at));
@@ -319,6 +441,12 @@ $$;
 -- application wrote, from the value and version the snapshot held to the
 -- repaired value. The snapshot is read itself; a ledger that disagrees with
 -- it is an implementation defect.
+-- The targets of a promotion, ordered by (objectType, objectId, fieldId):
+-- every field the sealed application wrote, from the value and object version
+-- the snapshot held to the repaired value. The snapshot is read itself; a
+-- ledger that disagrees with it is an implementation defect. The expected
+-- source guard is the snapshot object version, and the field's last write
+-- version at the snapshot is read from the source audit (one field lineage).
 CREATE FUNCTION aftercare_control.promotion_targets(p_report aftercare_control.verification_reports)
 RETURNS jsonb
 LANGUAGE plpgsql
@@ -328,8 +456,10 @@ AS $$
 DECLARE
   v_snapshot aftercare_control.snapshots;
   v_written  aftercare_control.repair_field_versions;
+  v_field    record;
   v_version  bigint;
-  v_cents    bigint;
+  v_value    text;
+  v_field_version bigint;
   v_targets  jsonb := '[]'::jsonb;
 BEGIN
   SELECT s.* INTO STRICT v_snapshot
@@ -343,20 +473,44 @@ BEGIN
   FOR v_written IN
     SELECT v.* FROM aftercare_control.repair_field_versions AS v
      WHERE v.application_id = p_report.application_id
-     ORDER BY v.object_id
+     ORDER BY v.object_type, v.object_id, v.field_id
   LOOP
-    EXECUTE format('SELECT p.version, p.price_cents FROM %I.products AS p WHERE p.product_id = $1',
-                   v_snapshot.schema_name)
-      INTO v_version, v_cents USING v_written.object_id;
-    IF v_version IS DISTINCT FROM v_written.version_before OR v_cents IS DISTINCT FROM v_written.cents_before THEN
-      RAISE EXCEPTION 'the ledger of application % does not start from the snapshot for %',
-        p_report.application_id, v_written.object_id USING ERRCODE = 'AC513';
+    SELECT f.field_id, f.object_type, f.column_name,
+           t.table_name, t.pk_column, t.version_column
+      INTO v_field
+      FROM aftercare.repairable_fields AS f
+      JOIN aftercare.object_types AS t ON t.object_type = f.object_type
+     WHERE f.field_id = v_written.field_id AND f.object_type = v_written.object_type;
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'the ledger of application % names % of %, which is not a registered repairable field',
+        p_report.application_id, v_written.field_id, v_written.object_type USING ERRCODE = 'AC513';
+    END IF;
+    EXECUTE format('SELECT t.%1$I, t.%2$I::text FROM %3$I.%4$I AS t WHERE t.%5$I = $1',
+                   v_field.version_column, v_field.column_name, v_snapshot.schema_name,
+                   v_field.table_name, v_field.pk_column)
+      INTO v_version, v_value USING v_written.object_id;
+    IF NOT FOUND OR v_version IS DISTINCT FROM v_written.version_before
+       OR v_value IS DISTINCT FROM v_written.value_before THEN
+      RAISE EXCEPTION 'the ledger of application % does not start from the snapshot for %/%',
+        p_report.application_id, v_written.object_id, v_written.field_id USING ERRCODE = 'AC513';
+    END IF;
+    SELECT max(w.version_after) INTO v_field_version
+      FROM aftercare.operation_writes AS w
+     WHERE w.object_type = v_written.object_type AND w.object_id = v_written.object_id
+       AND w.field = v_field.column_name
+       AND w.version_after <= v_version;
+    IF v_field_version IS NULL THEN
+      RAISE EXCEPTION 'the source audit holds no write of % of % at or before the snapshot version %',
+        v_written.field_id, v_written.object_id, v_version USING ERRCODE = 'AC513';
     END IF;
     v_targets := v_targets || jsonb_build_array(jsonb_build_object(
-      'productId', v_written.object_id,
-      'expectedVersion', v_version::text,
-      'fromCents', v_cents::text,
-      'toCents', v_written.cents_after::text));
+      'objectType', v_written.object_type,
+      'objectId', v_written.object_id,
+      'fieldId', v_written.field_id,
+      'expectedObjectVersion', v_version::text,
+      'snapshotFieldVersion', v_field_version::text,
+      'fromValue', v_value,
+      'toValue', v_written.value_after));
   END LOOP;
   IF jsonb_array_length(v_targets) = 0 THEN
     RAISE EXCEPTION 'application % wrote nothing: there is nothing to promote', p_report.application_id
@@ -372,40 +526,64 @@ IMMUTABLE
 SET search_path = pg_catalog, pg_temp
 AS $$ SELECT encode(sha256(convert_to(p_targets::text, 'UTF8')), 'hex'); $$;
 
--- The promotion envelope of a charter (body.promotion of
--- packages/contracts/src/autonomy.ts). Relative changes are against the
--- value the snapshot held; a change away from zero is unbounded.
-CREATE FUNCTION aftercare_control.promotion_within_envelope(p_envelope jsonb, p_verdict text, p_targets jsonb)
+-- The promotion envelope of a charter: the whole-promotion counts live under
+-- body.promotion, the per-field change bound under body.fields[fieldId].promotion.
+-- Relative changes are against the value the snapshot held; a change away
+-- from zero is refused only when the field configures maxRelativeChangeBps.
+CREATE FUNCTION aftercare_control.promotion_within_envelope(p_charter_body jsonb, p_verdict text, p_targets jsonb)
 RETURNS void
 LANGUAGE plpgsql
 IMMUTABLE
 SET search_path = pg_catalog, pg_temp
 AS $$
 DECLARE
-  v_target jsonb;
-  v_from   numeric;
-  v_delta  numeric;
+  v_promotion jsonb := p_charter_body -> 'promotion';
+  v_fields    jsonb := p_charter_body -> 'fields';
+  v_envelope  jsonb;
+  v_target    jsonb;
+  v_from      numeric;
+  v_delta     numeric;
+  v_changed   bigint;
 BEGIN
-  IF NOT COALESCE((p_envelope ->> 'enabled')::boolean, false) THEN
+  IF NOT COALESCE((v_promotion ->> 'enabled')::boolean, false) THEN
     RAISE EXCEPTION 'the charter does not enable promotion' USING ERRCODE = 'AC705';
   END IF;
-  IF p_verdict = 'partially_resolved' AND NOT COALESCE((p_envelope ->> 'allowPartial')::boolean, false) THEN
+  IF p_verdict = 'partially_resolved' AND NOT COALESCE((v_promotion ->> 'allowPartial')::boolean, false) THEN
     RAISE EXCEPTION 'the charter does not allow promoting a partial result' USING ERRCODE = 'AC705';
   END IF;
-  IF jsonb_array_length(p_targets) > (p_envelope ->> 'maxChangedObjects')::integer THEN
-    RAISE EXCEPTION 'the promotion changes % objects; the charter allows %', jsonb_array_length(p_targets),
-      p_envelope ->> 'maxChangedObjects' USING ERRCODE = 'AC705';
+  SELECT count(*) INTO v_changed
+    FROM (SELECT DISTINCT t ->> 'objectType', t ->> 'objectId'
+            FROM jsonb_array_elements(p_targets) AS t) AS s;
+  IF v_changed > (v_promotion ->> 'maxChangedObjects')::integer THEN
+    RAISE EXCEPTION 'the promotion changes % objects; the charter allows %', v_changed,
+      v_promotion ->> 'maxChangedObjects' USING ERRCODE = 'AC705';
   END IF;
   FOR v_target IN SELECT t FROM jsonb_array_elements(p_targets) AS t LOOP
-    v_from := (v_target ->> 'fromCents')::numeric;
-    v_delta := abs((v_target ->> 'toCents')::numeric - v_from);
-    IF v_delta > (p_envelope ->> 'maxAbsoluteChangeCents')::numeric THEN
-      RAISE EXCEPTION 'the promotion changes % by % cents; the charter allows %', v_target ->> 'productId', v_delta,
-        p_envelope ->> 'maxAbsoluteChangeCents' USING ERRCODE = 'AC705';
+    IF NOT (v_fields ? (v_target ->> 'fieldId')) THEN
+      RAISE EXCEPTION 'the charter has no promotion rule for field %', v_target ->> 'fieldId'
+        USING ERRCODE = 'AC705';
     END IF;
-    IF v_delta > 0 AND (v_from = 0 OR v_delta * 10000 / v_from > (p_envelope ->> 'maxRelativeChangeBps')::numeric) THEN
-      RAISE EXCEPTION 'the promotion changes % by more than % basis points', v_target ->> 'productId',
-        p_envelope ->> 'maxRelativeChangeBps' USING ERRCODE = 'AC705';
+    v_envelope := v_fields -> (v_target ->> 'fieldId') -> 'promotion';
+    IF v_envelope IS NULL OR (v_envelope ->> 'maxAbsoluteChange') IS NULL THEN
+      RAISE EXCEPTION 'the charter has no promotion envelope for field %', v_target ->> 'fieldId'
+        USING ERRCODE = 'AC705';
+    END IF;
+    v_from := (v_target ->> 'fromValue')::numeric;
+    v_delta := abs((v_target ->> 'toValue')::numeric - v_from);
+    IF v_delta > (v_envelope ->> 'maxAbsoluteChange')::numeric THEN
+      RAISE EXCEPTION 'the promotion changes %/% by %; the charter allows %',
+        v_target ->> 'objectId', v_target ->> 'fieldId', v_delta, v_envelope ->> 'maxAbsoluteChange'
+        USING ERRCODE = 'AC705';
+    END IF;
+    IF v_envelope ? 'maxRelativeChangeBps' THEN
+      IF v_delta > 0 AND v_from = 0 THEN
+        RAISE EXCEPTION 'the promotion changes %/% away from zero; the charter allows no relative change there',
+          v_target ->> 'objectId', v_target ->> 'fieldId' USING ERRCODE = 'AC705';
+      ELSIF v_from > 0 AND v_delta * 10000 > (v_envelope ->> 'maxRelativeChangeBps')::numeric * v_from THEN
+        RAISE EXCEPTION 'the promotion changes %/% by more than % basis points',
+          v_target ->> 'objectId', v_target ->> 'fieldId', v_envelope ->> 'maxRelativeChangeBps'
+          USING ERRCODE = 'AC705';
+      END IF;
     END IF;
   END LOOP;
 END;
@@ -479,7 +657,7 @@ BEGIN
   v_targets := aftercare_control.promotion_targets(v_report);
   IF v_autopilot THEN
     v_charter := aftercare_control.autonomy_require(p_principal, 'promote_repair');
-    PERFORM aftercare_control.promotion_within_envelope(v_charter -> 'body' -> 'promotion', v_report.verdict, v_targets);
+    PERFORM aftercare_control.promotion_within_envelope(v_charter -> 'body', v_report.verdict, v_targets);
   END IF;
 
   v_revision := v_case.revision + 1;
@@ -542,6 +720,8 @@ DECLARE
   v_charter   jsonb;
   v_targets   jsonb;
   v_result    jsonb;
+  v_batch_ids uuid[];
+  v_operations jsonb;
   v_drift     jsonb;
   v_detail    text;
   v_revision  bigint;
@@ -603,29 +783,32 @@ BEGIN
       RAISE EXCEPTION 'approval % was given under charter %, which is no longer the one in force',
         v_approval.approval_id, v_approval.charter ->> 'charterId' USING ERRCODE = 'AC732';
     END IF;
-    PERFORM aftercare_control.promotion_within_envelope(v_charter -> 'body' -> 'promotion', v_report.verdict, v_targets);
+    PERFORM aftercare_control.promotion_within_envelope(v_charter -> 'body', v_report.verdict, v_targets);
   END IF;
 
   -- The write, in a subtransaction: drift rolls back the entry and only the refusal is recorded.
   BEGIN
-    v_result := aftercare.guarded_batch_set_price(
-      'promotion:' || p_promotion_id::text,
-      ARRAY(SELECT t ->> 'productId' FROM jsonb_array_elements(v_targets) AS t),
-      ARRAY(SELECT (t ->> 'expectedVersion')::bigint FROM jsonb_array_elements(v_targets) AS t),
-      ARRAY(SELECT (t ->> 'toCents')::bigint FROM jsonb_array_elements(v_targets) AS t));
+    v_result := aftercare.guarded_restore_fields('promotion:' || p_promotion_id::text, v_targets);
   EXCEPTION WHEN SQLSTATE 'AC009' THEN
     GET STACKED DIAGNOSTICS v_detail = PG_EXCEPTION_DETAIL;
     v_drift := v_detail::jsonb;
   END;
 
   v_revision := v_case.revision + 1;
+  IF v_result IS NOT NULL THEN
+    v_batch_ids := ARRAY(SELECT (b #>> '{}')::uuid FROM jsonb_array_elements(v_result -> 'batchIds') AS b);
+    v_operations := COALESCE(v_result -> 'operations', '[]'::jsonb);
+  ELSE
+    v_batch_ids := ARRAY[]::uuid[];
+    v_operations := '[]'::jsonb;
+  END IF;
   INSERT INTO aftercare_control.promotions
-    (promotion_id, case_id, report_id, approval_id, promoter_id, status, targets, drift, source_commit_seq, batch_id,
+    (promotion_id, case_id, report_id, approval_id, promoter_id, status, targets, drift, source_commit_seq, batch_ids,
      writes, recorded_revision, recorded_at)
   VALUES
     (p_promotion_id, v_case_id, p_report_id, v_approval.approval_id, p_promoter_id,
      CASE WHEN v_drift IS NULL THEN 'applied' ELSE 'drift_refused' END, v_targets, COALESCE(v_drift, '[]'::jsonb),
-     (v_result ->> 'commitSeq')::bigint, (v_result ->> 'batchId')::uuid, COALESCE(v_result -> 'targets', '[]'::jsonb),
+     (v_result ->> 'commitSeq')::bigint, v_batch_ids, v_operations,
      v_revision, clock_timestamp())
   RETURNING * INTO STRICT v_promotion;
   PERFORM aftercare_control.close_event(
@@ -656,10 +839,12 @@ DECLARE
   v_check      aftercare_control.promotion_checks;
   v_target     jsonb;
   v_write      jsonb;
+  v_field      record;
   v_expected   bigint;
   v_promoted   bigint;
   v_version    bigint;
-  v_cents      bigint;
+  v_value      text;
+  v_field_version bigint;
   v_audit_ok   boolean;
   v_header_ok  boolean;
   v_conclusion text;
@@ -688,60 +873,97 @@ BEGIN
   v_header_ok := EXISTS (
       SELECT 1 FROM aftercare.commits AS c
        WHERE c.commit_seq = v_promotion.source_commit_seq AND c.principal = 'promotion:' || p_promotion_id::text)
-    AND EXISTS (
-      SELECT 1 FROM aftercare.batches AS b
-       WHERE b.batch_id = v_promotion.batch_id AND b.commit_seq = v_promotion.source_commit_seq
-         AND b.operation_type = 'batch_set_price' AND b.template_version = 1
-         AND b.target_count = jsonb_array_length(v_promotion.targets));
+    AND cardinality(v_promotion.batch_ids) > 0
+    AND NOT EXISTS (
+      SELECT 1 FROM unnest(v_promotion.batch_ids) AS b (batch_id)
+       WHERE NOT EXISTS (SELECT 1 FROM aftercare.batches AS x
+                          WHERE x.batch_id = b.batch_id AND x.commit_seq = v_promotion.source_commit_seq));
 
   FOR v_target IN SELECT t FROM jsonb_array_elements(v_promotion.targets) AS t LOOP
-    v_expected := (v_target ->> 'expectedVersion')::bigint;
-    v_promoted := v_expected + 1;
-    SELECT w INTO v_write FROM jsonb_array_elements(v_promotion.writes) AS w
-     WHERE w ->> 'productId' = v_target ->> 'productId';
-    v_audit_ok := v_header_ok AND v_write IS NOT NULL AND EXISTS (
-      SELECT 1
-        FROM aftercare.operations AS o
-        JOIN aftercare.operation_writes AS w
-          ON w.operation_id = o.operation_id AND w.object_type = 'product' AND w.field = 'price_cents'
-       WHERE o.operation_id = (v_write ->> 'operationId')::uuid
-         AND o.commit_seq = v_promotion.source_commit_seq AND o.batch_id = v_promotion.batch_id
-         AND o.operation_type = 'batch_set_price' AND o.template_version = 1
-         AND o.params ->> 'product_id' = v_target ->> 'productId'
-         AND o.params ->> 'price_cents' = v_target ->> 'toCents'
-         AND o.before_state ->> 'version' = v_target ->> 'expectedVersion'
-         AND o.after_state ->> 'price_cents' = v_target ->> 'toCents'
-         AND o.after_state ->> 'version' = v_promoted::text
-         AND w.object_id = v_target ->> 'productId'
-         AND w.version_before = v_expected AND w.version_after = v_promoted);
+    SELECT f.field_id, f.object_type, f.column_name, f.batch_operation_type, f.batch_param_name,
+           t.table_name, t.pk_column, t.version_column
+      INTO v_field
+      FROM aftercare.repairable_fields AS f
+      JOIN aftercare.object_types AS t ON t.object_type = f.object_type
+     WHERE f.field_id = v_target ->> 'fieldId'
+       AND f.object_type = v_target ->> 'objectType';
+    IF NOT FOUND THEN
+      v_conclusion := 'mismatch';
+      v_detail := 'the promoted target names an unregistered repairable field';
+      v_findings := v_findings || jsonb_build_array(jsonb_build_object(
+        'objectType', v_target ->> 'objectType', 'objectId', v_target ->> 'objectId',
+        'fieldId', v_target ->> 'fieldId', 'conclusion', v_conclusion, 'detail', v_detail,
+        'sourceFieldVersion', NULL, 'sourceValue', NULL));
+      CONTINUE;
+    END IF;
+    SELECT w INTO v_write
+      FROM jsonb_array_elements(v_promotion.writes) AS w
+     WHERE w ->> 'objectType' = v_target ->> 'objectType'
+       AND w ->> 'objectId' = v_target ->> 'objectId'
+       AND w ->> 'fieldId' = v_target ->> 'fieldId'
+     LIMIT 1;
+    IF v_write IS NULL THEN
+      v_audit_ok := false;
+      v_expected := NULL;
+      v_promoted := NULL;
+    ELSE
+      v_expected := (v_write ->> 'versionBefore')::bigint;
+      v_promoted := (v_write ->> 'versionAfter')::bigint;
+      v_audit_ok := v_header_ok AND (v_write ->> 'value') = (v_target ->> 'toValue') AND EXISTS (
+        SELECT 1
+          FROM aftercare.operations AS o
+          JOIN aftercare.operation_writes AS w
+            ON w.operation_id = o.operation_id AND w.object_type = v_field.object_type
+           AND w.object_id = v_target ->> 'objectId' AND w.field = v_field.column_name
+          JOIN aftercare.batches AS b ON b.batch_id = o.batch_id
+         WHERE o.operation_id = (v_write ->> 'operationId')::uuid
+           AND o.commit_seq = v_promotion.source_commit_seq
+           AND o.batch_id = ANY (v_promotion.batch_ids)
+           AND o.operation_type = v_field.batch_operation_type
+           AND o.template_version = b.template_version
+           AND o.params ->> v_field.pk_column = v_target ->> 'objectId'
+           AND o.params ->> v_field.batch_param_name = v_target ->> 'toValue'
+           AND o.before_state ->> v_field.version_column = v_write ->> 'versionBefore'
+           AND o.after_state ->> v_field.column_name = v_target ->> 'toValue'
+           AND o.after_state ->> v_field.version_column = v_write ->> 'versionAfter'
+           AND w.version_before = (v_write ->> 'versionBefore')::bigint
+           AND w.version_after = (v_write ->> 'versionAfter')::bigint
+           AND b.commit_seq = v_promotion.source_commit_seq
+           AND b.operation_type = v_field.batch_operation_type
+           AND b.target_count = (SELECT count(*) FROM aftercare.operations AS o2 WHERE o2.batch_id = b.batch_id));
+    END IF;
 
     v_version := NULL;
-    v_cents := NULL;
-    SELECT p.version, p.price_cents INTO v_version, v_cents
-      FROM aftercare.products AS p WHERE p.product_id = v_target ->> 'productId';
+    v_value := NULL;
+    EXECUTE format('SELECT t.%1$I, t.%2$I::text FROM aftercare.%3$I AS t WHERE t.%4$I = $1',
+                   v_field.version_column, v_field.column_name, v_field.table_name, v_field.pk_column)
+      INTO v_version, v_value USING v_target ->> 'objectId';
+    SELECT max(w.version_after) INTO v_field_version
+      FROM aftercare.operation_writes AS w
+     WHERE w.object_type = v_field.object_type AND w.object_id = v_target ->> 'objectId'
+       AND w.field = v_field.column_name;
 
     IF NOT v_audit_ok THEN
       v_conclusion := 'mismatch';
       v_detail := 'the audit does not record the promoted write as it was promoted';
     ELSIF v_version IS NULL THEN
       v_conclusion := 'mismatch';
-      v_detail := 'the product no longer exists in the source';
-    ELSIF v_version = v_promoted AND v_cents = (v_target ->> 'toCents')::bigint THEN
-      v_conclusion := 'matches';
-      v_detail := 'the source holds the promoted value at the promoted version';
-    ELSIF v_version > v_promoted AND EXISTS (
-        SELECT 1 FROM aftercare.operation_writes AS w
-         WHERE w.object_type = 'product' AND w.object_id = v_target ->> 'productId'
-           AND w.field = 'price_cents' AND w.version_before = v_promoted) THEN
+      v_detail := 'the object no longer exists in the source';
+    ELSIF v_field_version IS NOT NULL AND v_promoted IS NOT NULL AND v_field_version > v_promoted THEN
       v_conclusion := 'superseded_by_later_write';
-      v_detail := format('an audited later write moved the product on to version %s', v_version);
+      v_detail := format('an audited later write moved field %s on to field version %s', v_field.field_id, v_field_version);
+    ELSIF v_value = (v_target ->> 'toValue') THEN
+      v_conclusion := 'matches';
+      v_detail := 'the source holds the promoted field value and no later write of the field exists';
     ELSE
       v_conclusion := 'mismatch';
-      v_detail := format('the source holds %s at version %s, which no audited write explains', v_cents, v_version);
+      v_detail := format('the source holds %s at field version %s, which no audited write explains',
+        v_value, COALESCE(v_field_version::text, '-'));
     END IF;
     v_findings := v_findings || jsonb_build_array(jsonb_build_object(
-      'productId', v_target ->> 'productId', 'conclusion', v_conclusion, 'detail', v_detail,
-      'sourceVersion', v_version::text, 'sourceCents', v_cents::text));
+      'objectType', v_target ->> 'objectType', 'objectId', v_target ->> 'objectId',
+      'fieldId', v_target ->> 'fieldId', 'conclusion', v_conclusion, 'detail', v_detail,
+      'sourceFieldVersion', v_field_version::text, 'sourceValue', v_value));
   END LOOP;
 
   v_conclusion := CASE

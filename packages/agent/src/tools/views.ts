@@ -4,7 +4,7 @@ import type {
   RegisteredPolicyVersion,
   VerificationReport,
 } from '@aftercare/contracts';
-import type { JsonObject } from '@aftercare/domain';
+import { DEFAULT_REGISTRY, findField, type JsonObject } from '@aftercare/domain';
 import { COUNTEREXAMPLE_CATEGORIES, nextStepFor } from '../feedback.ts';
 
 // Model-facing views of stored records. A view selects and labels; it never
@@ -28,8 +28,8 @@ export function counterexampleView(entry: Counterexample): JsonObject {
   };
 }
 
-const fieldOf = (entry: { readonly objectType: string; readonly objectId: string }): string =>
-  `${entry.objectType}/${entry.objectId}.price_cents`;
+const fieldLabel = (fieldId: string | null): string | null =>
+  fieldId === null ? null : (findField(DEFAULT_REGISTRY, fieldId)?.title ?? null);
 
 /** A compiled plan for reading: what it would change, what it keeps, what it leaves undecided and why. */
 export function planView(plan: CompiledPlan): JsonObject {
@@ -43,41 +43,54 @@ export function planView(plan: CompiledPlan): JsonObject {
     incidentOperationIds: content.incident.operationIds,
     batches: content.incident.batches,
     candidates: content.candidates.map((candidate) => ({
-      field: fieldOf(candidate),
-      baselineCents: candidate.baselineCents,
-      snapshotCents: candidate.snapshotCents,
-      candidateCents: candidate.candidateCents,
+      fieldId: candidate.fieldId,
+      fieldLabel: fieldLabel(candidate.fieldId),
+      baselineFieldVersion: candidate.baselineFieldVersion,
+      baselineValue: candidate.baselineValue,
+      snapshotObjectVersion: candidate.snapshotObjectVersion,
+      snapshotValue: candidate.snapshotValue,
+      candidateValue: candidate.candidateValue,
       derivation: candidate.derivation.map((step) => ({
         operationId: step.operationId,
         operationType: step.operationType,
         action: step.action,
         ruleIds: step.ruleIds,
-        recordedCents: step.recordedCents,
-        replayedCents: step.replayedCents,
+        recordedValue: step.recordedValue,
+        replayedValue: step.replayedValue,
       })),
     })),
     patch: content.patch.map((entry) => ({
-      field: fieldOf(entry),
-      expectedVersion: entry.expectedVersion,
-      fromCents: entry.fromCents,
-      toCents: entry.toCents,
+      fieldId: entry.fieldId,
+      fieldLabel: fieldLabel(entry.fieldId),
+      expectedObjectVersion: entry.expectedObjectVersion,
+      fromValue: entry.fromValue,
+      toValue: entry.toValue,
     })),
     preserved: content.preserved.map((entry) => ({
-      field: fieldOf(entry),
+      fieldId: entry.fieldId,
+      fieldLabel: fieldLabel(entry.fieldId),
       operationId: entry.operationId,
       treatment: entry.treatment,
-      recordedCents: entry.recordedCents,
+      recordedValue: entry.recordedValue,
     })),
-    orderImpacts: content.orderImpacts.map((order) => ({
-      orderId: order.orderId,
-      productId: order.productId,
-      struckUnitPriceCents: order.struckUnitPriceCents,
-      replayedUnitPriceCents: order.replayedUnitPriceCents,
-      disposition: order.disposition,
+    readerImpacts: content.readerImpacts.map((reader) => ({
+      readerObjectType: reader.readerObjectType,
+      readerObjectId: reader.readerObjectId,
+      readObjectType: reader.readObjectType,
+      readObjectId: reader.readObjectId,
+      fieldId: reader.fieldId,
+      fieldLabel: fieldLabel(reader.fieldId),
+      readObjectVersion: reader.readObjectVersion,
+      recordedValue: reader.recordedValue,
+      replayedValue: reader.replayedValue,
+      disposition: reader.disposition,
     })),
     unresolved: content.unresolved.map((entry) => ({
       domain: entry.domain,
-      snapshotCents: entry.snapshotCents,
+      fieldId: entry.domain.field,
+      fieldLabel: fieldLabel(entry.domain.field),
+      snapshotObjectVersion: entry.snapshotObjectVersion,
+      snapshotValue: entry.snapshotValue,
       counterexample: counterexampleView(entry.counterexample),
     })),
     isolation:

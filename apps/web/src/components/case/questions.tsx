@@ -11,7 +11,15 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 import { useState } from 'react';
-import { cents, QUESTION_KIND_LABEL, reasonLabel, shortId, when } from '../../lib/labels.ts';
+import {
+  fieldKey,
+  fieldTitle,
+  fieldValue,
+  QUESTION_KIND_LABEL,
+  reasonLabel,
+  shortId,
+  when,
+} from '../../lib/labels.ts';
 import {
   Button,
   Card,
@@ -70,6 +78,8 @@ const KIND_ICON: Readonly<Record<QuestionView['kind'], LucideIcon>> = {
 };
 
 function Subject({ question }: { readonly question: QuestionView }) {
+  const { view } = useCase();
+  const registry = view.registry;
   const { body } = question;
   switch (body.kind) {
     case 'incident_scope':
@@ -80,17 +90,21 @@ function Subject({ question }: { readonly question: QuestionView }) {
         <Table>
           <thead>
             <tr>
-              <th>商品</th>
+              <th>对象</th>
+              <th>字段</th>
               <th>版本</th>
-              <th className="num">当时价格</th>
+              <th className="num">当时取值</th>
             </tr>
           </thead>
           <tbody>
             {body.entries.map((entry) => (
-              <tr key={entry.objectId}>
-                <td>{entry.objectId}</td>
-                <td className="tabular-nums">{entry.version}</td>
-                <td className="num">{cents(entry.priceCents)}</td>
+              <tr key={fieldKey(entry)}>
+                <td>
+                  {entry.objectType}/{entry.objectId}
+                </td>
+                <td>{fieldTitle(registry, entry.fieldId)}</td>
+                <td className="tabular-nums">{entry.fieldVersion}</td>
+                <td className="num">{fieldValue(registry, entry.fieldId, entry.value)}</td>
               </tr>
             ))}
           </tbody>
@@ -99,7 +113,10 @@ function Subject({ question }: { readonly question: QuestionView }) {
     case 'clarification':
       return (
         <p className="text-meta text-ink-soft">
-          涉及：{body.scope.map((domain) => `${domain.objectType}/${domain.objectId}`).join('，')}
+          涉及：
+          {body.scope
+            .map((domain) => `${domain.objectType}/${domain.objectId}.${domain.fieldId}`)
+            .join('，')}
         </p>
       );
     case 'execution_approval':

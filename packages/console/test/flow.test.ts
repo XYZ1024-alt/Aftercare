@@ -44,13 +44,13 @@ describe('one case from a vague report to a sealed report, through the console',
     expect(report).toMatchObject({ verdict: 'partially_resolved', validity: 'current' });
     expect(
       Object.fromEntries(
-        (report?.body.objects.modified ?? []).map((entry) => [entry.objectId, entry.centsAfter]),
+        (report?.body.objects.modified ?? []).map((entry) => [entry.objectId, entry.valueAfter]),
       ),
     ).toEqual({ a: '11000', d: '10000', e: '10000' });
-    expect(report?.body.objects.preserved.map((entry) => entry.field)).toContain(
-      'product/b.price_cents',
+    expect(report?.body.objects.preserved.map((entry) => entry.fieldId)).toContain(
+      'product.price_cents',
     );
-    expect(report?.body.objects.unresolved).toEqual(['product/c.price_cents']);
+    expect(report?.body.objects.unresolved).toEqual(['product/c.product.price_cents']);
     expect(report?.body.objects.affectedOnly).toEqual(['order/order-d']);
     expect(view.run?.model).toMatchObject({ provider: 'scripted-test-double', testDouble: true });
     // A test double has no price: its cost is unknown, never zero.

@@ -34,7 +34,11 @@ describe('budgets', () => {
       turn += 1;
       return {
         calls: [
-          call('get_product_history', { productId: PRODUCTS[turn % PRODUCTS.length] ?? 'a' }),
+          call('get_field_history', {
+            objectType: 'product',
+            objectId: PRODUCTS[turn % PRODUCTS.length] ?? 'a',
+            fieldId: 'product.price_cents',
+          }),
         ],
       };
     });
@@ -74,13 +78,21 @@ describe('budgets', () => {
 describe('repetition', () => {
   it('answers a repeated read from the record and pauses the run at the limit', async () => {
     const run = await h.start('导入后商品价格异常', { maxRepeatedCalls: 2 });
-    const model = ruleModel(() => ({ calls: [call('get_product_history', { productId: 'a' })] }));
+    const model = ruleModel(() => ({
+      calls: [
+        call('get_field_history', {
+          objectType: 'product',
+          objectId: 'a',
+          fieldId: 'product.price_cents',
+        }),
+      ],
+    }));
     const { run: ended } = await h.worker(model).drive(run.agentRunId);
 
     expect(await trace(h, run.agentRunId)).toEqual([
-      'get_product_history:succeeded',
-      'get_product_history:succeeded',
-      'get_product_history:succeeded',
+      'get_field_history:succeeded',
+      'get_field_history:succeeded',
+      'get_field_history:succeeded',
     ]);
     const calls = await h.toolCalls(run.agentRunId);
     // One evidence record: the repeats did not read the snapshot again.
@@ -186,7 +198,13 @@ describe('a long context', () => {
   const readAll = () =>
     scripted([
       ...PRODUCTS.map((productId) => () => ({
-        calls: [call('get_product_history', { productId })],
+        calls: [
+          call('get_field_history', {
+            objectType: 'product',
+            objectId: productId,
+            fieldId: 'product.price_cents',
+          }),
+        ],
       })),
       () => ({ calls: [call('request_pause', { reason: 'end' })] }),
     ]);
@@ -207,7 +225,7 @@ describe('a long context', () => {
     for (const stub of compacted) {
       // Where the full record is, and what it rests on.
       expect(stub).toMatchObject({
-        tool: 'get_product_history',
+        tool: 'get_field_history',
         resultDigest: expect.any(String),
         source: { kind: 'snapshot_evidence', refs: { evidenceId: expect.any(String) } },
         references: { evidenceId: expect.any(String) },

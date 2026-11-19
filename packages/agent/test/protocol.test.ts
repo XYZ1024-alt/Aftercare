@@ -34,15 +34,28 @@ describe('requests a model gets wrong', () => {
       () => ({
         calls: [
           call('run_sql', { statement: 'UPDATE aftercare.products SET price_cents = 0' }),
-          call('get_product_history', '{"productId": "a"'),
-          call('get_product_history', { productId: 'A B; DROP TABLE' }),
-          call('get_product_history', { productId: 'a', limit: 100_000 }),
+          call('get_field_history', '{"objectId": "a"'),
+          call('get_field_history', {
+            objectType: 'product',
+            objectId: 'A B; DROP TABLE',
+            fieldId: 'product.price_cents',
+          }),
+          call('get_field_history', {
+            objectType: 'product',
+            objectId: 'a',
+            fieldId: 'product.price_cents',
+            limit: 100_000,
+          }),
           call('set_phase', {
             phase: 'planning',
             reason: 'x',
             caseId: '00000000-0000-4000-8000-000000000000',
           }),
-          call('get_product_history', { productId: 'a' }),
+          call('get_field_history', {
+            objectType: 'product',
+            objectId: 'a',
+            fieldId: 'product.price_cents',
+          }),
         ],
       }),
       () => ({ calls: [call('request_pause', { reason: 'end of the test' })] }),
@@ -51,11 +64,11 @@ describe('requests a model gets wrong', () => {
 
     expect(await trace(h, run.agentRunId)).toEqual([
       'run_sql:rejected(unknown_tool)',
-      'get_product_history:rejected(invalid_arguments)',
-      'get_product_history:rejected(invalid_arguments)',
-      'get_product_history:rejected(invalid_arguments)',
+      'get_field_history:rejected(invalid_arguments)',
+      'get_field_history:rejected(invalid_arguments)',
+      'get_field_history:rejected(invalid_arguments)',
       'set_phase:rejected(invalid_arguments)',
-      'get_product_history:succeeded',
+      'get_field_history:succeeded',
       'request_pause:succeeded',
     ]);
     const calls = await h.toolCalls(run.agentRunId);
@@ -66,7 +79,7 @@ describe('requests a model gets wrong', () => {
     });
     // What the model sent is kept verbatim; what never validated has no arguments and no fingerprint.
     expect(calls[1]).toMatchObject({
-      argumentsText: '{"productId": "a"',
+      argumentsText: '{"objectId": "a"',
       arguments: null,
       fingerprint: null,
     });
@@ -88,7 +101,12 @@ describe('requests a model gets wrong', () => {
     const foreign = await h.evidence.collect({
       caseId: other.caseId,
       snapshotId: otherState?.currentSnapshotId ?? '',
-      query: { tool: 'product.version_history', productId: 'a' },
+      query: {
+        tool: 'field.history',
+        objectType: 'product',
+        objectId: 'a',
+        fieldId: 'product.price_cents',
+      },
     });
     if (!foreign.ok) throw new Error(foreign.rejection.message);
     await h.operate(other.caseId, {
@@ -100,7 +118,9 @@ describe('requests a model gets wrong', () => {
       hypothesis: {
         snapshotId: otherState?.currentSnapshotId ?? '',
         statement: 'another case',
-        scope: { domains: [{ objectType: 'product', objectId: 'a', field: 'price_cents' }] },
+        scope: {
+          domains: [{ objectType: 'product', objectId: 'a', field: 'product.price_cents' }],
+        },
         basis: [{ kind: 'evidence', id: foreign.value.evidenceId }],
       },
     });
@@ -117,7 +137,11 @@ describe('requests a model gets wrong', () => {
             operationIds: ['00000000-0000-4000-8000-000000000001'],
             evidenceIds: [foreign.value.evidenceId],
           }),
-          call('get_product_history', { productId: 'a' }),
+          call('get_field_history', {
+            objectType: 'product',
+            objectId: 'a',
+            fieldId: 'product.price_cents',
+          }),
         ],
       }),
       (view) => ({
@@ -125,7 +149,7 @@ describe('requests a model gets wrong', () => {
           call('assess_hypothesis', {
             hypothesisId: foreignHypothesis,
             assessment: 'refute',
-            evidenceIds: evidenceIdsOf(view, 'get_product_history'),
+            evidenceIds: evidenceIdsOf(view, 'get_field_history'),
             rationale: 'cross-case',
           }),
           call('read_plan', { planId: '00000000-0000-4000-8000-000000000002' }),
@@ -138,7 +162,7 @@ describe('requests a model gets wrong', () => {
     expect(await trace(h, run.agentRunId)).toEqual([
       'read_evidence:rejected(evidence_not_in_case)',
       'ask_incident_scope:rejected(evidence_not_in_case)',
-      'get_product_history:succeeded',
+      'get_field_history:succeeded',
       'assess_hypothesis:rejected(reference_rejected)',
       'read_plan:rejected(reference_rejected)',
       'request_pause:succeeded',
@@ -226,7 +250,16 @@ describe('text in the records that reads like an instruction', () => {
       turn += 1;
       let answer: JsonObject;
       if (turn === 1) {
-        answer = reply([['get_product_history', { productId: 'z' }]]);
+        answer = reply([
+          [
+            'get_field_history',
+            {
+              objectType: 'product',
+              objectId: 'z',
+              fieldId: 'product.price_cents',
+            },
+          ],
+        ]);
       } else if (turn === 2) {
         const history = JSON.parse(String(toolMessages(body).at(-1)?.content)) as JsonObject;
         const versions = ((history.data as JsonObject).observations as JsonObject)
@@ -270,7 +303,7 @@ describe('text in the records that reads like an instruction', () => {
     const { run: ended } = await h.worker(model).drive(run.agentRunId);
 
     expect(await trace(h, run.agentRunId)).toEqual([
-      'get_product_history:succeeded',
+      'get_field_history:succeeded',
       'get_operation_detail:succeeded',
       'approve_execution:rejected(unknown_tool)',
       'set_phase:rejected(invalid_arguments)',
@@ -297,7 +330,7 @@ describe('text in the records that reads like an instruction', () => {
     for (const kind of ['incident', 'baseline', 'replay_policy'] as const) {
       expect(await h.db.repairStore.listConfirmations(run.caseId, kind)).toEqual([]);
     }
-    expect((await h.db.reader.readOrder('order-d'))?.unitPriceCents).toBe(8_000n);
+    expect((await h.db.reader.readOrder('order-d'))?.recordedValue).toBe(8_000n);
 
     // The key went out in the Authorization header only; it is in no request body and no record.
     expect(bodies.some((body) => body.includes(SECRET))).toBe(false);

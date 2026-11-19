@@ -92,8 +92,7 @@ export const COUNTEREXAMPLE_CATEGORIES: Readonly<Record<CounterexampleCode, Feed
   history_gap: 'unknown_semantics',
   unknown_semantics: 'unknown_semantics',
   impact_scope_unknown: 'unknown_semantics',
-  amount_out_of_range: 'deterministic_limit',
-  negative_final_price: 'deterministic_limit',
+  value_out_of_bounds: 'deterministic_limit',
   terminal_constraint_violated: 'deterministic_limit',
   unresolved_domain_not_isolable: 'deterministic_limit',
 };

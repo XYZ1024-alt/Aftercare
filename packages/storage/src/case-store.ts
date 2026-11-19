@@ -158,20 +158,23 @@ const CASE_STATEMENTS = {
     SELECT aftercare_control.contract_json(c) AS document
       FROM aftercare_control.execution_contracts AS c
      WHERE c.case_id = $1 AND c.contract_id = $2`,
-  /** The current content of a branch's products table, read as the runtime through the registered manifest only. */
+  /** The current content of a branch's products table, read through branch_rows(). */
   branchProducts: `
-    SELECT jsonb_build_object('objectId', p.product_id, 'version', p.version::text, 'cents', p.price_cents::text) AS document
+    SELECT jsonb_build_object('objectId', r ->> 'product_id', 'version', r ->> 'version',
+                              'cents', r ->> 'price_cents') AS document
       FROM aftercare_control.execution_branches AS b
-      CROSS JOIN LATERAL aftercare_control.branch_products(b) AS p
+      CROSS JOIN LATERAL aftercare_control.branch_rows(b, 'product') AS r
      WHERE b.case_id = $1 AND b.branch_id = $2
-     ORDER BY p.product_id`,
+     ORDER BY r ->> 'product_id'`,
+  /** The current content of a branch's orders table, read through branch_rows(). */
   branchOrders: `
-    SELECT jsonb_build_object('orderId', o.order_id, 'productId', o.product_id, 'priceVersion', o.price_version::text,
-                              'unitPriceCents', o.unit_price_cents::text) AS document
+    SELECT jsonb_build_object('orderId', r ->> 'order_id', 'productId', r ->> 'product_id',
+                              'priceVersion', r ->> 'product_version',
+                              'unitPriceCents', r ->> 'unit_price_cents') AS document
       FROM aftercare_control.execution_branches AS b
-      CROSS JOIN LATERAL aftercare_control.branch_orders(b) AS o
+      CROSS JOIN LATERAL aftercare_control.branch_rows(b, 'order') AS r
      WHERE b.case_id = $1 AND b.branch_id = $2
-     ORDER BY o.order_id`,
+     ORDER BY r ->> 'order_id'`,
   application: `
     SELECT aftercare_control.application_json(a) AS document
       FROM aftercare_control.repair_applications AS a

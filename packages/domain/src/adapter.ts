@@ -1,21 +1,24 @@
 /**
  * Identity and semantic versions of the one supported source adapter: the
- * product/pricing business behind the controlled write entry. The SQL half is
+ * registry-driven business behind the controlled write entry (products, orders
+ * and their repairable fields). The SQL half is
  * aftercare_control.create_snapshot(), which records the same numbers; a
  * snapshot whose versions differ from these is not interpretable by this code.
  */
-export const SOURCE_ADAPTER = { id: 'aftercare-product-pricing', version: 1 } as const;
+export const SOURCE_ADAPTER = { id: 'aftercare-generalized', version: 2 } as const;
 
 /** Version of the audit record format (commits, operations, read/write items). */
-export const AUDIT_FORMAT_VERSION = 1;
+export const AUDIT_FORMAT_VERSION = 2;
 
 /**
  * The complete, fixed set of tables a snapshot schema contains. Nothing else
  * can be read through the snapshot reader.
  */
 export const SNAPSHOT_TABLES = [
-  'products',
   'orders',
+  'products',
+  'object_types',
+  'repairable_fields',
   'commits',
   'batches',
   'operations',

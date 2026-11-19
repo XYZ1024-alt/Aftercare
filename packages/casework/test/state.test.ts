@@ -48,7 +48,7 @@ async function phase(): Promise<string> {
   return (await h.db.caseStore.readCaseState(caseId))?.run.phase ?? 'missing';
 }
 
-const A = { objectType: 'product', objectId: 'a', field: 'price_cents' } as const;
+const A = { objectType: 'product', objectId: 'a', field: 'product.price_cents' } as const;
 
 describe('run phases', () => {
   it('starts a case at created with a control record, and moves only along the legal transitions', async () => {
@@ -223,7 +223,16 @@ describe('run phases', () => {
 
     // Paused again; meanwhile an input changes (a certificate is activated).
     await h.operate(caseId, { type: 'pause_run', reason: 'waiting for the review' });
-    await collect(h, { caseId, snapshotId }, { tool: 'product.version_history', productId: 'a' });
+    await collect(
+      h,
+      { caseId, snapshotId },
+      {
+        tool: 'field.history',
+        objectType: 'product',
+        objectId: 'a',
+        fieldId: 'product.price_cents',
+      },
+    );
     const fellBack = await h.operate(caseId, { type: 'resume_run' });
     expect(fellBack.result).toMatchObject({
       run: { phase: 'investigating' },
@@ -521,7 +530,12 @@ describe('dependency edges', () => {
     const evidence = await collect(
       h,
       { caseId, snapshotId },
-      { tool: 'product.version_history', productId: 'a' },
+      {
+        tool: 'field.history',
+        objectType: 'product',
+        objectId: 'a',
+        fieldId: 'product.price_cents',
+      },
     );
     const node = await h.db.caseStore.findNode(caseId, 'evidence', evidence.evidenceId);
     const snapshotNode = await h.db.caseStore.findNode(caseId, 'snapshot', snapshotId);
@@ -554,8 +568,10 @@ describe('dependency edges', () => {
     });
     // A command cannot cite a record of another case.
     const foreign = await collect(h, other.ref, {
-      tool: 'product.version_history',
-      productId: 'a',
+      tool: 'field.history',
+      objectType: 'product',
+      objectId: 'a',
+      fieldId: 'product.price_cents',
     });
     expect(
       rejectionOf(
@@ -578,7 +594,12 @@ describe('dependency edges', () => {
     const stale = await h.evidence.collect({
       caseId,
       snapshotId,
-      query: { tool: 'product.version_history', productId: 'a' },
+      query: {
+        tool: 'field.history',
+        objectType: 'product',
+        objectId: 'a',
+        fieldId: 'product.price_cents',
+      },
     });
     if (!stale.ok) {
       throw new Error(stale.rejection.message);
@@ -614,7 +635,12 @@ describe('dependency edges', () => {
     void ofNext;
     const elsewhere = await h.evidence.collect({
       ...next.ref,
-      query: { tool: 'product.version_history', productId: 'a' },
+      query: {
+        tool: 'field.history',
+        objectType: 'product',
+        objectId: 'a',
+        fieldId: 'product.price_cents',
+      },
     });
     if (!elsewhere.ok) {
       throw new Error(elsewhere.rejection.message);

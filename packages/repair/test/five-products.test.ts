@@ -107,9 +107,9 @@ describe('five products at 100.00, all set to 80.00 by one incident batch', () =
     expect(content.allowedFootprint.map((field) => field.objectId)).toEqual(['a', 'd', 'e']);
 
     // C: observed, not interpreted.
-    expect(unresolvedOf(plan)).toEqual(['product/c.price_cents: unknown_semantics']);
+    expect(unresolvedOf(plan)).toEqual(['product/c.product.price_cents: unknown_semantics']);
     const [c] = content.unresolved;
-    expect(c).toMatchObject({ snapshotVersion: '3', snapshotCents: '9000' });
+    expect(c).toMatchObject({ snapshotObjectVersion: '3', snapshotValue: '9000' });
     expect(c?.counterexample).toMatchObject({
       stage: 'replay',
       obligationRef: 'replay.semantics_known',
@@ -122,8 +122,8 @@ describe('five products at 100.00, all set to 80.00 by one incident batch', () =
         content: {
           versionBefore: '2',
           versionAfter: '3',
-          recordedCentsBefore: '8000',
-          recordedCentsAfter: '9000',
+          recordedValueBefore: '8000',
+          recordedValueAfter: '9000',
         },
       },
     });
@@ -136,18 +136,20 @@ describe('five products at 100.00, all set to 80.00 by one incident batch', () =
     ]);
 
     // D: the order is a fact. It is reported, not rewritten.
-    expect(content.orderImpacts).toEqual([
+    expect(content.readerImpacts).toEqual([
       {
-        orderId: 'order-d',
-        productId: 'd',
+        readerObjectType: 'order',
+        readerObjectId: 'order-d',
+        readObjectType: 'product',
+        readObjectId: 'd',
+        fieldId: 'product.price_cents',
         operationId: expect.any(String),
         commitSeq: '10',
-        quantity: 1,
-        priceVersionRead: '2',
-        struckUnitPriceCents: '8000',
-        priceSource: { operationId: incident.operations.d, treatment: 'omitted_incident' },
-        replayedUnitPriceCents: '10000',
-        disposition: 'order_unchanged',
+        readObjectVersion: '2',
+        recordedValue: '8000',
+        source: { operationId: incident.operations.d, treatment: 'omitted_incident' },
+        replayedValue: '10000',
+        disposition: 'reader_unchanged',
       },
     ]);
 
@@ -155,9 +157,9 @@ describe('five products at 100.00, all set to 80.00 by one incident batch', () =
     expect(content.inputs.negativeQueries.find((query) => query.objectId === 'e')).toEqual({
       objectType: 'product',
       objectId: 'e',
-      field: 'price_cents',
+      fieldId: 'product.price_cents',
       statement: 'no_write_after_version',
-      afterVersion: '2',
+      afterObjectVersion: '2',
       watermark: { afterExclusive: '6', toInclusive: '10' },
       matched: 0,
       auditCompleteness: 'established',
@@ -170,7 +172,7 @@ describe('five products at 100.00, all set to 80.00 by one incident batch', () =
         candidate.objectId,
         candidate.derivation.map(
           (step) =>
-            `${step.commitSeq}.${step.ordinalInCommit} ${step.action} ${step.recordedCents}=>${step.replayedCents}`,
+            `${step.commitSeq}.${step.ordinalInCommit} ${step.action} ${step.recordedValue}=>${step.replayedValue}`,
         ),
       ]),
     );
@@ -206,19 +208,19 @@ describe('five products at 100.00, all set to 80.00 by one incident batch', () =
       'unresolved_writes_confined',
     ]);
     expect(content.isolation?.unresolvedDomains).toEqual([
-      { objectType: 'product', objectId: 'c', field: 'price_cents' },
+      { objectType: 'product', objectId: 'c', field: 'product.price_cents' },
     ]);
     expect(content.obligations.map((obligation) => obligation.obligationId)).toEqual([
       'snapshot_content_unchanged',
       'confirmations_still_valid',
-      'target_at_expected_version:product/a.price_cents',
-      'result_equals_candidate:product/a.price_cents',
-      'target_at_expected_version:product/d.price_cents',
-      'result_equals_candidate:product/d.price_cents',
-      'target_at_expected_version:product/e.price_cents',
-      'result_equals_candidate:product/e.price_cents',
+      'target_at_expected_version:product/a.product.price_cents',
+      'result_equals_candidate:product/a.product.price_cents',
+      'target_at_expected_version:product/d.product.price_cents',
+      'result_equals_candidate:product/d.product.price_cents',
+      'target_at_expected_version:product/e.product.price_cents',
+      'result_equals_candidate:product/e.product.price_cents',
       'footprint_exact',
-      'preserved_value_intact:product/b.price_cents',
+      'preserved_value_intact:product/b.product.price_cents',
       'orders_unchanged',
       'unresolved_untouched',
       'amounts_within_bounds',
@@ -234,26 +236,26 @@ describe('five products at 100.00, all set to 80.00 by one incident batch', () =
       {
         operationType: 'add_price_delta',
         templateVersion: 1,
-        semantics: 'price_delta',
-        semanticsVersion: 1,
+        semantics: 'delta',
+        semanticsVersion: 2,
       },
       {
         operationType: 'batch_set_price',
         templateVersion: 1,
-        semantics: 'absolute_price',
-        semanticsVersion: 1,
+        semantics: 'absolute',
+        semanticsVersion: 2,
       },
       {
         operationType: 'create_order',
         templateVersion: 1,
-        semantics: 'create_order',
-        semanticsVersion: 1,
+        semantics: 'copy',
+        semanticsVersion: 2,
       },
       {
         operationType: 'set_price',
         templateVersion: 1,
-        semantics: 'absolute_price',
-        semanticsVersion: 1,
+        semantics: 'absolute',
+        semanticsVersion: 2,
       },
     ]);
 
@@ -274,12 +276,13 @@ describe('five products at 100.00, all set to 80.00 by one incident batch', () =
     expect(await sourceFingerprint(h)).toBe(sourceBefore);
     expect(await listSnapshotSchemas(h.db.migratorPool)).toEqual(schemasBefore);
     // The source rows are exactly the recorded business state: nothing was applied.
-    expect((await h.db.reader.readProduct('a'))?.priceCents).toBe(9_000n);
-    expect((await h.db.reader.readProduct('c'))?.priceCents).toBe(9_000n);
-    expect((await h.db.reader.readProduct('d'))?.priceCents).toBe(8_000n);
+    expect((await h.db.reader.readProduct('a'))?.fields['product.price_cents']).toBe(9_000n);
+    expect((await h.db.reader.readProduct('c'))?.fields['product.price_cents']).toBe(9_000n);
+    expect((await h.db.reader.readProduct('d'))?.fields['product.price_cents']).toBe(8_000n);
     expect(await h.db.reader.readOrder('order-d')).toMatchObject({
-      unitPriceCents: 8_000n,
-      priceVersion: 2n,
+      fieldId: 'product.price_cents',
+      readObjectVersion: 2n,
+      recordedValue: 8_000n,
       version: 1n,
     });
     // The snapshot still digests to its registered content.
@@ -295,7 +298,7 @@ describe('five products at 100.00, all set to 80.00 by one incident batch', () =
     const defective = {
       ...content,
       candidates: content.candidates.map((candidate) =>
-        candidate.objectId === 'b' ? { ...candidate, candidateCents: '10000' } : candidate,
+        candidate.objectId === 'b' ? { ...candidate, candidateValue: '10000' } : candidate,
       ),
     };
     expect(() => assertPlanInvariants(defective)).toThrow(

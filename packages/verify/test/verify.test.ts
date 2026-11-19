@@ -79,12 +79,21 @@ describe('independent verification of an applied branch', () => {
           execution_conformance: 'holds',
           business_appropriateness: 'acknowledged_by_approver',
         },
-        objects: { unresolved: ['product/c.price_cents'], affectedOnly: ['order/order-d'] },
+        objects: {
+          unresolved: ['product/c.product.price_cents'],
+          affectedOnly: ['order/order-d'],
+        },
       },
     });
     expect(report.body.objects.modified.map((m) => m.objectId)).toEqual(EXPECTED_MODIFIED);
     expect(report.body.objects.preserved).toEqual([
-      { field: 'product/b.price_cents', version: '3', cents: '9500' },
+      {
+        objectType: 'product',
+        objectId: 'b',
+        fieldId: 'product.price_cents',
+        objectVersion: '3',
+        value: '9500',
+      },
     ]);
     expect(report.body.counterexamples).toEqual([]);
     expect(report.body.scope.limitations.join(' ')).toMatch(

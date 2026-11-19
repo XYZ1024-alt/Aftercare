@@ -149,7 +149,9 @@ describe('the case changes while the model is thinking', () => {
         statement: 'c was a manual correction.',
         evidenceRefs: [],
         source: { kind: 'operations_review', reference: 'integration test' },
-        scope: { domains: [{ objectType: 'product', objectId: 'c', field: 'price_cents' }] },
+        scope: {
+          domains: [{ objectType: 'product', objectId: 'c', field: 'product.price_cents' }],
+        },
       },
     });
     if (approval.body.kind !== 'execution_approval') throw new Error('unexpected question kind');

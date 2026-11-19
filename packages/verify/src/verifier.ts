@@ -27,7 +27,7 @@ import {
   checkUnresolvedUntouched,
   checkWritesMatchContract,
 } from './checks.ts';
-import type { VerificationReading } from './model.ts';
+import { fieldKey, type VerificationReading } from './model.ts';
 import { ReadingFailure, readVerificationInputs } from './reader.ts';
 
 export interface VerifierOptions {
@@ -140,29 +140,41 @@ export function buildReport(
   );
   const { plan, contract, application, approval, snapshot, policy } = reading;
   const unresolved = [...contract.body.unresolvedDomains].sort();
-  const modifiedIds = new Set(application.writtenFootprint.map((w) => w.objectId));
+  const written = new Set(
+    application.writtenFootprint.map((field) =>
+      fieldKey(field.objectType, field.objectId, field.fieldId),
+    ),
+  );
   const preserved =
     contract.kind === 'repair'
       ? plan.content.candidates
-          .filter((c) => c.candidateCents === c.snapshotCents)
-          .map((c) => ({
-            field: `product/${c.objectId}.price_cents`,
-            version: c.snapshotVersion,
-            cents: c.snapshotCents,
+          .filter(
+            (candidate) =>
+              candidate.candidateValue === candidate.snapshotValue &&
+              !written.has(fieldKey(candidate.objectType, candidate.objectId, candidate.fieldId)),
+          )
+          .map((candidate) => ({
+            objectType: candidate.objectType,
+            objectId: candidate.objectId,
+            fieldId: candidate.fieldId,
+            objectVersion: candidate.snapshotObjectVersion,
+            value: candidate.snapshotValue,
           }))
       : [];
   const affectedOnly =
     contract.kind === 'repair'
       ? [
-          ...plan.content.orderImpacts.map((o) => `order/${o.orderId}`),
-          ...plan.content.incident.batches.flatMap((b) =>
-            b.retainedOperationIds.map((id) => `operation/${id}`),
+          ...plan.content.readerImpacts.map(
+            (impact) => `${impact.readerObjectType}/${impact.readerObjectId}`,
+          ),
+          ...plan.content.incident.batches.flatMap((batch) =>
+            batch.retainedOperationIds.map((id) => `operation/${id}`),
           ),
         ].sort()
       : [];
   const verdict = verdictOf(findings, unresolved);
   const body = {
-    reportFormat: 1 as const,
+    reportFormat: 2 as const,
     verifier: VERIFIER,
     caseId: reading.caseId,
     runId: reading.runId,
@@ -205,9 +217,7 @@ export function buildReport(
     layers: layersOf(findings),
     objects: {
       modified: application.writtenFootprint,
-      preserved: preserved.filter(
-        (p) => !modifiedIds.has(p.field.replace(/^product\//, '').replace(/\.price_cents$/, '')),
-      ),
+      preserved,
       unresolved,
       affectedOnly,
     },

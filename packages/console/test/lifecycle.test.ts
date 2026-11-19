@@ -58,7 +58,12 @@ describe('an approval is for the contract that was reviewed', () => {
     await collect(
       c.h,
       { caseId, snapshotId: reviewed.snapshot?.snapshotId ?? '' },
-      { tool: 'product.version_history', productId: 'e' },
+      {
+        tool: 'field.history',
+        objectType: 'product',
+        objectId: 'e',
+        fieldId: 'product.price_cents',
+      },
     );
 
     const stale = refusalOf(
@@ -304,7 +309,7 @@ describe('pause, resume, cancel and a restarted worker', () => {
   });
 
   it('a worker that is stopped mid-run hands the run over; the next worker continues without doing anything twice', async () => {
-    const hold = c.gate.holdBefore('get_product_history');
+    const hold = c.gate.holdBefore('get_field_history');
     const { caseId, agentRunId } = value(await submitIncident(c, operator));
     c.startWorker();
     await hold.reached;
@@ -317,7 +322,7 @@ describe('pause, resume, cancel and a restarted worker', () => {
     expect(handedOver?.status).toBe('running');
     expect(
       (await c.h.toolCalls(agentRunId))
-        .filter((call) => call.toolName === 'get_product_history')
+        .filter((call) => call.toolName === 'get_field_history')
         .map((call) => call.status),
     ).toEqual(Array(5).fill('requested'));
     expect((await operator.view(caseId)).execution.lease?.expired).toBe(true);
@@ -326,7 +331,7 @@ describe('pause, resume, cancel and a restarted worker', () => {
     await c.untilRun(caseId, (run) => run.status === 'awaiting_input', 'the first question');
     const calls = await c.h.toolCalls(agentRunId);
     expect(
-      calls.filter((call) => call.toolName === 'get_product_history').map((call) => call.status),
+      calls.filter((call) => call.toolName === 'get_field_history').map((call) => call.status),
     ).toEqual(Array(5).fill('succeeded'));
     expect(new Set(calls.map((call) => call.toolCallId)).size).toBe(calls.length);
     expect(

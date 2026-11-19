@@ -1,7 +1,15 @@
 'use client';
 
 import { BookOpen, GitBranch, ShieldCheck } from 'lucide-react';
-import { cents, reasonLabel, shortId, type Tone, when } from '../../lib/labels.ts';
+import {
+  fieldKey,
+  fieldTitle,
+  fieldValue,
+  reasonLabel,
+  shortId,
+  type Tone,
+  when,
+} from '../../lib/labels.ts';
 import { Card, Dot, Empty, Json, Pill, ROWS_CLASS, Table, Technical } from '../ui.tsx';
 import { useCase } from './case-context.tsx';
 
@@ -38,6 +46,7 @@ const statusOf = (
 
 export function Execution() {
   const { view } = useCase();
+  const registry = view.registry;
   const { branches, attempts, applications, verificationRuns, lease, lineage } = view.execution;
   return (
     <>
@@ -113,6 +122,7 @@ export function Execution() {
                 <Table>
                   <thead>
                     <tr>
+                      <th>对象</th>
                       <th>字段</th>
                       <th className="num">修改前</th>
                       <th className="num">修改后</th>
@@ -120,10 +130,17 @@ export function Execution() {
                   </thead>
                   <tbody>
                     {application.written.map((entry) => (
-                      <tr key={entry.field}>
-                        <td>{entry.field}</td>
-                        <td className="num text-muted">{cents(entry.centsBefore)}</td>
-                        <td className="num font-semibold">{cents(entry.centsAfter)}</td>
+                      <tr key={fieldKey(entry)}>
+                        <td>
+                          {entry.objectType}/{entry.objectId}
+                        </td>
+                        <td>{fieldTitle(registry, entry.fieldId)}</td>
+                        <td className="num text-muted">
+                          {fieldValue(registry, entry.fieldId, entry.valueBefore)}
+                        </td>
+                        <td className="num font-semibold">
+                          {fieldValue(registry, entry.fieldId, entry.valueAfter)}
+                        </td>
                       </tr>
                     ))}
                   </tbody>

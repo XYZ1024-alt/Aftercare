@@ -147,7 +147,8 @@ export interface VerifierStore {
       productId: string;
       quantity: number;
       unitPriceCents: string;
-      priceVersion: string;
+      /** The version of the product object the order copied its unit price from. */
+      productVersion: string;
       version: string;
     }[]
   >;
@@ -369,11 +370,11 @@ export function createVerifierStore(pool: Pool, faults: SealFaults = {}): Verifi
         productId: string;
         quantity: number;
         unitPriceCents: string;
-        priceVersion: string;
+        productVersion: string;
         version: string;
       }>(
         `SELECT o.order_id AS "orderId", o.product_id AS "productId", o.quantity,
-                o.unit_price_cents::text AS "unitPriceCents", o.price_version::text AS "priceVersion",
+                o.unit_price_cents::text AS "unitPriceCents", o.product_version::text AS "productVersion",
                 o.version::text AS version
            FROM ${relation(schemaName, 'orders')} AS o ORDER BY o.order_id`,
       );

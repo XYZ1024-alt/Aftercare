@@ -94,7 +94,11 @@ const PAGE_THROUGH_OPERATIONS = `
     .sort();
   const versions = {};
   for (const productId of batchTargets) {
-    const history = await aftercare.getProductHistory({ productId });
+    const history = await aftercare.getFieldHistory({
+      objectType: 'product',
+      objectId: productId,
+      fieldId: 'product.price_cents',
+    });
     versions[productId] = history.observations.versions.length;
   }
   return { total: operations.length, byType, batchTargets, versions };
@@ -123,7 +127,7 @@ describe('one program instead of many tool calls', () => {
     expect(data.hostCalls).toBe(9);
     expect((data.evidence as JsonObject[]).map((entry) => entry.tool)).toEqual([
       ...Array.from({ length: 4 }, () => 'list_operations'),
-      ...Array.from({ length: 5 }, () => 'get_product_history'),
+      ...Array.from({ length: 5 }, () => 'get_field_history'),
     ]);
     const records = await Promise.all(
       evidenceIdsOf(data).map((evidenceId) =>
@@ -214,7 +218,7 @@ describe('the sandbox', () => {
       {
         code: `let read = 0;
           for (let index = 0; index < 50; index += 1) {
-            try { await aftercare.getOrderPricing({ orderId: 'order-d' }); read += 1; } catch (error) {}
+            try { await aftercare.getReaderImpacts({ objectId: 'd', fieldId: 'product.price_cents' }); read += 1; } catch (error) {}
           }
           return read;`,
       },
@@ -242,7 +246,9 @@ describe('the sandbox', () => {
 
   it('cannot read evidence of another case: the query is refused inside the program, and nothing of that case reaches it', async () => {
     const first = await analyse([
-      { code: "return (await aftercare.getOrderPricing({ orderId: 'order-d' })).evidenceId;" },
+      {
+        code: "return (await aftercare.getReaderImpacts({ objectId: 'd', fieldId: 'product.price_cents' })).evidenceId;",
+      },
     ]);
     const foreign = dataOf(first.calls[0]).value;
     expect(typeof foreign).toBe('string');

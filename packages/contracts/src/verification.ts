@@ -4,7 +4,9 @@ import {
   COUNTEREXAMPLE_CODES,
   domainRefSchema,
   OBSERVATION_SOURCE_KINDS,
+  planContentSchema,
   RULE_SOURCE_KINDS,
+  repairFieldRefSchema,
 } from './repair.ts';
 import { instantSchema, int64TextSchema, jsonObjectSchema, sha256HexSchema } from './wire.ts';
 
@@ -148,7 +150,7 @@ export const verificationCounterexampleSchema = z.strictObject({
       content: jsonObjectSchema,
     })
     .nullable(),
-  /** Plan nodes the failure relates to ("plan_candidate:product/a.price_cents"). */
+  /** Plan nodes the failure relates to ("plan_candidate:product/a.product.price_cents"). */
   relatedPlanNodes: z.array(z.string().min(1)),
 });
 export type VerificationCounterexample = z.output<typeof verificationCounterexampleSchema>;
@@ -193,7 +195,7 @@ export const VERIFIER = { id: 'aftercare-repair-verifier', version: 1 } as const
  * only after re-checking every binding under the case lock.
  */
 export const verificationReportBodySchema = z.strictObject({
-  reportFormat: z.literal(1),
+  reportFormat: z.literal(2),
   verifier: z.strictObject({ id: z.string(), version: z.number().int() }),
   caseId: z.uuid(),
   runId: z.uuid(),
@@ -250,9 +252,15 @@ export const verificationReportBodySchema = z.strictObject({
     z.enum(['holds', 'fails', 'blocked', 'not_established', 'acknowledged_by_approver']),
   ),
   objects: z.strictObject({
+    /** One entry per written object field, with both object versions and both values. */
     modified: z.array(writtenFieldSchema),
+    /** Field values a legitimate later write kept: the value as recorded, at its object version. */
     preserved: z.array(
-      z.strictObject({ field: z.string(), version: int64TextSchema, cents: int64TextSchema }),
+      z.strictObject({
+        ...repairFieldRefSchema.shape,
+        objectVersion: int64TextSchema,
+        value: int64TextSchema,
+      }),
     ),
     unresolved: z.array(z.string()),
     affectedOnly: z.array(z.string()),
@@ -421,7 +429,7 @@ export type ArtefactGrant = z.output<typeof artefactGrantSchema>;
 
 /** The manifest that travels with an executable export. Every field is checked by the script itself before it writes. */
 export const exportManifestSchema = z.strictObject({
-  exportFormat: z.literal(1),
+  exportFormat: z.literal(2),
   caseId: z.uuid(),
   reportId: z.uuid(),
   reportDigest: sha256HexSchema,
@@ -456,21 +464,20 @@ export const exportManifestSchema = z.strictObject({
     checker: z.strictObject({ id: z.string(), version: z.number().int() }),
   }),
   guards: z.strictObject({
+    /** Every field value the export writes must still hold exactly this, at this object version. */
     inputVersions: z.array(
-      z.strictObject({ objectId: z.string(), version: int64TextSchema, cents: int64TextSchema }),
+      z.strictObject({
+        ...repairFieldRefSchema.shape,
+        objectVersion: int64TextSchema,
+        value: int64TextSchema,
+      }),
     ),
     unresolvedDomains: z.array(z.string()),
     orderCount: int64TextSchema,
     productCount: int64TextSchema,
   }),
-  patch: z.array(
-    z.strictObject({
-      objectId: z.string(),
-      expectedVersion: int64TextSchema,
-      fromCents: int64TextSchema,
-      toCents: int64TextSchema,
-    }),
-  ),
+  /** Exactly the patch entries the contract carries (see repair.ts). */
+  patch: z.array(planContentSchema.shape.patch.element),
   patchDigest: sha256HexSchema,
   lockProtocol: z.strictObject({
     advisoryLock: z.strictObject({ namespace: z.number().int(), key: z.number().int() }),

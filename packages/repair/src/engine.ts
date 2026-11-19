@@ -1,31 +1,60 @@
-import type { Counterexample, DerivationStep, DomainRef, PolicyBody } from '@aftercare/contracts';
-import { INT64_MAX, type JsonObject, parseInt64 } from '@aftercare/domain';
+import type {
+  Counterexample,
+  DerivationStep,
+  DomainRef,
+  PlanContent,
+  PolicyBody,
+} from '@aftercare/contracts';
+import {
+  DEFAULT_REGISTRY,
+  type DomainRegistry,
+  findField,
+  findObject,
+  INT64_MAX,
+  type JsonObject,
+  OBJECT_TYPES,
+  type ObjectType,
+  parseInt64,
+} from '@aftercare/domain';
 import {
   COMPILE_OBLIGATIONS,
   compilerInvariantViolation,
   counterexample,
+  fieldRef,
 } from './counterexample.ts';
-import type {
-  History,
-  HistoryOperation,
-  HistoryRead,
-  HistoryWrite,
-  ProductState,
-} from './history.ts';
+import type { History, HistoryOperation, HistoryRead, HistoryWrite } from './history.ts';
 import {
   type RuleSubject,
   resolveDeltaReplay,
   resolveOverrideRetention,
   scopeGap,
 } from './policy-rules.ts';
-import { findSemantics, type SemanticKind } from './semantics.ts';
+import {
+  type FieldSemantics,
+  findSemantics,
+  type SemanticKind,
+  type TemplateSemantics,
+} from './semantics.ts';
 
 // The deterministic replay. A pure function of its input: it reads no clock,
 // no database and no random source, and it never looks at the difference of a
 // before and after image to guess what an operation meant.
 //
-// From the confirmed baseline it walks the recorded history in commit order
-// and keeps, per field, the REPLAYED state next to the RECORDED one:
+// Two genealogies are kept apart:
+//
+//   the object version chain   one per object, advanced by every write of any
+//                              field. A multi-column write advances it once.
+//   the field genealogy        one per (object, field): the object version of
+//                              the last write of that field, with its value.
+//
+// The recorded reads of an operation are interpreted against both: the object
+// version a read cites must be the object version at that moment, while the
+// value it saw is the last recorded write of the field at or before that
+// version. A write of another field moves the object version without moving
+// the field version, and that is not a gap.
+//
+// From the confirmed baseline the replay walks the recorded history in commit
+// order and keeps, per field, the REPLAYED state next to the RECORDED one:
 //
 //   clean       the replayed history agrees with the recorded one by fact
 //               (nothing diverged yet, or an independent override reset it).
@@ -35,12 +64,18 @@ import { findSemantics, type SemanticKind } from './semantics.ts';
 //               independent absolute override, licensed by the policy, cuts it.
 //
 // Dependence is tracked by version identity, never by value: a field that
-// happens to hold the same number in both histories is still diverged.
+// happens to hold the same value in both histories is still diverged.
 
 export function objectKey(objectType: string, objectId: string): string {
   return `${objectType}/${objectId}`;
 }
 
+/**
+ * Key of one (object, field) pair. The field is the physical column for tracks
+ * and the field id ('product.price_cents') for domains; both use the same
+ * concatenation so the domain key of the plan and counterexamples stays
+ * stable.
+ */
 export function fieldKey(objectType: string, objectId: string, field: string): string {
   return `${objectType}/${objectId}.${field}`;
 }
@@ -52,17 +87,30 @@ export function domainKey(domain: DomainRef): string {
     : fieldKey(domain.objectType, domain.objectId, domain.field);
 }
 
+/** The value of one field at one object version, as canonical decimal text. */
+export interface FieldState {
+  /** The object version of the last recorded write of the field. */
+  readonly version: bigint;
+  readonly value: string;
+}
+
 export interface BaselineInput {
   /** Everything committed up to and including this commit sequence is trusted. */
   readonly trustedWatermark: bigint;
   readonly entries: readonly {
+    readonly objectType: string;
     readonly objectId: string;
-    readonly version: bigint;
-    readonly priceCents: bigint;
+    readonly fieldId: string;
+    /** The object version of the last write of the field at or before the baseline. */
+    readonly fieldVersion: bigint;
+    /** Canonical text of the field value. */
+    readonly value: string;
   }[];
 }
 
 export interface ReplayInput {
+  /** The registry the replay reads fields, bounds and object types from. */
+  readonly registry?: DomainRegistry;
   readonly history: History;
   /** Explicit, confirmed incident operations. Nothing else is ever omitted. */
   readonly incidentOperationIds: ReadonlySet<string>;
@@ -94,40 +142,29 @@ export interface ReplayStep {
   readonly versionAfter: bigint;
   readonly action: DerivationStep['action'];
   readonly ruleIds: readonly string[];
-  readonly recordedCents: bigint;
-  readonly replayedCents: bigint | null;
+  readonly recordedValue: string;
+  readonly replayedValue: string | null;
 }
 
 export type FieldResolution =
   /** No incident operation, and nothing depending on one, reached this field. */
   | { readonly kind: 'untouched' }
-  | { readonly kind: 'resolved'; readonly cents: bigint }
+  | { readonly kind: 'resolved'; readonly value: string }
   | { readonly kind: 'unresolved'; readonly cause: Counterexample };
 
 export interface FieldOutcome {
   readonly domain: DomainRef;
-  readonly baseline: ProductState | null;
-  /** The recorded state at the end of the history (price fields only). */
-  readonly recorded: ProductState | null;
+  readonly baseline: FieldState | null;
+  /** The recorded state at the end of the history. */
+  readonly recorded: FieldState | null;
   readonly resolution: FieldResolution;
   readonly steps: readonly ReplayStep[];
   /** Operations after the trusted watermark that wrote the field, in order. */
   readonly operations: readonly HistoryOperation[];
 }
 
-export interface OrderImpact {
-  readonly orderId: string;
-  readonly productId: string;
-  readonly operation: HistoryOperation;
-  readonly quantity: number;
-  readonly priceVersionRead: bigint;
-  readonly struckUnitPriceCents: bigint;
-  readonly priceSource: {
-    readonly operationId: string;
-    readonly treatment: 'omitted_incident' | 'recomputed_on_corrected_input' | 'unresolved';
-  };
-  readonly replayedUnitPriceCents: bigint | null;
-}
+/** One downstream reader of a replayed field, in the shape the plan stores. */
+export type ReaderImpact = PlanContent['readerImpacts'][number];
 
 export interface InterpretedTemplate {
   readonly operationType: string;
@@ -138,7 +175,7 @@ export interface InterpretedTemplate {
 export interface ReplayResult {
   /** Fields with a baseline, or reached by the incident, ordered by field key. */
   readonly fields: readonly FieldOutcome[];
-  readonly orderImpacts: readonly OrderImpact[];
+  readonly readerImpacts: readonly ReaderImpact[];
   /** Findings that make the whole compilation fail. */
   readonly blocking: readonly Counterexample[];
   readonly templates: readonly InterpretedTemplate[];
@@ -146,15 +183,20 @@ export interface ReplayResult {
 
 type ReplayState =
   | { readonly kind: 'clean' }
-  | { readonly kind: 'diverged'; readonly cents: bigint }
+  | { readonly kind: 'diverged'; readonly value: string }
   | { readonly kind: 'unresolved'; readonly cause: Counterexample };
 
 interface Track {
-  readonly domain: DomainRef;
-  baseline: ProductState | null;
-  recorded: ProductState | null;
+  readonly objectType: string;
+  readonly objectId: string;
+  /** The physical column, e.g. price_cents. */
+  readonly field: string;
+  /** The field's last recorded write at or below the trusted watermark. */
+  baseline: FieldState | null;
+  /** The field's last recorded write seen so far. */
+  recorded: FieldState | null;
   lastWriter: HistoryOperation | null;
-  lastTreatment: 'recorded' | OrderImpact['priceSource']['treatment'];
+  lastTreatment: 'recorded' | 'omitted_incident' | 'recomputed_on_corrected_input' | 'unresolved';
   state: ReplayState;
   /** The audit of the object cannot be trusted: no later operation resolves the field. */
   sticky: boolean;
@@ -164,26 +206,66 @@ interface Track {
   readonly operations: HistoryOperation[];
 }
 
-function int64Of(
+type UnknownReason =
+  | 'template_not_interpretable'
+  | 'reads_do_not_fit_semantics'
+  | 'read_scope_declared_unknown'
+  /** The template writes a field its registered semantics do not explain. */
+  | 'field_semantics_missing';
+
+function objectTypeOf(value: string): ObjectType {
+  if ((OBJECT_TYPES as readonly string[]).includes(value)) {
+    return value as ObjectType;
+  }
+  throw compilerInvariantViolation(`unknown object type "${value}"`);
+}
+
+function splitFieldId(fieldId: string): {
+  readonly objectType: ObjectType;
+  readonly column: string;
+} {
+  const dot = fieldId.indexOf('.');
+  if (dot <= 0 || dot === fieldId.length - 1) {
+    throw compilerInvariantViolation(`invalid field id "${fieldId}"`);
+  }
+  return {
+    objectType: objectTypeOf(fieldId.slice(0, dot)),
+    column: fieldId.slice(dot + 1),
+  };
+}
+
+function fieldIdOf(objectType: string, column: string): string {
+  return `${objectType}.${column}`;
+}
+
+/** The domain of one field of one object; the field is the field id, not the column. */
+function domainOf(objectType: string, objectId: string, field: string): DomainRef {
+  return fieldRef(objectType, objectId, fieldIdOf(objectType, field));
+}
+
+function decimalOf(
   state: JsonObject,
   key: string,
   sign: 'non_negative' | 'signed',
-): bigint | undefined {
+): string | undefined {
   const raw = state[key];
   if (typeof raw !== 'string') {
     return undefined;
   }
   const parsed = parseInt64(raw, sign);
-  return parsed.ok ? parsed.value : undefined;
-}
-
-function isPriceWrite(write: HistoryWrite): boolean {
-  return write.objectType === 'product' && write.field === 'price_cents';
+  return parsed.ok ? parsed.value.toString() : undefined;
 }
 
 function isBusinessRead(read: HistoryRead): boolean {
   // Anything that is not a pure concurrency guard counts as a value dependency.
   return read.dependencyClass !== 'concurrency_guard';
+}
+
+interface ExpectedRead {
+  readonly objectType: string;
+  /** null: the read may name any object of that type (a copy reads its source). */
+  readonly objectId: string | null;
+  readonly field: string;
 }
 
 /**
@@ -192,27 +274,68 @@ function isBusinessRead(read: HistoryRead): boolean {
  * recorded a business dependency the meaning does not have (or lacks the one
  * it needs) is treated like an operation of unknown meaning.
  */
-export function readsFitSemantics(operation: HistoryOperation, semantics: SemanticKind): boolean {
+export function readsFitSemantics(
+  operation: HistoryOperation,
+  semantics: TemplateSemantics,
+): boolean {
   const businessReads = operation.reads.filter(isBusinessRead);
-  const [only] = businessReads;
-  switch (semantics) {
-    case 'create_product':
-    case 'absolute_price':
-      return businessReads.length === 0;
-    case 'price_delta': {
-      const target = operation.writes.find(isPriceWrite);
-      return (
-        businessReads.length === 1 &&
-        only?.objectType === 'product' &&
-        only.field === 'price_cents' &&
-        only.objectId === target?.objectId
-      );
+  const expected: ExpectedRead[] = [];
+  for (const entry of semantics) {
+    const source = splitFieldId(entry.fieldId);
+    switch (entry.kind) {
+      case 'create':
+      case 'absolute':
+        break;
+      case 'delta': {
+        const target = operation.writes.find(
+          (write) => write.objectType === source.objectType && write.field === source.column,
+        );
+        if (target === undefined) {
+          return false;
+        }
+        expected.push({
+          objectType: source.objectType,
+          objectId: target.objectId,
+          field: source.column,
+        });
+        break;
+      }
+      case 'copy': {
+        expected.push({
+          objectType: source.objectType,
+          objectId: null,
+          field: source.column,
+        });
+        const into = entry.into === undefined ? undefined : splitFieldId(entry.into);
+        if (
+          into === undefined ||
+          !operation.writes.some(
+            (write) => write.objectType === into.objectType && write.field === into.column,
+          )
+        ) {
+          return false;
+        }
+        break;
+      }
     }
-    case 'create_order':
-      return (
-        businessReads.length === 1 && only?.objectType === 'product' && only.field === 'price_cents'
-      );
   }
+  if (businessReads.length !== expected.length) {
+    return false;
+  }
+  const remaining = [...expected];
+  for (const read of businessReads) {
+    const index = remaining.findIndex(
+      (entry) =>
+        entry.objectType === read.objectType &&
+        entry.field === read.field &&
+        (entry.objectId === null || entry.objectId === read.objectId),
+    );
+    if (index < 0) {
+      return false;
+    }
+    remaining.splice(index, 1);
+  }
+  return remaining.length === 0;
 }
 
 function describe(operation: HistoryOperation): JsonObject {
@@ -233,6 +356,20 @@ function templateRef(operation: HistoryOperation): string {
   return `template:${operation.operationType}@${operation.templateVersion}`;
 }
 
+function groupWritesByObject(writes: readonly HistoryWrite[]): Map<string, HistoryWrite[]> {
+  const groups = new Map<string, HistoryWrite[]>();
+  for (const write of writes) {
+    const key = objectKey(write.objectType, write.objectId);
+    const group = groups.get(key);
+    if (group === undefined) {
+      groups.set(key, [write]);
+    } else {
+      group.push(write);
+    }
+  }
+  return groups;
+}
+
 function resolutionOf(key: string, track: Track): FieldResolution {
   if (track.state.kind === 'unresolved') {
     return { kind: 'unresolved', cause: track.state.cause };
@@ -241,38 +378,54 @@ function resolutionOf(key: string, track: Track): FieldResolution {
     return { kind: 'untouched' };
   }
   if (track.state.kind === 'diverged') {
-    return { kind: 'resolved', cents: track.state.cents };
+    return { kind: 'resolved', value: track.state.value };
   }
   // Clean again after having been reached: an independent override (or a later
   // unaffected write) made the recorded value stand.
   if (track.recorded === null) {
     throw compilerInvariantViolation(`${key} was reached by the incident but records no value`);
   }
-  return { kind: 'resolved', cents: track.recorded.priceCents };
+  return { kind: 'resolved', value: track.recorded.value };
+}
+
+/** The plan's reader source treatment for a field that is still affected. */
+function readerTreatment(track: Track): ReaderImpact['source']['treatment'] {
+  if (track.state.kind === 'unresolved') {
+    return 'unresolved';
+  }
+  if (track.lastTreatment === 'recomputed_on_corrected_input') {
+    return 'recomputed_on_corrected_input';
+  }
+  if (track.lastTreatment === 'omitted_incident') {
+    return 'omitted_incident';
+  }
+  throw compilerInvariantViolation(
+    `reader of ${fieldIdOf(track.objectType, track.field)} is not in an affected replay state`,
+  );
 }
 
 export function replayHistory(input: ReplayInput): ReplayResult {
   const { history, baseline, policy, refs } = input;
+  const registry = input.registry ?? DEFAULT_REGISTRY;
   const tracks = new Map<string, Track>();
+  const objectVersions = new Map<string, bigint>();
   const blocking: Counterexample[] = [];
-  const orderImpacts: OrderImpact[] = [];
+  const readerImpacts: ReaderImpact[] = [];
   const templates = new Map<string, InterpretedTemplate>();
   let incidentStarted = false;
 
-  const trackOf = (objectType: string, objectId: string, field: string | null): Track => {
-    const domain: DomainRef = {
-      objectType: objectType === 'order' ? 'order' : 'product',
-      objectId,
-      field,
-    };
-    const key = domainKey(domain);
+  const trackOf = (objectType: string, objectId: string, field: string): Track => {
+    const key = fieldKey(objectType, objectId, field);
     const existing = tracks.get(key);
     if (existing !== undefined) {
       return existing;
     }
+    const domain = domainOf(objectType, objectId, field);
     const failedChecks = input.untrustedObjects.get(objectKey(objectType, objectId));
     const track: Track = {
-      domain,
+      objectType,
+      objectId,
+      field,
       baseline: null,
       recorded: null,
       lastWriter: null,
@@ -323,13 +476,15 @@ export function replayHistory(input: ReplayInput): ReplayResult {
 
   const noteTemplate = (operation: HistoryOperation): void => {
     const semantics = findSemantics(operation.operationType, operation.templateVersion);
-    if (semantics !== undefined) {
-      templates.set(`${operation.operationType}@${operation.templateVersion}`, {
-        operationType: operation.operationType,
-        templateVersion: operation.templateVersion,
-        semantics,
-      });
+    const [first] = semantics ?? [];
+    if (first === undefined) {
+      return;
     }
+    templates.set(`${operation.operationType}@${operation.templateVersion}`, {
+      operationType: operation.operationType,
+      templateVersion: operation.templateVersion,
+      semantics: first.kind,
+    });
   };
 
   const pushStep = (
@@ -337,7 +492,7 @@ export function replayHistory(input: ReplayInput): ReplayResult {
     operation: HistoryOperation,
     action: ReplayStep['action'],
     ruleIds: readonly string[],
-    replayedCents: bigint | null,
+    replayedValue: string | null,
   ): void => {
     if (track.recorded === null) {
       return;
@@ -348,8 +503,8 @@ export function replayHistory(input: ReplayInput): ReplayResult {
       versionAfter: track.recorded.version,
       action,
       ruleIds,
-      recordedCents: track.recorded.priceCents,
-      replayedCents,
+      recordedValue: track.recorded.value,
+      replayedValue,
     });
   };
 
@@ -363,6 +518,9 @@ export function replayHistory(input: ReplayInput): ReplayResult {
 
   /** The recorded history of the field does not connect: nothing after this can be trusted. */
   const markGap = (track: Track, operation: HistoryOperation, detail: string): void => {
+    if (track.sticky) {
+      return;
+    }
     track.sticky = true;
     track.state = {
       kind: 'unresolved',
@@ -370,17 +528,21 @@ export function replayHistory(input: ReplayInput): ReplayResult {
         stage: 'replay',
         code: 'history_gap',
         obligationRef: COMPILE_OBLIGATIONS.historyComplete,
-        objects: [track.domain],
+        objects: [domainOf(track.objectType, track.objectId, track.field)],
         missingInputs: [{ kind: 'audited_history', description: detail }],
         expected: {
           condition:
-            'every recorded write starts from the version the previous write produced and records a readable value',
+            'every recorded write continues the object version chain and records a readable value of the field',
           ruleSource: { kind: 'platform', ref: 'write-protocol:version-chain' },
         },
         observed: {
           sourceKind: 'snapshot',
           ref: operationRef(operation),
-          content: { ...describe(operation), problem: detail },
+          content: {
+            ...describe(operation),
+            fieldId: fieldIdOf(track.objectType, track.field),
+            problem: detail,
+          },
         },
         suggestions: [
           {
@@ -396,14 +558,15 @@ export function replayHistory(input: ReplayInput): ReplayResult {
   const observedWrite = (
     operation: HistoryOperation,
     write: HistoryWrite,
-    before: ProductState | null,
-    after: ProductState | null,
+    before: FieldState | null,
+    recordedAfter: string | null,
   ): JsonObject => ({
     ...describe(operation),
+    fieldId: fieldIdOf(write.objectType, write.field),
     versionBefore: write.versionBefore?.toString() ?? null,
     versionAfter: write.versionAfter.toString(),
-    recordedCentsBefore: before?.priceCents.toString() ?? null,
-    recordedCentsAfter: after?.priceCents.toString() ?? null,
+    recordedValueBefore: before?.value ?? null,
+    recordedValueAfter: recordedAfter,
   });
 
   const policyUnclear = (track: Track, operation: HistoryOperation, why: string): Counterexample =>
@@ -411,11 +574,16 @@ export function replayHistory(input: ReplayInput): ReplayResult {
       stage: 'replay',
       code: 'policy_unclear',
       obligationRef: COMPILE_OBLIGATIONS.policyDecides,
-      objects: [track.domain],
+      objects: [domainOf(track.objectType, track.objectId, track.field)],
       missingInputs: [
         {
           kind: 'policy_rule',
-          description: `a confirmed rule that says how ${operation.operationType} at commit ${operation.commitSeq} is treated once its input is corrected`,
+          description:
+            'a confirmed rule that says how ' +
+            operation.operationType +
+            ' at commit ' +
+            operation.commitSeq +
+            ' is treated once its input is corrected',
         },
       ],
       expected: {
@@ -437,41 +605,68 @@ export function replayHistory(input: ReplayInput): ReplayResult {
       ],
     });
 
+  const unknownReasonDetail = (
+    reason: UnknownReason,
+    operation: HistoryOperation,
+    fieldId: string,
+  ): string => {
+    switch (reason) {
+      case 'template_not_interpretable':
+        return (
+          'the registered meaning and read set of ' +
+          operation.operationType +
+          '@' +
+          operation.templateVersion
+        );
+      case 'read_scope_declared_unknown':
+        return (
+          'what operation ' +
+          operation.operationId +
+          ' actually read: its recorded reads were declared unreliable'
+        );
+      case 'reads_do_not_fit_semantics':
+        return (
+          'what ' +
+          operation.operationType +
+          '@' +
+          operation.templateVersion +
+          ' computed from the business values it recorded reading'
+        );
+      case 'field_semantics_missing':
+        return (
+          'the registered meaning of the write of ' +
+          fieldId +
+          ' by ' +
+          operation.operationType +
+          '@' +
+          operation.templateVersion
+        );
+    }
+  };
+
   const applyUnknown = (
     operation: HistoryOperation,
+    writes: readonly HistoryWrite[],
     replayed: boolean,
-    reason:
-      | 'template_not_interpretable'
-      | 'reads_do_not_fit_semantics'
-      | 'read_scope_declared_unknown',
+    reason: UnknownReason,
   ): void => {
     const declaration = input.distrustedOperations.get(operation.operationId);
-    const seen = new Set<Track>();
-    for (const write of operation.writes) {
-      // An order is one immutable fact: it is tracked as a whole, not per field.
-      const track = trackOf(
-        write.objectType,
-        write.objectId,
-        write.objectType === 'product' ? write.field : null,
-      );
-      if (seen.has(track)) {
+    const seen = new Set<string>();
+    for (const write of writes) {
+      const key = fieldKey(write.objectType, write.objectId, write.field);
+      if (seen.has(key)) {
         continue;
       }
-      seen.add(track);
+      seen.add(key);
+      const track = trackOf(write.objectType, write.objectId, write.field);
+      const fieldId = fieldIdOf(write.objectType, write.field);
       const before = track.recorded;
-      if (isPriceWrite(write)) {
-        const recorded = int64Of(operation.afterState, 'price_cents', 'non_negative');
-        if (recorded === undefined || (before?.version ?? null) !== write.versionBefore) {
-          markGap(
-            track,
-            operation,
-            'the write does not start from the previously recorded version or records no readable price',
-          );
-        }
-        if (recorded !== undefined) {
-          track.recorded = { version: write.versionAfter, priceCents: recorded };
-        }
-        track.lastWriter = operation;
+      const recordedText = decimalOf(operation.afterState, write.field, 'signed');
+      track.lastWriter = operation;
+      if (recordedText === undefined) {
+        markGap(track, operation, `the write of ${fieldId} records no readable value`);
+      } else {
+        track.recorded = { version: write.versionAfter, value: recordedText };
       }
       if (!replayed) {
         continue;
@@ -495,16 +690,11 @@ export function replayHistory(input: ReplayInput): ReplayResult {
           obligationRef: reached
             ? COMPILE_OBLIGATIONS.semanticsKnown
             : COMPILE_OBLIGATIONS.impactScopeClosed,
-          objects: [track.domain],
+          objects: [domainOf(track.objectType, track.objectId, track.field)],
           missingInputs: [
             {
               kind: 'operation_semantics',
-              description:
-                reason === 'template_not_interpretable'
-                  ? `the registered meaning and read set of ${operation.operationType}@${operation.templateVersion}`
-                  : reason === 'read_scope_declared_unknown'
-                    ? `what operation ${operation.operationId} actually read: its recorded reads were declared unreliable`
-                    : `what ${operation.operationType}@${operation.templateVersion} computed from the business values it recorded reading`,
+              description: unknownReasonDetail(reason, operation, fieldId),
             },
           ],
           expected: {
@@ -519,7 +709,7 @@ export function replayHistory(input: ReplayInput): ReplayResult {
           observed: {
             sourceKind: 'snapshot',
             ref: operationRef(operation),
-            content: { ...observedWrite(operation, write, before, track.recorded), reason },
+            content: { ...observedWrite(operation, write, before, recordedText ?? null), reason },
           },
           suggestions: [
             {
@@ -538,53 +728,61 @@ export function replayHistory(input: ReplayInput): ReplayResult {
     }
   };
 
-  const applyCreateProduct = (operation: HistoryOperation, replayed: boolean): void => {
-    const write = operation.writes.find(isPriceWrite);
-    const recorded = int64Of(operation.afterState, 'price_cents', 'non_negative');
-    if (write === undefined) {
-      return;
-    }
-    const track = trackOf('product', write.objectId, 'price_cents');
-    if (recorded === undefined || track.recorded !== null || write.versionBefore !== null) {
-      markGap(track, operation, 'the creation is not the first recorded version of the object');
-    }
-    if (recorded !== undefined) {
-      track.recorded = { version: write.versionAfter, priceCents: recorded };
-    }
+  const applyCreate = (
+    operation: HistoryOperation,
+    write: HistoryWrite,
+    replayed: boolean,
+  ): void => {
+    const track = trackOf(write.objectType, write.objectId, write.field);
+    const fieldId = fieldIdOf(write.objectType, write.field);
+    const before = track.recorded;
+    const recordedText = decimalOf(operation.afterState, write.field, 'signed');
     track.lastWriter = operation;
+    if (before !== null || write.versionBefore !== null) {
+      markGap(
+        track,
+        operation,
+        `the creation of ${fieldId} is not the first recorded write of the field`,
+      );
+    }
+    if (recordedText === undefined) {
+      markGap(track, operation, `the creation records no readable value of ${fieldId}`);
+    } else {
+      track.recorded = { version: write.versionAfter, value: recordedText };
+    }
     if (replayed) {
       track.operations.push(operation);
     }
   };
 
-  const applyPriceWrite = (
+  const applyFieldWrite = (
     operation: HistoryOperation,
-    kind: 'absolute_price' | 'price_delta',
+    write: HistoryWrite,
+    semantics: FieldSemantics,
     replayed: boolean,
   ): void => {
-    const write = operation.writes.find(isPriceWrite);
-    if (write === undefined) {
-      return;
-    }
-    const track = trackOf('product', write.objectId, 'price_cents');
+    const track = trackOf(write.objectType, write.objectId, write.field);
+    const fieldId = fieldIdOf(write.objectType, write.field);
     const before = track.recorded;
-    const recorded = int64Of(operation.afterState, 'price_cents', 'non_negative');
+    const recordedText = decimalOf(operation.afterState, write.field, 'signed');
     track.lastWriter = operation;
     if (replayed) {
       track.operations.push(operation);
     }
-    if (recorded === undefined || before === null || write.versionBefore !== before.version) {
+    if (recordedText === undefined || before === null) {
       markGap(
         track,
         operation,
-        'the write does not start from the previously recorded version or records no readable price',
+        recordedText === undefined
+          ? `the write of ${fieldId} records no readable value`
+          : `the write of ${fieldId} has no previously recorded value to replay from`,
       );
-      if (recorded !== undefined) {
-        track.recorded = { version: write.versionAfter, priceCents: recorded };
+      if (recordedText !== undefined) {
+        track.recorded = { version: write.versionAfter, value: recordedText };
       }
       return;
     }
-    track.recorded = { version: write.versionAfter, priceCents: recorded };
+    track.recorded = { version: write.versionAfter, value: recordedText };
     if (!replayed) {
       return;
     }
@@ -598,7 +796,7 @@ export function replayHistory(input: ReplayInput): ReplayResult {
       // Omitted: the replayed value stays what it was before this operation.
       track.touched = true;
       if (track.state.kind === 'clean') {
-        track.state = { kind: 'diverged', cents: before.priceCents };
+        track.state = { kind: 'diverged', value: before.value };
       }
       track.lastTreatment = 'omitted_incident';
       pushStep(
@@ -606,7 +804,7 @@ export function replayHistory(input: ReplayInput): ReplayResult {
         operation,
         'omitted_incident',
         [],
-        track.state.kind === 'diverged' ? track.state.cents : null,
+        track.state.kind === 'diverged' ? track.state.value : null,
       );
       return;
     }
@@ -614,7 +812,7 @@ export function replayHistory(input: ReplayInput): ReplayResult {
       // Outside the affected domain: the recorded result stands as a fact.
       track.lastTreatment = 'recorded';
       if (track.touched) {
-        pushStep(track, operation, 'retained_outside_affected_domain', [], recorded);
+        pushStep(track, operation, 'retained_outside_affected_domain', [], recordedText);
       }
       return;
     }
@@ -625,7 +823,9 @@ export function replayHistory(input: ReplayInput): ReplayResult {
       operationType: operation.operationType,
       templateVersion: operation.templateVersion,
       commitSeq: operation.commitSeq,
-      productId: write.objectId,
+      objectType: write.objectType,
+      objectId: write.objectId,
+      fieldId,
     };
     const gap = scopeGap(policy, subject);
     if (gap !== null) {
@@ -633,7 +833,7 @@ export function replayHistory(input: ReplayInput): ReplayResult {
       return;
     }
 
-    if (kind === 'absolute_price') {
+    if (semantics.kind === 'absolute') {
       const rule = resolveOverrideRetention(policy, subject);
       if (rule.kind !== 'agreed') {
         unresolve(
@@ -642,7 +842,7 @@ export function replayHistory(input: ReplayInput): ReplayResult {
           policyUnclear(
             track,
             operation,
-            'no override retention rule of the policy applies to this absolute price write',
+            `no override retention rule of the policy applies to this absolute write of ${fieldId}`,
           ),
         );
         return;
@@ -651,7 +851,7 @@ export function replayHistory(input: ReplayInput): ReplayResult {
       // so from here on both histories agree again by fact.
       track.state = { kind: 'clean' };
       track.lastTreatment = 'recorded';
-      pushStep(track, operation, 'retained_independent_override', rule.ruleIds, recorded);
+      pushStep(track, operation, 'retained_independent_override', rule.ruleIds, recordedText);
       return;
     }
 
@@ -661,13 +861,32 @@ export function replayHistory(input: ReplayInput): ReplayResult {
       pushStep(track, operation, 'left_unresolved', [], null);
       return;
     }
-    const delta = int64Of(operation.params, 'delta_cents', 'signed');
-    const valueRead = operation.reads.find(isBusinessRead);
-    if (delta === undefined || valueRead?.objectVersion !== before.version) {
+    const delta =
+      semantics.param === undefined
+        ? undefined
+        : decimalOf(operation.params, semantics.param, 'signed');
+    const valueRead = operation.reads.find(
+      (read) =>
+        isBusinessRead(read) &&
+        read.objectType === write.objectType &&
+        read.field === write.field &&
+        read.objectId === write.objectId,
+    );
+    const valueAtRead =
+      valueRead === undefined ? null : readValueAtVersion(before, valueRead.objectVersion);
+    if (
+      delta === undefined ||
+      valueRead === undefined ||
+      write.versionBefore === null ||
+      valueRead.objectVersion !== write.versionBefore ||
+      valueAtRead !== before.value
+    ) {
       markGap(
         track,
         operation,
-        'the delta records no readable parameter, or did not read the version it started from',
+        'the delta of ' +
+          fieldId +
+          ' records no readable parameter, or did not read the current object version of the field it writes',
       );
       return;
     }
@@ -679,7 +898,7 @@ export function replayHistory(input: ReplayInput): ReplayResult {
         policyUnclear(
           track,
           operation,
-          'no delta replay rule of the policy applies to this price delta',
+          `no delta replay rule of the policy applies to this delta of ${fieldId}`,
         ),
       );
       return;
@@ -689,7 +908,7 @@ export function replayHistory(input: ReplayInput): ReplayResult {
         stage: 'replay',
         code: 'policy_conflict',
         obligationRef: COMPILE_OBLIGATIONS.policyConsistent,
-        objects: [track.domain],
+        objects: [domainOf(track.objectType, track.objectId, track.field)],
         expected: {
           condition:
             'overlapping delta replay rules agree on one disposition; no rule outranks another',
@@ -700,6 +919,7 @@ export function replayHistory(input: ReplayInput): ReplayResult {
           ref: refs.policy,
           content: {
             ...describe(operation),
+            fieldId,
             rules: rule.rules.map(({ ruleId, disposition }) => ({ ruleId, disposition })),
           },
         },
@@ -723,15 +943,18 @@ export function replayHistory(input: ReplayInput): ReplayResult {
           stage: 'replay',
           code: 'replay_not_permitted',
           obligationRef: COMPILE_OBLIGATIONS.policyDecides,
-          objects: [track.domain],
+          objects: [domainOf(track.objectType, track.objectId, track.field)],
           expected: {
-            condition: 'the confirmed policy permits recomputing this delta on the corrected input',
+            condition:
+              'the confirmed policy permits recomputing this delta of ' +
+              fieldId +
+              ' on the corrected input',
             ruleSource: { kind: 'policy_version', ref: refs.policy },
           },
           observed: {
             sourceKind: 'policy_version',
             ref: refs.policy,
-            content: { ...describe(operation), ruleIds: [...rule.ruleIds] },
+            content: { ...describe(operation), fieldId, ruleIds: [...rule.ruleIds] },
           },
           suggestions: [
             {
@@ -745,29 +968,36 @@ export function replayHistory(input: ReplayInput): ReplayResult {
       return;
     }
 
-    const next = track.state.cents + delta;
-    if (next > INT64_MAX || next < 0n) {
-      const overflow = next > INT64_MAX;
+    const field = findField(registry, fieldId);
+    if (field === undefined) {
+      throw compilerInvariantViolation(
+        `delta replay of field "${fieldId}" that the registry does not declare`,
+      );
+    }
+    const min = BigInt(field.bounds.min);
+    const max = field.bounds.max === null ? INT64_MAX : BigInt(field.bounds.max);
+    const deltaValue = BigInt(delta);
+    const next = BigInt(track.state.value) + deltaValue;
+    if (next < min || next > max) {
       const outOfBounds = counterexample({
         stage: 'replay',
-        code: overflow ? 'amount_out_of_range' : 'negative_final_price',
+        code: 'value_out_of_bounds',
         obligationRef: COMPILE_OBLIGATIONS.amountsWithinBounds,
-        objects: [track.domain],
+        objects: [domainOf(track.objectType, track.objectId, track.field)],
         expected: {
-          condition: overflow
-            ? 'every replayed price fits the PostgreSQL bigint range'
-            : 'every replayed price is zero or positive',
-          ruleSource: { kind: 'platform', ref: 'write-protocol:amount-bounds' },
-          value: { minCents: '0', maxCents: INT64_MAX.toString() },
+          condition: `the replayed value of ${fieldId} lies within the registered bounds of the field`,
+          ruleSource: { kind: 'platform', ref: 'write-protocol:field-bounds' },
+          value: { fieldId, min: min.toString(), max: max.toString() },
         },
         observed: {
           sourceKind: 'computation',
           ref: operationRef(operation),
           content: {
             ...describe(operation),
-            replayedInputCents: track.state.cents.toString(),
-            deltaCents: delta.toString(),
-            // Kept as text: the sum itself may not be a representable amount.
+            fieldId,
+            replayedInputValue: track.state.value,
+            delta: deltaValue.toString(),
+            // Kept as text: the sum itself may not be a representable value.
             sum: next.toString(),
           },
         },
@@ -775,7 +1005,7 @@ export function replayHistory(input: ReplayInput): ReplayResult {
           {
             action: 'clarify_policy',
             detail:
-              'recomputing this delta on the corrected input yields an amount the business entry would have refused; the business has to state what should hold instead',
+              'recomputing this delta on the corrected input yields a value the field bounds refuse; the business has to state what should hold instead',
           },
         ],
       });
@@ -783,23 +1013,36 @@ export function replayHistory(input: ReplayInput): ReplayResult {
       unresolve(track, operation, outOfBounds);
       return;
     }
-    track.state = { kind: 'diverged', cents: next };
+    track.state = { kind: 'diverged', value: next.toString() };
     track.lastTreatment = 'recomputed_on_corrected_input';
-    pushStep(track, operation, 'recomputed_on_corrected_input', rule.ruleIds, next);
+    pushStep(track, operation, 'recomputed_on_corrected_input', rule.ruleIds, next.toString());
   };
 
-  const applyOrder = (operation: HistoryOperation): void => {
-    const valueRead = operation.reads.find(isBusinessRead);
-    const orderWrite = operation.writes.find((write) => write.objectType === 'order');
+  const applyCopy = (
+    operation: HistoryOperation,
+    write: HistoryWrite,
+    semantics: FieldSemantics,
+    versionAtOperation: (objectType: string, objectId: string) => bigint | null,
+  ): void => {
+    const source = splitFieldId(semantics.fieldId);
+    const into = semantics.into === undefined ? undefined : splitFieldId(semantics.into);
+    if (into === undefined || write.objectType !== into.objectType || write.field !== into.column) {
+      return;
+    }
+    const valueRead = operation.reads.find(
+      (read) =>
+        isBusinessRead(read) &&
+        read.objectType === source.objectType &&
+        read.field === source.column,
+    );
     if (
       valueRead === undefined ||
-      orderWrite === undefined ||
-      // The compiler reports an order whose audit is not vouched for as unresolved.
-      input.untrustedObjects.has(objectKey('order', orderWrite.objectId))
+      input.untrustedObjects.has(objectKey(write.objectType, write.objectId))
     ) {
       return;
     }
-    const track = tracks.get(fieldKey('product', valueRead.objectId, 'price_cents'));
+    const readerDomain = domainOf(write.objectType, write.objectId, write.field);
+    const track = tracks.get(fieldKey(valueRead.objectType, valueRead.objectId, valueRead.field));
     if (
       track === undefined ||
       !track.touched ||
@@ -808,84 +1051,107 @@ export function replayHistory(input: ReplayInput): ReplayResult {
     ) {
       return;
     }
-    const struck = int64Of(operation.afterState, 'unit_price_cents', 'non_negative');
-    const quantity = operation.afterState.quantity;
+    const recordedValue = decimalOf(operation.afterState, write.field, 'signed');
+    const objectVersion = versionAtOperation(valueRead.objectType, valueRead.objectId);
     if (
-      struck === undefined ||
-      typeof quantity !== 'number' ||
-      track.recorded?.version !== valueRead.objectVersion
+      recordedValue === undefined ||
+      track.recorded === null ||
+      objectVersion === null ||
+      valueRead.objectVersion !== objectVersion ||
+      valueRead.objectVersion < track.recorded.version
     ) {
       blocking.push(
         counterexample({
           stage: 'replay',
           code: 'history_gap',
           obligationRef: COMPILE_OBLIGATIONS.historyComplete,
-          objects: [{ objectType: 'order', objectId: orderWrite.objectId, field: null }],
+          objects: [readerDomain],
           expected: {
             condition:
-              'an order records the price version that was current when it was struck, and its struck price',
-            ruleSource: { kind: 'platform', ref: 'write-protocol:order-pricing' },
+              'a reader records the object version that was current when it read the field, and its own recorded value',
+            ruleSource: { kind: 'platform', ref: 'write-protocol:reader-copy' },
+            value: {
+              fieldId: semantics.fieldId,
+              readObjectVersion: valueRead.objectVersion.toString(),
+            },
           },
           observed: {
             sourceKind: 'snapshot',
             ref: operationRef(operation),
             content: {
               ...describe(operation),
-              priceVersionRead: valueRead.objectVersion.toString(),
-              currentRecordedVersion: track.recorded?.version.toString() ?? null,
+              fieldId: semantics.fieldId,
+              readObjectVersion: valueRead.objectVersion.toString(),
+              currentObjectVersion: objectVersion?.toString() ?? null,
+              recordedValue: recordedValue ?? null,
+              lastFieldVersion: track.recorded?.version.toString() ?? null,
             },
           },
           suggestions: [
             {
               action: 'restore_audit_coverage',
-              detail: 'the order does not connect to the price history it claims to have read',
+              detail: 'the reader does not connect to the field history it claims to have read',
             },
           ],
         }),
       );
       return;
     }
-    // The order is a fact and stays as it is. Only its exposure is recorded.
+    // The reader is a fact and stays as it is. Only its exposure is recorded.
     noteTemplate(operation);
-    orderImpacts.push({
-      orderId: orderWrite.objectId,
-      productId: valueRead.objectId,
-      operation,
-      quantity,
-      priceVersionRead: valueRead.objectVersion,
-      struckUnitPriceCents: struck,
-      priceSource: {
+    readerImpacts.push({
+      readerObjectType: objectTypeOf(write.objectType),
+      readerObjectId: write.objectId,
+      readObjectType: objectTypeOf(valueRead.objectType),
+      readObjectId: valueRead.objectId,
+      fieldId: semantics.fieldId,
+      operationId: operation.operationId,
+      commitSeq: operation.commitSeq.toString(),
+      readObjectVersion: valueRead.objectVersion.toString(),
+      recordedValue,
+      source: {
         operationId: track.lastWriter.operationId,
-        treatment: track.lastTreatment === 'recorded' ? 'unresolved' : track.lastTreatment,
+        treatment: readerTreatment(track),
       },
-      replayedUnitPriceCents: track.state.kind === 'diverged' ? track.state.cents : null,
+      replayedValue: track.state.kind === 'diverged' ? track.state.value : null,
+      disposition: 'reader_unchanged',
     });
   };
 
   /** Binds the confirmed baseline to the recorded state at the trusted watermark. */
   const anchorBaseline = (): void => {
     for (const entry of baseline.entries) {
-      const track = trackOf('product', entry.objectId, 'price_cents');
+      const field = splitFieldId(entry.fieldId);
+      if (field.objectType !== entry.objectType) {
+        throw compilerInvariantViolation(
+          'baseline field "' +
+            entry.fieldId +
+            '" does not belong to object type "' +
+            entry.objectType +
+            '"',
+        );
+      }
+      const track = trackOf(entry.objectType, entry.objectId, field.column);
       const recorded = track.recorded;
       if (
         recorded === null ||
-        recorded.version !== entry.version ||
-        recorded.priceCents !== entry.priceCents
+        recorded.version !== entry.fieldVersion ||
+        recorded.value !== entry.value
       ) {
         blocking.push(
           counterexample({
             stage: 'preflight',
             code: 'input_not_applicable',
             obligationRef: COMPILE_OBLIGATIONS.inputsApplicable,
-            objects: [track.domain],
+            objects: [domainOf(entry.objectType, entry.objectId, field.column)],
             expected: {
               condition:
-                'at the trusted watermark the snapshot records the field at the confirmed version and price',
+                'at the trusted watermark the recorded history places the field at the confirmed version and value',
               ruleSource: { kind: 'baseline_confirmation', ref: refs.baselineConfirmation },
               value: {
                 trustedWatermark: baseline.trustedWatermark.toString(),
-                version: entry.version.toString(),
-                priceCents: entry.priceCents.toString(),
+                fieldVersion: entry.fieldVersion.toString(),
+                value: entry.value,
               },
             },
             // Absent when the snapshot records no such field at that watermark.
@@ -894,10 +1160,10 @@ export function replayHistory(input: ReplayInput): ReplayResult {
               : {
                   observed: {
                     sourceKind: 'snapshot' as const,
-                    ref: fieldKey('product', entry.objectId, 'price_cents'),
+                    ref: fieldKey(entry.objectType, entry.objectId, field.column),
                     content: {
-                      version: recorded.version.toString(),
-                      priceCents: recorded.priceCents.toString(),
+                      objectVersion: recorded.version.toString(),
+                      value: recorded.value,
                     },
                   },
                 }),
@@ -926,91 +1192,113 @@ export function replayHistory(input: ReplayInput): ReplayResult {
     if (replayed && input.incidentOperationIds.has(operation.operationId)) {
       incidentStarted = true;
     }
+
+    // The object version chain is advanced once per (operation, object): a
+    // creation that writes several columns is one version transition.
+    const groups = groupWritesByObject(operation.writes);
+    const versionBeforeOf = new Map<string, bigint | null>();
+    for (const [key, writes] of groups) {
+      const [first] = writes;
+      const last = writes[writes.length - 1];
+      if (first === undefined || last === undefined) {
+        continue;
+      }
+      const expectedBefore = objectVersions.get(key) ?? null;
+      versionBeforeOf.set(key, expectedBefore);
+      const consistent = writes.every(
+        (write) =>
+          write.versionBefore === first.versionBefore && write.versionAfter === first.versionAfter,
+      );
+      if (!consistent || first.versionBefore !== expectedBefore) {
+        for (const write of writes) {
+          markGap(
+            trackOf(write.objectType, write.objectId, write.field),
+            operation,
+            'the recorded writes of this operation do not continue the object version chain of ' +
+              key,
+          );
+        }
+      }
+      objectVersions.set(key, last.versionAfter);
+    }
+
+    const versionAtOperation = (objectType: string, objectId: string): bigint | null => {
+      const key = objectKey(objectType, objectId);
+      return versionBeforeOf.has(key)
+        ? (versionBeforeOf.get(key) ?? null)
+        : (objectVersions.get(key) ?? null);
+    };
+
     const semantics = operation.templateInterpretable
       ? findSemantics(operation.operationType, operation.templateVersion)
       : undefined;
     if (semantics === undefined) {
-      applyUnknown(operation, replayed, 'template_not_interpretable');
+      applyUnknown(operation, operation.writes, replayed, 'template_not_interpretable');
       continue;
     }
     if (!readsFitSemantics(operation, semantics)) {
-      applyUnknown(operation, replayed, 'reads_do_not_fit_semantics');
+      applyUnknown(operation, operation.writes, replayed, 'reads_do_not_fit_semantics');
       continue;
     }
     if (
       input.distrustedOperations.has(operation.operationId) &&
       !input.incidentOperationIds.has(operation.operationId)
     ) {
-      applyUnknown(operation, replayed, 'read_scope_declared_unknown');
+      applyUnknown(operation, operation.writes, replayed, 'read_scope_declared_unknown');
       continue;
     }
-    switch (semantics) {
-      case 'create_product':
-        applyCreateProduct(operation, replayed);
-        break;
-      case 'absolute_price':
-      case 'price_delta':
-        applyPriceWrite(operation, semantics, replayed);
-        break;
-      case 'create_order':
-        if (replayed) {
-          applyOrder(operation);
-        }
-        break;
+
+    const covered = new Set<number>();
+    for (const entry of semantics) {
+      const index = operation.writes.findIndex(
+        (write, writeIndex) => !covered.has(writeIndex) && writeMatchesSemantics(write, entry),
+      );
+      if (index < 0) {
+        continue;
+      }
+      covered.add(index);
+      const write = operation.writes[index];
+      if (write === undefined) {
+        continue;
+      }
+      switch (entry.kind) {
+        case 'create':
+          applyCreate(operation, write, replayed);
+          break;
+        case 'absolute':
+        case 'delta':
+          applyFieldWrite(operation, write, entry, replayed);
+          break;
+        case 'copy':
+          applyCopy(operation, write, entry, versionAtOperation);
+          break;
+      }
+    }
+    const unknownWrites = operation.writes.filter((_, index) => !covered.has(index));
+    if (unknownWrites.length > 0) {
+      applyUnknown(operation, unknownWrites, replayed, 'field_semantics_missing');
     }
   }
   if (!anchored) {
     anchorBaseline();
   }
 
+  const orderedTracks = [...tracks.values()].sort((left, right) =>
+    compareStrings(
+      domainKey(domainOf(left.objectType, left.objectId, left.field)),
+      domainKey(domainOf(right.objectType, right.objectId, right.field)),
+    ),
+  );
+
   const fields: FieldOutcome[] = [];
-  for (const [key, track] of [...tracks].sort(([left], [right]) => (left < right ? -1 : 1))) {
+  for (const track of orderedTracks) {
+    const key = fieldKey(track.objectType, track.objectId, track.field);
+    reconcileTrack(track, key);
     if (track.baseline === null && !track.touched) {
       continue;
     }
-    if (track.recorded !== null && !track.sticky && track.domain.field === 'price_cents') {
-      // The replay ends where the snapshot row stands, or it replayed something else.
-      const row = history.products.get(track.domain.objectId);
-      if (row?.version !== track.recorded.version || row.priceCents !== track.recorded.priceCents) {
-        blocking.push(
-          counterexample({
-            stage: 'replay',
-            code: 'history_gap',
-            obligationRef: COMPILE_OBLIGATIONS.historyComplete,
-            objects: [track.domain],
-            expected: {
-              condition:
-                'the last recorded write of the field equals the business row in the snapshot',
-              ruleSource: { kind: 'platform', ref: 'write-protocol:state-reconciliation' },
-              value: {
-                version: track.recorded.version.toString(),
-                priceCents: track.recorded.priceCents.toString(),
-              },
-            },
-            ...(row === undefined
-              ? {}
-              : {
-                  observed: {
-                    sourceKind: 'snapshot' as const,
-                    ref: key,
-                    content: {
-                      version: row.version.toString(),
-                      priceCents: row.priceCents.toString(),
-                    },
-                  },
-                }),
-            suggestions: [
-              {
-                action: 'retake_snapshot',
-                detail: 'the business row and its audited history disagree in this snapshot',
-              },
-            ],
-          }),
-        );
-      }
-    }
     fields.push({
-      domain: track.domain,
+      domain: domainOf(track.objectType, track.objectId, track.field),
       baseline: track.baseline,
       recorded: track.recorded,
       resolution: resolutionOf(key, track),
@@ -1021,10 +1309,85 @@ export function replayHistory(input: ReplayInput): ReplayResult {
 
   return {
     fields,
-    orderImpacts,
+    readerImpacts,
     blocking,
     templates: [...templates.entries()]
-      .sort(([left], [right]) => (left < right ? -1 : 1))
+      .sort(([left], [right]) => compareStrings(left, right))
       .map(([, template]) => template),
   };
+
+  /** The replay ends where the snapshot row stands, or it replayed a different field value. */
+  function reconcileTrack(track: Track, key: string): void {
+    // Only repairable objects carry registered field values to compare with.
+    // A reader (an order) is an immutable fact, not a field the replay repairs.
+    const object = findObject(registry, track.objectType);
+    if (track.recorded === null || track.sticky || object?.repairable !== true) {
+      return;
+    }
+    const row = history.objects.get(objectKey(track.objectType, track.objectId));
+    const snapshotValue = row?.fields.get(track.field);
+    if (
+      row !== undefined &&
+      snapshotValue !== undefined &&
+      snapshotValue === track.recorded.value &&
+      row.objectVersion >= track.recorded.version
+    ) {
+      return;
+    }
+    const fieldId = fieldIdOf(track.objectType, track.field);
+    blocking.push(
+      counterexample({
+        stage: 'replay',
+        code: 'history_gap',
+        obligationRef: COMPILE_OBLIGATIONS.historyComplete,
+        objects: [domainOf(track.objectType, track.objectId, track.field)],
+        expected: {
+          condition:
+            'the recorded field value of ' +
+            fieldId +
+            ' equals the business row of the snapshot, at an object version at or after the last recorded write of the field',
+          ruleSource: { kind: 'platform', ref: 'write-protocol:field-state-reconciliation' },
+          value: {
+            fieldId,
+            fieldVersion: track.recorded.version.toString(),
+            value: track.recorded.value,
+          },
+        },
+        ...(row === undefined
+          ? {}
+          : {
+              observed: {
+                sourceKind: 'snapshot' as const,
+                ref: key,
+                content: {
+                  objectVersion: row.objectVersion.toString(),
+                  value: snapshotValue ?? null,
+                },
+              },
+            }),
+        suggestions: [
+          {
+            action: 'retake_snapshot',
+            detail: 'the business row and its audited field history disagree in this snapshot',
+          },
+        ],
+      }),
+    );
+  }
+}
+
+function compareStrings(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function readValueAtVersion(before: FieldState, readObjectVersion: bigint): string | null {
+  // No other write of this field sits between 'before' and the read: the field
+  // genealogy at the read's object version is the last recorded value.
+  return readObjectVersion >= before.version ? before.value : null;
+}
+
+/** Does one write of an operation carry the field one semantics entry explains? */
+function writeMatchesSemantics(write: HistoryWrite, entry: FieldSemantics): boolean {
+  const target = entry.kind === 'copy' ? entry.into : entry.fieldId;
+  return target !== undefined && fieldIdOf(write.objectType, write.field) === target;
 }

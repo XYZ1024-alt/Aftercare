@@ -97,7 +97,12 @@ describe('snapshot description and certificate', () => {
       rejectionOf(
         await harness.evidence.collect({
           ...ref,
-          query: { tool: 'order.pricing', orderId: ORDER },
+          query: {
+            tool: 'field.history',
+            objectType: 'product',
+            objectId: KETTLE,
+            fieldId: 'product.price_cents',
+          },
         }),
       ).code,
     ).toBe('certificate_required');
@@ -151,12 +156,17 @@ describe('snapshot description and certificate', () => {
 });
 
 describe('evidence is read from the immutable snapshot only', () => {
-  it('returns a product version history with sources, versions and dependencies', async () => {
-    const evidence = await collect({ tool: 'product.version_history', productId: KETTLE });
+  it('returns a field history with sources, versions and dependencies', async () => {
+    const evidence = await collect({
+      tool: 'field.history',
+      objectType: 'product',
+      objectId: KETTLE,
+      fieldId: 'product.price_cents',
+    });
     historyBeforeSourceChanged = evidence;
 
     expect(evidence).toMatchObject({
-      evidenceFormat: 1,
+      evidenceFormat: 2,
       caseId: ref.caseId,
       snapshotId: ref.snapshotId,
       source: {
@@ -167,8 +177,15 @@ describe('evidence is read from the immutable snapshot only', () => {
         snapshotContentDigest: taken.snapshot.contentDigest,
         tables: ['products', 'operation_writes', 'operations'],
       },
-      tool: { name: 'product.version_history', version: 1 },
-      query: { tool: 'product.version_history', productId: KETTLE, limit: 50, afterKey: null },
+      tool: { name: 'field.history', version: 2 },
+      query: {
+        tool: 'field.history',
+        objectType: 'product',
+        objectId: KETTLE,
+        fieldId: 'product.price_cents',
+        limit: 50,
+        afterKey: null,
+      },
       certificate: { certificateId, snapshotEligibility: 'eligible' },
       page: { limit: 50, returned: 4, hasMore: false, nextCursor: null },
       rangeConclusion: { kind: 'entire_range', matched: 4, auditCompleteness: 'established' },
@@ -177,85 +194,117 @@ describe('evidence is read from the immutable snapshot only', () => {
     expect(evidence.resultDigest).toMatch(/^[0-9a-f]{64}$/);
 
     expect(evidence.observations).toMatchObject({
-      tool: 'product.version_history',
-      product: { productId: KETTLE, priceCents: '1300', version: '4' },
+      tool: 'field.history',
+      object: {
+        objectType: 'product',
+        objectId: KETTLE,
+        version: '4',
+        fields: { 'product.price_cents': '1300' },
+      },
       versions: [
         {
+          fieldId: 'product.price_cents',
           versionBefore: null,
           versionAfter: '1',
           operationType: 'create_product',
           commitSeq: '1',
-          fields: ['name', 'price_cents'],
+          recordedAfterState: {
+            product_id: KETTLE,
+            name: 'Kettle',
+            price_cents: '1000',
+            version: '1',
+          },
         },
         {
+          fieldId: 'product.price_cents',
           versionBefore: '1',
           versionAfter: '2',
           operationType: 'set_price',
           commitSeq: '2',
-          recordedAfterState: { price_cents: '1200', version: '2' },
+          recordedAfterState: {
+            product_id: KETTLE,
+            name: 'Kettle',
+            price_cents: '1200',
+            version: '2',
+          },
         },
         {
+          fieldId: 'product.price_cents',
           versionBefore: '2',
           versionAfter: '3',
           operationType: 'add_price_delta',
           commitSeq: '4',
-          recordedAfterState: { price_cents: '1250', version: '3' },
+          recordedAfterState: {
+            product_id: KETTLE,
+            name: 'Kettle',
+            price_cents: '1250',
+            version: '3',
+          },
         },
         {
+          fieldId: 'product.price_cents',
           versionBefore: '3',
           versionAfter: '4',
           operationType: 'batch_set_price',
           commitSeq: '6',
           ordinalInCommit: 1,
-          recordedAfterState: { price_cents: '1300', version: '4' },
+          recordedAfterState: {
+            product_id: KETTLE,
+            name: 'Kettle',
+            price_cents: '1300',
+            version: '4',
+          },
         },
       ],
     });
+    // The object-level business row is the first dependency of the merged list,
+    // so its version leads; the audited versions follow from oldest to newest.
     expect(evidence.objectVersions).toEqual(
-      ['1', '2', '3', '4'].map((version) => ({ objectType: 'product', objectId: KETTLE, version })),
+      ['4', '1', '2', '3'].map((version) => ({ objectType: 'product', objectId: KETTLE, version })),
     );
 
     // Row/field version dependencies: the business row, and each audited version.
+    // The merge key carries the field, so the object-level row comes first.
     expect(dependenciesOf(evidence, 'row_version')).toEqual([
       {
         kind: 'row_version',
         objectType: 'product',
         objectId: KETTLE,
-        version: '1',
-        fields: ['name', 'price_cents'],
-        via: 'audit_write',
-      },
-      {
-        kind: 'row_version',
-        objectType: 'product',
-        objectId: KETTLE,
-        version: '2',
-        fields: ['price_cents'],
-        via: 'audit_write',
-      },
-      {
-        kind: 'row_version',
-        objectType: 'product',
-        objectId: KETTLE,
-        version: '3',
-        fields: ['price_cents'],
-        via: 'audit_write',
-      },
-      {
-        kind: 'row_version',
-        objectType: 'product',
-        objectId: KETTLE,
-        version: '4',
-        fields: ['price_cents'],
-        via: 'audit_write',
-      },
-      {
-        kind: 'row_version',
-        objectType: 'product',
-        objectId: KETTLE,
-        version: '4',
-        fields: ['price_cents', 'version'],
+        fieldId: null,
+        objectVersion: '4',
         via: 'business_row',
+      },
+      {
+        kind: 'row_version',
+        objectType: 'product',
+        objectId: KETTLE,
+        fieldId: 'product.price_cents',
+        objectVersion: '1',
+        via: 'audit_write',
+      },
+      {
+        kind: 'row_version',
+        objectType: 'product',
+        objectId: KETTLE,
+        fieldId: 'product.price_cents',
+        objectVersion: '2',
+        via: 'audit_write',
+      },
+      {
+        kind: 'row_version',
+        objectType: 'product',
+        objectId: KETTLE,
+        fieldId: 'product.price_cents',
+        objectVersion: '3',
+        via: 'audit_write',
+      },
+      {
+        kind: 'row_version',
+        objectType: 'product',
+        objectId: KETTLE,
+        fieldId: 'product.price_cents',
+        objectVersion: '4',
+        via: 'audit_write',
       },
     ]);
     // Predicate dependencies: the set of rows matched, and the window that was read.
@@ -266,6 +315,7 @@ describe('evidence is read from the immutable snapshot only', () => {
         conditions: [
           { field: 'object_type', operator: 'eq', value: 'product' },
           { field: 'object_id', operator: 'eq', value: KETTLE },
+          { field: 'field', operator: 'eq', value: 'price_cents' },
         ],
         orderBy: ['version_after', 'commit_seq', 'ordinal_in_commit', 'operation_id'],
         window: { afterKey: null, throughKey: expect.any(Array), limit: 50, reachedEnd: true },
@@ -303,9 +353,9 @@ describe('evidence is read from the immutable snapshot only', () => {
       {
         kind: 'semantics',
         schemaVersion: taken.snapshot.versions.schema,
-        auditVersion: 1,
+        auditVersion: 2,
         digestFormat: 1,
-        adapter: { id: 'aftercare-product-pricing', version: 1 },
+        adapter: { id: 'aftercare-generalized', version: 2 },
         templates: [
           { operationType: 'add_price_delta', templateVersion: 1 },
           { operationType: 'batch_set_price', templateVersion: 1 },
@@ -364,19 +414,28 @@ describe('evidence is read from the immutable snapshot only', () => {
     });
     expect(dependenciesOf(evidence, 'row_version')).toEqual([
       {
+        // The concurrency guard reads the object version as a whole.
         kind: 'row_version',
         objectType: 'product',
         objectId: KETTLE,
-        version: '2',
-        fields: ['price_cents', 'version'],
+        fieldId: null,
+        objectVersion: '2',
         via: 'audit_read',
       },
       {
         kind: 'row_version',
         objectType: 'product',
         objectId: KETTLE,
-        version: '3',
-        fields: ['price_cents'],
+        fieldId: 'product.price_cents',
+        objectVersion: '2',
+        via: 'audit_read',
+      },
+      {
+        kind: 'row_version',
+        objectType: 'product',
+        objectId: KETTLE,
+        fieldId: 'product.price_cents',
+        objectVersion: '3',
         via: 'audit_write',
       },
     ]);
@@ -395,68 +454,56 @@ describe('evidence is read from the immutable snapshot only', () => {
     });
   });
 
-  it('returns the struck order price and where the price it read came from, with minimal fields', async () => {
-    const evidence = await collect({ tool: 'order.pricing', orderId: ORDER });
+  it('returns the readers of a field with the value each recorded and where it came from', async () => {
+    const evidence = await collect({
+      tool: 'reader.impacts',
+      objectType: 'product',
+      objectId: KETTLE,
+      fieldId: 'product.price_cents',
+    });
     expect(evidence.observations).toEqual({
-      tool: 'order.pricing',
-      pricing: {
-        order: {
-          orderId: ORDER,
-          productId: KETTLE,
-          quantity: 2,
-          unitPriceCents: '1200',
-          priceVersion: '2',
-          version: '1',
-        },
-        creation: {
+      tool: 'reader.impacts',
+      impacts: [
+        {
+          readerObjectType: 'order',
+          readerObjectId: ORDER,
+          readObjectType: 'product',
+          readObjectId: KETTLE,
+          fieldId: 'product.price_cents',
           operationId: expect.any(String),
           commitSeq: '3',
-          templateVersion: 1,
-          reads: [
-            {
-              ordinal: 1,
-              objectType: 'product',
-              objectId: KETTLE,
-              field: 'price_cents',
-              objectVersion: '2',
-              dependencyClass: 'business_value',
+          readObjectVersion: '2',
+          recordedValue: '1200',
+          writtenBy: {
+            operationId: expect.any(String),
+            operationType: 'set_price',
+            templateVersion: 1,
+            commitSeq: '2',
+            recordedAfterState: {
+              product_id: KETTLE,
+              name: 'Kettle',
+              price_cents: '1200',
+              version: '2',
             },
-          ],
+          },
         },
-        priceSource: {
-          productId: KETTLE,
-          version: '2',
-          operationId: expect.any(String),
-          operationType: 'set_price',
-          templateVersion: 1,
-          commitSeq: '2',
-          recordedAfterState: { price_cents: '1200', version: '2' },
-        },
-      },
+      ],
     });
     expect(dependenciesOf(evidence, 'row_version')).toEqual([
       {
         kind: 'row_version',
-        objectType: 'order',
-        objectId: ORDER,
-        version: '1',
-        fields: ['price_version', 'product_id', 'quantity', 'unit_price_cents'],
-        via: 'business_row',
-      },
-      {
-        kind: 'row_version',
         objectType: 'product',
         objectId: KETTLE,
-        version: '2',
-        fields: ['price_cents'],
+        fieldId: 'product.price_cents',
+        objectVersion: '2',
         via: 'audit_read',
       },
       {
         kind: 'row_version',
         objectType: 'product',
         objectId: KETTLE,
-        version: '2',
-        fields: ['price_cents'],
+        fieldId: 'product.price_cents',
+        objectVersion: '2',
         via: 'audit_write',
       },
     ]);
@@ -495,12 +542,17 @@ describe('evidence is read from the immutable snapshot only', () => {
       }),
     );
     expect(await harness.db.reader.readProduct(KETTLE)).toMatchObject({
-      priceCents: 9999n,
+      fields: { 'product.price_cents': 9999n },
       version: 5n,
     });
 
     // The same question, asked again of the old snapshot: the same answer.
-    const again = await collect({ tool: 'product.version_history', productId: KETTLE });
+    const again = await collect({
+      tool: 'field.history',
+      objectType: 'product',
+      objectId: KETTLE,
+      fieldId: 'product.price_cents',
+    });
     expect(again.evidenceId).not.toBe(historyBeforeSourceChanged.evidenceId);
     expect(again.observations).toEqual(historyBeforeSourceChanged.observations);
     expect(again.dependencies).toEqual(historyBeforeSourceChanged.dependencies);
@@ -534,10 +586,22 @@ describe('evidence is read from the immutable snapshot only', () => {
     const current = accepted(
       await harness.evidence.collect({
         ...newer.ref,
-        query: { tool: 'product.version_history', productId: KETTLE },
+        query: {
+          tool: 'field.history',
+          objectType: 'product',
+          objectId: KETTLE,
+          fieldId: 'product.price_cents',
+        },
       }),
     );
-    expect(current.observations).toMatchObject({ product: { priceCents: '9999', version: '5' } });
+    expect(current.observations).toMatchObject({
+      object: {
+        objectType: 'product',
+        objectId: KETTLE,
+        version: '5',
+        fields: { 'product.price_cents': '9999' },
+      },
+    });
     expect(current.resultDigest).not.toBe(historyBeforeSourceChanged.resultDigest);
 
     // Re-checking the old snapshot now still reproduces its registered digest.
@@ -681,9 +745,9 @@ describe('pages, empty results and whole-range conclusions', () => {
       {
         kind: 'semantics',
         schemaVersion: taken.snapshot.versions.schema,
-        auditVersion: 1,
+        auditVersion: 2,
         digestFormat: 1,
-        adapter: { id: 'aftercare-product-pricing', version: 1 },
+        adapter: { id: 'aftercare-generalized', version: 2 },
         templates: [],
       },
     ]);
@@ -706,12 +770,14 @@ describe('pages, empty results and whole-range conclusions', () => {
 
     // An object the snapshot does not know: an absence statement about that object, in that snapshot.
     const unknown = await collect({
-      tool: 'product.version_history',
-      productId: 'no-such-product',
+      tool: 'field.history',
+      objectType: 'product',
+      objectId: 'no-such-product',
+      fieldId: 'product.price_cents',
     });
     expect(unknown.observations).toEqual({
-      tool: 'product.version_history',
-      product: null,
+      tool: 'field.history',
+      object: null,
       versions: [],
     });
     expect(unknown.objectVersions).toEqual([]);
@@ -802,7 +868,12 @@ describe('requests are validated, scoped to their case and limited', () => {
   it('refuses a snapshot or evidence record that belongs to another case', async () => {
     const { ref: other } = await harness.takeSnapshot();
     accepted(await harness.evidence.issueCertificate(other));
-    const query = { tool: 'order.pricing', orderId: ORDER };
+    const query = {
+      tool: 'field.history',
+      objectType: 'product',
+      objectId: KETTLE,
+      fieldId: 'product.price_cents',
+    };
 
     // Another case's id with this case's snapshot, and the reverse.
     for (const mixed of [
@@ -903,7 +974,12 @@ describe('requests are validated, scoped to their case and limited', () => {
       rejectionOf(
         await harness.evidence.collect({
           ...dropped,
-          query: { tool: 'order.pricing', orderId: ORDER },
+          query: {
+            tool: 'field.history',
+            objectType: 'product',
+            objectId: KETTLE,
+            fieldId: 'product.price_cents',
+          },
         }),
       ).code,
     ).toBe('snapshot_dropped');

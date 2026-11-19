@@ -133,16 +133,18 @@ describe('role separation', () => {
       expect(row.config, row.name).toEqual(['search_path=pg_catalog, pg_temp']);
       expect(row.owner, row.name).toBe('aftercare_migrator');
     }
-    // The guarded promotion entry (0024) is an entry too, but no login may execute it:
-    // only aftercare_promotion.promote, running as the owner, calls it.
+    // The guarded promotion entry (0024) is an entry too, but no login may
+    // execute it: only aftercare_promotion.promote, running as the owner, calls
+    // it. Its signature takes the whole target document, so the privilege
+    // lookup below names it by that signature.
     expect(rows.filter((row) => row.definer).map((row) => row.name)).toEqual(
-      [...ENTRY_FUNCTIONS, 'guarded_batch_set_price'].sort(),
+      [...ENTRY_FUNCTIONS, 'guarded_restore_fields'].sort(),
     );
     const { rows: guarded } = await db.migratorPool.query<{ role: string }>(
       `SELECT g.rolname AS role FROM pg_roles AS g
         WHERE g.rolname LIKE 'aftercare\\_%' AND g.rolname NOT IN ('aftercare_migrator', 'aftercare_test_admin')
           AND has_function_privilege(g.oid,
-                'aftercare.guarded_batch_set_price(text, text[], bigint[], bigint[])', 'EXECUTE')`,
+                'aftercare.guarded_restore_fields(text, jsonb)', 'EXECUTE')`,
     );
     expect(guarded).toEqual([]);
   });
@@ -156,7 +158,7 @@ describe('business writer (simulator) role', () => {
         `INSERT INTO aftercare.products (product_id, name, price_cents, version) VALUES ('rogue', 'Rogue', 1, 1)`,
         `UPDATE aftercare.products SET price_cents = 1, version = version + 1 WHERE product_id = '${productId}'`,
         `DELETE FROM aftercare.products WHERE product_id = '${productId}'`,
-        `INSERT INTO aftercare.orders (order_id, product_id, quantity, unit_price_cents, price_version, version)
+        `INSERT INTO aftercare.orders (order_id, product_id, quantity, unit_price_cents, product_version, version)
            VALUES ('rogue', '${productId}', 1, 1, 1, 1)`,
         `UPDATE aftercare.orders SET unit_price_cents = 1 WHERE order_id = '${orderId}'`,
         `DELETE FROM aftercare.orders WHERE order_id = '${orderId}'`,
@@ -194,7 +196,8 @@ describe('business writer (simulator) role', () => {
       db.writerPool,
       [
         `SELECT aftercare.begin_commit('${PRINCIPAL}')`,
-        `SELECT aftercare.apply_price_write(1, 1, 'set_price', NULL, '${productId}', 1)`,
+        `SELECT aftercare.apply_field_write(1, 1, 'set_price', 1, NULL,
+                'product.price_cents', 'absolute', 'price_cents', '${productId}', 1)`,
         `SELECT aftercare.record_operation(1, 1, 'set_price', 1, '{}'::jsonb, NULL, NULL, '{}'::jsonb)`,
         `SELECT aftercare.record_read(gen_random_uuid(), 1, 'product', 'x', 'price_cents', 1, 'business_value')`,
         `SELECT aftercare.record_write(gen_random_uuid(), 1, 'product', 'x', 'price_cents', 1, 2)`,
@@ -274,7 +277,7 @@ describe('investigator role', () => {
       INSUFFICIENT_PRIVILEGE,
     );
     expect(await db.reader.readProduct(productId)).toMatchObject({
-      priceCents: 1100n,
+      fields: { 'product.price_cents': 1100n },
       version: 2n,
     });
   });
@@ -314,7 +317,7 @@ describe('owner-level guards (accident protection, not DBA protection)', () => {
       'AC007',
     );
     expect(await db.reader.readProduct(productId)).toMatchObject({
-      priceCents: 1100n,
+      fields: { 'product.price_cents': 1100n },
       version: 2n,
     });
   });

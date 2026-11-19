@@ -51,10 +51,10 @@ describe('create_product', () => {
     expect(result.commitSeq).toBe(watermarkBefore + 1n);
     expect(await db.reader.readCommitWatermark()).toBe(watermarkBefore + 1n);
     expect(await db.reader.readProduct(productId)).toEqual({
-      productId,
-      name: 'Initial Widget',
-      priceCents: 1500n,
+      objectType: 'product',
+      objectId: productId,
       version: 1n,
+      fields: { 'product.price_cents': 1500n },
     });
 
     const operations = await db.reader.listOperationsAfter(watermarkBefore, 10);
@@ -94,7 +94,7 @@ describe('create_product', () => {
 
   it('allows a zero price', async () => {
     const productId = await createProduct(0n);
-    expect((await db.reader.readProduct(productId))?.priceCents).toBe(0n);
+    expect((await db.reader.readProduct(productId))?.fields['product.price_cents']).toBe(0n);
   });
 });
 
@@ -110,7 +110,7 @@ describe('set_price', () => {
     expect(result).toMatchObject({ productId, priceCents: 1250n, version: 2n });
     expect(result.commitSeq).toBe(watermarkBefore + 1n);
     expect(await db.reader.readProduct(productId)).toMatchObject({
-      priceCents: 1250n,
+      fields: { 'product.price_cents': 1250n },
       version: 2n,
     });
 
@@ -146,7 +146,10 @@ describe('set_price', () => {
     expect(first.version).toBe(2n);
     expect(second.version).toBe(3n);
     expect(second.commitSeq).toBe(first.commitSeq + 1n);
-    expect(await db.reader.readProduct(productId)).toMatchObject({ priceCents: 700n, version: 3n });
+    expect(await db.reader.readProduct(productId)).toMatchObject({
+      fields: { 'product.price_cents': 700n },
+      version: 3n,
+    });
     // Two separate history entries, not one merged entry.
     const ledgerAfter = await readLedgerSummary(db.migratorPool);
     expect(ledgerAfter.operations).toBe(ledgerBefore.operations + 2);
@@ -195,7 +198,10 @@ describe('add_price_delta', () => {
 
     expect(raised).toMatchObject({ priceCents: 1250n, version: 2n });
     expect(lowered).toMatchObject({ priceCents: 0n, version: 3n });
-    expect(await db.reader.readProduct(productId)).toMatchObject({ priceCents: 0n, version: 3n });
+    expect(await db.reader.readProduct(productId)).toMatchObject({
+      fields: { 'product.price_cents': 0n },
+      version: 3n,
+    });
   });
 
   it('records a business dependency on the exact old price version', async () => {
@@ -258,7 +264,7 @@ describe('create_order', () => {
       productId,
       quantity: 3,
       unitPriceCents: 4500n,
-      priceVersion: 2n,
+      productVersion: 2n,
     });
 
     const [operation] = await db.reader.listOperationsAfter(watermarkBefore, 10);
@@ -267,10 +273,11 @@ describe('create_order', () => {
       params: { order_id: orderId, product_id: productId, quantity: 3 },
       beforeState: null,
       afterState: {
+        order_id: orderId,
         product_id: productId,
-        quantity: 3,
+        quantity: '3',
         unit_price_cents: '4500',
-        price_version: '2',
+        product_version: '2',
         version: '1',
       },
     });
@@ -284,6 +291,14 @@ describe('create_order', () => {
         objectVersion: 2n,
         dependencyClass: 'business_value',
       },
+      {
+        ordinal: 2,
+        objectType: 'product',
+        objectId: productId,
+        field: 'version',
+        objectVersion: 2n,
+        dependencyClass: 'concurrency_guard',
+      },
     ]);
 
     written(await db.entry.setPrice({ principal: PRINCIPAL, productId, priceCents: 9900n }));
@@ -295,13 +310,17 @@ describe('create_order', () => {
       }),
     );
 
-    expect(await db.reader.readProduct(productId)).toMatchObject({ priceCents: 1n, version: 5n });
+    expect(await db.reader.readProduct(productId)).toMatchObject({
+      fields: { 'product.price_cents': 1n },
+      version: 5n,
+    });
     expect(await db.reader.readOrder(orderId)).toEqual({
       orderId,
       productId,
       quantity: 3,
-      unitPriceCents: 4500n,
-      priceVersion: 2n,
+      fieldId: 'product.price_cents',
+      readObjectVersion: 2n,
+      recordedValue: 4500n,
       version: 1n,
     });
   });
@@ -378,7 +397,7 @@ describe('rejected writes leave no trace', () => {
         rejectionOf(
           await db.entry.addPriceDelta({ principal: PRINCIPAL, productId, deltaCents: -101n }),
         ),
-      'negative_price',
+      'value_out_of_bounds',
     );
   });
 
@@ -390,7 +409,7 @@ describe('rejected writes leave no trace', () => {
         rejectionOf(
           await db.entry.addPriceDelta({ principal: PRINCIPAL, productId, deltaCents: 6n }),
         ),
-      'amount_out_of_range',
+      'value_out_of_bounds',
     );
     // The exact boundary is still reachable.
     expect(
@@ -407,13 +426,13 @@ describe('rejected writes leave no trace', () => {
         rejectionOf(
           await db.entry.setPrice({ principal: PRINCIPAL, productId, priceCents: INT64_MAX + 1n }),
         ),
-      'amount_out_of_range',
+      'value_out_of_bounds',
     );
     await expectUnchanged(
       productId,
       async () =>
         rejectionOf(await db.entry.setPrice({ principal: PRINCIPAL, productId, priceCents: -1n })),
-      'negative_price',
+      'value_out_of_bounds',
     );
     await expectUnchanged(
       productId,
@@ -426,7 +445,7 @@ describe('rejected writes leave no trace', () => {
             initialPriceCents: -1n,
           }),
         ),
-      'negative_price',
+      'value_out_of_bounds',
     );
   });
 
@@ -540,7 +559,10 @@ describe('rejected writes leave no trace', () => {
     } finally {
       client.release();
     }
-    expect(await db.reader.readProduct(productId)).toMatchObject({ priceCents: 100n, version: 1n });
+    expect(await db.reader.readProduct(productId)).toMatchObject({
+      fields: { 'product.price_cents': 100n },
+      version: 1n,
+    });
   });
 });
 

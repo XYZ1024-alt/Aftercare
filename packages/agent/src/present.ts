@@ -1,5 +1,13 @@
 import type { Evidence } from '@aftercare/contracts';
-import { type JsonObject, type JsonValue, sha256Hex } from '@aftercare/domain';
+import {
+  DEFAULT_REGISTRY,
+  findField,
+  formatFieldValue,
+  type JsonObject,
+  type JsonValue,
+  parseFieldValue,
+  sha256Hex,
+} from '@aftercare/domain';
 
 // How recorded data is shown to a model. Two rules, applied to everything
 // that comes out of a snapshot (CSV-like parameters, names, remarks, actor
@@ -127,36 +135,51 @@ export function observedOperations(evidence: Evidence): ObservedOperation[] {
               ],
             },
           ];
-    case 'product.version_history': {
-      const { product } = observations;
+    case 'field.history': {
+      const { object } = observations;
       return observations.versions.map((version) => ({
         operationId: version.operationId,
         operationType: version.operationType,
         commitSeq: version.commitSeq,
         batchId: null,
-        objects: product === null ? [] : [`product/${product.productId}`],
+        objects: object === null ? [] : [`${object.objectType}/${object.objectId}`],
       }));
     }
     case 'batches.list':
-    case 'order.pricing':
+    case 'reader.impacts':
       return [];
   }
 }
 
-/** The price a product version history record shows for one version of the product, if it shows that version. */
-export function recordedPriceAt(
+/**
+ * The value a field history record shows for one recorded write of the field,
+ * if the record shows that object field at that version. The column read is
+ * the field's own column in the registry, never a hard-coded one.
+ */
+export function recordedFieldValueAt(
   evidence: Evidence,
-  productId: string,
-  version: string,
+  objectType: string,
+  objectId: string,
+  fieldId: string,
+  fieldVersion: string,
 ): string | null {
   const { observations } = evidence;
-  if (
-    observations.tool !== 'product.version_history' ||
-    observations.product?.productId !== productId
-  ) {
+  if (observations.tool !== 'field.history') {
     return null;
   }
-  const entry = observations.versions.find((candidate) => candidate.versionAfter === version);
-  const cents = entry?.recordedAfterState.price_cents;
-  return typeof cents === 'string' && /^(0|[1-9]\d*)$/.test(cents) ? cents : null;
+  const { object } = observations;
+  if (object?.objectType !== objectType || object.objectId !== objectId) {
+    return null;
+  }
+  const field = findField(DEFAULT_REGISTRY, fieldId);
+  if (field === undefined) {
+    return null;
+  }
+  const entry = observations.versions.find((candidate) => candidate.versionAfter === fieldVersion);
+  const raw = entry?.recordedAfterState[field.column];
+  if (typeof raw !== 'string') {
+    return null;
+  }
+  const parsed = parseFieldValue(field, raw);
+  return parsed.ok ? formatFieldValue(field, parsed.value) : null;
 }

@@ -7,7 +7,7 @@ import {
 } from '@aftercare/contracts';
 import { OPERATION_TYPES } from '@aftercare/domain';
 import { buildCoverageManifest } from '@aftercare/evidence';
-import { createRegistrationService } from '@aftercare/repair';
+import { createRegistrationService, REPAIR_SEMANTICS_VERSION } from '@aftercare/repair';
 import {
   createAuthorityAdmin,
   createBusinessEntry,
@@ -62,7 +62,7 @@ const APPROVER: IdentityContext = {
   source: 'demo-operator-session',
 };
 const SOURCE = { kind: 'business_decision_record', reference: 'stage 7 demo' } as const;
-const EVERYTHING = { kind: 'all_products' } as const;
+const EVERYTHING = { kind: 'all', objectType: 'product' } as const;
 const ALWAYS = { fromInclusive: '0', toInclusive: null };
 
 function written<T>(step: string, outcome: WriteOutcome<T>): T {
@@ -172,7 +172,7 @@ try {
   const policy = await createRegistrationService({ repairStore: environment.repairStore })
     .forIdentity(OPERATOR)
     .registerPolicyVersion({
-      policyFormat: 1,
+      policyFormat: 2,
       sourceEnvironment,
       scope: {
         objects: EVERYTHING,
@@ -183,12 +183,13 @@ try {
       supportedTemplates: OPERATION_TYPES.map((operationType) => ({
         operationType,
         templateVersion: 1,
-        semanticsVersion: 1,
+        semanticsVersion: REPAIR_SEMANTICS_VERSION,
       })),
       // Deltas are replayed; the policy says nothing about later absolute prices.
       deltaReplayRules: [
         {
           ruleId: 'replay-deltas',
+          fieldId: 'product.price_cents',
           objects: EVERYTHING,
           watermark: ALWAYS,
           disposition: 'recompute_on_corrected_input',
@@ -239,7 +240,7 @@ try {
     truth: {
       incidentOperationIds: batch.targets.map((target) => target.operationId),
       baseline: Object.fromEntries(
-        products.map((productId) => [productId, { version: '1', cents: '10000' }]),
+        products.map((productId) => [productId, { fieldVersion: '1', value: '10000' }]),
       ),
       policyVersionIds: [policy.value.policyVersionId],
       expectedFinalCents: Object.fromEntries(

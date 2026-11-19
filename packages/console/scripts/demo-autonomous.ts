@@ -439,7 +439,7 @@ try {
     )) {
       console.log(
         `写回：源库已变化，未写入（报告 ${drift.reportId}；漂移商品 ${drift.drift
-          .map((entry) => entry.productId)
+          .map((entry) => entry.objectId)
           .join('、')}）`,
       );
     }
@@ -451,16 +451,16 @@ try {
         );
         const findings = new Map(
           (check?.findings ?? []).map((finding) => [
-            finding.productId,
+            finding.objectId,
             CHECK_LABELS[finding.conclusion] ?? finding.conclusion,
           ]),
         );
         return record.targets.map((target) => ({
-          商品: target.productId,
-          写回前: centsText(target.fromCents),
-          写回后: centsText(target.toCents),
+          商品: target.objectId,
+          写回前: centsText(target.fromValue),
+          写回后: centsText(target.toValue),
           核验结论:
-            findings.get(target.productId) ??
+            findings.get(target.objectId) ??
             (check === undefined ? '未核验' : (CHECK_LABELS[check.conclusion] ?? check.conclusion)),
         }));
       });

@@ -137,7 +137,16 @@ try {
   const certificate = accepted('issue certificate', await evidence.issueCertificate(ref));
   const history = accepted(
     'product history',
-    await evidence.collect({ ...ref, query: { tool: 'product.version_history', productId } }),
+    await evidence.collect({
+      ...ref,
+      query: {
+        tool: 'field.history',
+        objectType: 'product',
+        objectId: productId,
+        fieldId: 'product.price_cents',
+        limit: 100,
+      },
+    }),
   );
   show('5a. evidence: product version history (from the snapshot)', {
     evidenceId: history.evidenceId,
@@ -154,7 +163,15 @@ try {
 
   const pricing = accepted(
     'order pricing',
-    await evidence.collect({ ...ref, query: { tool: 'order.pricing', orderId } }),
+    await evidence.collect({
+      ...ref,
+      query: {
+        tool: 'reader.impacts',
+        objectType: 'product',
+        objectId: productId,
+        fieldId: 'product.price_cents',
+      },
+    }),
   );
   show('5b. evidence: order pricing and the source of the price it read', {
     evidenceId: pricing.evidenceId,
@@ -211,7 +228,15 @@ try {
   if (!dropped.ok) {
     throw new Error(`snapshot cleanup failed: ${dropped.failure.code}: ${dropped.failure.message}`);
   }
-  const afterDrop = await evidence.collect({ ...ref, query: { tool: 'order.pricing', orderId } });
+  const afterDrop = await evidence.collect({
+    ...ref,
+    query: {
+      tool: 'reader.impacts',
+      objectType: 'product',
+      objectId: productId,
+      fieldId: 'product.price_cents',
+    },
+  });
   const stored = accepted(
     'read stored evidence',
     await evidence.readEvidence({ caseId: ref.caseId, evidenceId: history.evidenceId }),

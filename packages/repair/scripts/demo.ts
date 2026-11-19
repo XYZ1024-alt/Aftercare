@@ -38,7 +38,7 @@ const TARGET = 'development';
  */
 const OPERATOR = { principal: 'ops:demo-pricing-lead', source: 'demo-operator-session' };
 const SOURCE = { kind: 'business_decision_record', reference: 'stage 3 demo' } as const;
-const EVERYTHING = { kind: 'all_products' } as const;
+const EVERYTHING = { kind: 'all', objectType: 'product' } as const;
 const ALWAYS = { fromInclusive: '0', toInclusive: null };
 
 function written<T>(step: string, outcome: WriteOutcome<T>): T {
@@ -95,7 +95,7 @@ function showOutcome(title: string, outcome: CompileOutcome): void {
     patch: content.patch,
     allowedFootprint: content.allowedFootprint,
     preserved: content.preserved,
-    orderImpacts: content.orderImpacts,
+    readerImpacts: content.readerImpacts,
     unresolved: content.unresolved,
     incidentBatches: content.incident.batches,
     negativeQueries: content.inputs.negativeQueries,
@@ -241,7 +241,15 @@ try {
   for (const productId of [mug, kettle, scale, promo]) {
     const history = accepted(
       `history of ${productId}`,
-      await evidence.collect({ ...ref, query: { tool: 'product.version_history', productId } }),
+      await evidence.collect({
+        ...ref,
+        query: {
+          tool: 'field.history',
+          objectType: 'product',
+          objectId: productId,
+          fieldId: 'product.price_cents',
+        },
+      }),
     );
     await command(caseId, { type: 'activate_evidence', evidenceId: history.evidenceId });
     evidenceIds.push(history.evidenceId);
@@ -279,9 +287,9 @@ try {
     entries: [mug, kettle, scale].map((objectId) => ({
       objectType: 'product',
       objectId,
-      field: 'price_cents',
-      version: '1',
-      priceCents: '10000',
+      fieldId: 'product.price_cents',
+      fieldVersion: '1',
+      value: '10000',
     })),
     statement: 'These prices were correct before the batch.',
     evidenceRefs: evidenceIds,
@@ -290,7 +298,7 @@ try {
   const policy = accepted(
     'register policy version',
     await operator.registerPolicyVersion({
-      policyFormat: 1,
+      policyFormat: 2,
       sourceEnvironment,
       scope: {
         objects: EVERYTHING,
@@ -301,11 +309,12 @@ try {
       supportedTemplates: OPERATION_TYPES.map((operationType) => ({
         operationType,
         templateVersion: 1,
-        semanticsVersion: 1,
+        semanticsVersion: 2,
       })),
       deltaReplayRules: [
         {
           ruleId: 'replay-deltas',
+          fieldId: 'product.price_cents',
           objects: EVERYTHING,
           watermark: ALWAYS,
           disposition: 'recompute_on_corrected_input',
@@ -314,6 +323,7 @@ try {
       overrideRetentionRules: [
         {
           ruleId: 'keep-overrides',
+          fieldId: 'product.price_cents',
           objects: EVERYTHING,
           watermark: ALWAYS,
           operationTypes: ['set_price', 'batch_set_price'],

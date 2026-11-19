@@ -1,4 +1,5 @@
 import {
+  baselineEntryKey,
   type Certificate,
   type CompiledPlan,
   type CompileOutcome,
@@ -12,8 +13,8 @@ import {
   repairProposalSchema,
   type SnapshotRecord,
 } from '@aftercare/contracts';
-import type { JsonValue } from '@aftercare/domain';
-import { loadSnapshotModel } from '@aftercare/evidence';
+import { DEFAULT_REGISTRY, fieldIdOf, type JsonValue } from '@aftercare/domain';
+import { loadSnapshotModel, type SnapshotModel } from '@aftercare/evidence';
 import {
   type CaseStore,
   type ControlStore,
@@ -28,21 +29,27 @@ import {
   COMPILE_OBLIGATIONS,
   type CounterexampleParts,
   counterexample,
-  priceField,
+  fieldRef,
 } from './counterexample.ts';
-import { objectKey, replayHistory } from './engine.ts';
-import { buildHistory, type History, type HistoryOperation } from './history.ts';
+import { fieldKey, objectKey, replayHistory } from './engine.ts';
+import {
+  buildHistory,
+  type History,
+  type HistoryOperation,
+  type SnapshotObjectRow,
+} from './history.ts';
 import {
   assemblePlan,
   assertPlanInvariants,
   type ConsideredDeclaration,
   certificateSemanticDigest,
+  isRepairedFieldDomain,
   REPAIR_COMPILER,
   type UnresolvedDomain,
 } from './plan.ts';
 import { planDependencyManifest } from './plan-dependencies.ts';
 import { unsupportedPolicyTemplates } from './policy-rules.ts';
-import { findSemantics, REPAIR_SEMANTICS_VERSION } from './semantics.ts';
+import { findSemantics, isOmittableSemantics, REPAIR_SEMANTICS_VERSION } from './semantics.ts';
 
 export interface RepairCompilerOptions {
   /** Runtime-side control store (role `aftercare_runtime`). */
@@ -120,15 +127,12 @@ function observedOperations({ observations }: Evidence): string[] {
   switch (observations.tool) {
     case 'operations.list':
       return observations.operations.map((operation) => operation.operationId);
-    case 'product.version_history':
+    case 'field.history':
       return observations.versions.map((version) => version.operationId);
     case 'operation.detail':
       return observations.operation === null ? [] : [observations.operation.operationId];
-    case 'order.pricing':
-      return [
-        observations.pricing?.creation?.operationId,
-        observations.pricing?.priceSource?.operationId,
-      ].filter((id) => id !== undefined);
+    case 'reader.impacts':
+      return observations.impacts.map((impact) => impact.operationId);
     case 'batches.list':
       return [];
   }
@@ -164,6 +168,25 @@ function untrustedObjectsOf(certificate: Certificate): Map<string, readonly stri
       )
       .map((entry) => [objectKey(entry.objectType, entry.objectId), entry.reasons]),
   );
+}
+
+/** The scanned text cells of one registered business row, as the history reads them. */
+function textCells(row: object): SnapshotObjectRow {
+  const cells: Record<string, string> = {};
+  for (const [column, cell] of Object.entries(
+    row as Readonly<Record<string, string | number | bigint>>,
+  )) {
+    cells[column] = String(cell);
+  }
+  return cells;
+}
+
+/** The snapshot rows of every registered object type, keyed by their table name. */
+function objectTablesOf(model: SnapshotModel): ReadonlyMap<string, readonly SnapshotObjectRow[]> {
+  return new Map([
+    ['products', model.rows.products.map(textCells)],
+    ['orders', model.rows.orders.map(textCells)],
+  ]);
 }
 
 export function createRepairCompiler(options: RepairCompilerOptions): RepairCompiler {
@@ -729,7 +752,7 @@ export function createRepairCompiler(options: RepairCompilerOptions): RepairComp
         }),
       ]);
     }
-    const history = buildHistory(model);
+    const history = buildHistory({ rows: model.rows, objectTables: objectTablesOf(model) });
 
     // ── 4. Incident set against confirmations, baseline and evidence ────────
     const incidentFindings = checkIncident({
@@ -766,9 +789,11 @@ export function createRepairCompiler(options: RepairCompilerOptions): RepairComp
       baseline: {
         trustedWatermark: BigInt(baseline.body.trustedWatermark),
         entries: baseline.body.entries.map((entry) => ({
+          objectType: entry.objectType,
           objectId: entry.objectId,
-          version: BigInt(entry.version),
-          priceCents: BigInt(entry.priceCents),
+          fieldId: entry.fieldId,
+          fieldVersion: BigInt(entry.fieldVersion),
+          value: entry.value,
         })),
       },
       policy: policy.body,
@@ -782,7 +807,7 @@ export function createRepairCompiler(options: RepairCompilerOptions): RepairComp
     });
 
     const unresolved: UnresolvedDomain[] = replay.fields.flatMap((field) =>
-      field.resolution.kind === 'unresolved'
+      field.resolution.kind === 'unresolved' && isRepairedFieldDomain(field.domain)
         ? [
             {
               domain: field.domain,
@@ -842,21 +867,40 @@ export function createRepairCompiler(options: RepairCompilerOptions): RepairComp
 
     const resolved = new Map(
       replay.fields.flatMap((field) =>
-        field.resolution.kind === 'resolved'
-          ? [[field.domain.objectId, field.resolution.cents] as const]
+        field.resolution.kind === 'resolved' && isRepairedFieldDomain(field.domain)
+          ? [
+              [
+                fieldKey(field.domain.objectType, field.domain.objectId, field.domain.field),
+                field.resolution.value,
+              ] as const,
+            ]
           : [],
       ),
     );
+    const unresolvedKeys = new Set<string>();
+    for (const entry of unresolved) {
+      if (entry.domain.field !== null) {
+        unresolvedKeys.add(
+          fieldKey(entry.domain.objectType, entry.domain.objectId, entry.domain.field),
+        );
+        continue;
+      }
+      // A whole object the certificate does not vouch for leaves every field
+      // of that object type undecided.
+      for (const field of DEFAULT_REGISTRY.fields) {
+        if (field.objectType === entry.domain.objectType) {
+          unresolvedKeys.add(
+            fieldKey(entry.domain.objectType, entry.domain.objectId, field.fieldId),
+          );
+        }
+      }
+    }
     const constraints = checkTerminalConstraints({
       policy: policy.body,
       policyRef,
       resolved,
-      unresolved: new Set(
-        unresolved
-          .filter((entry) => entry.domain.objectType === 'product')
-          .map((entry) => entry.domain.objectId),
-      ),
-      products: history.products,
+      unresolved: unresolvedKeys,
+      objects: history.objects,
     });
 
     const blocking = [...replay.blocking, ...constraints.blocking];
@@ -976,7 +1020,7 @@ function checkIncident(input: IncidentCheckInput): {
   );
   const covering = new Set<ConfirmationOf<'incident'>>();
   const observed = new Set(input.evidence.flatMap(observedOperations));
-  const baselineProducts = new Set(baseline.body.entries.map((entry) => entry.objectId));
+  const baselineFields = new Set(baseline.body.entries.map(baselineEntryKey));
   const baselineSource = {
     kind: 'baseline_confirmation' as const,
     ref: `confirmation:${baseline.confirmationId}`,
@@ -1014,10 +1058,34 @@ function checkIncident(input: IncidentCheckInput): {
       );
       continue;
     }
-    const target = operation.writes.find(
-      (write) => write.objectType === 'product' && write.field === 'price_cents',
+    const semantics = operation.templateInterpretable
+      ? findSemantics(operation.operationType, operation.templateVersion)
+      : undefined;
+    // The writes this compiler's registered semantics explain, with the one
+    // write of each entry. A template the compiler does not interpret, a write
+    // it cannot explain, or a creation or copy it must keep as a fact is never
+    // an incident: nothing says what omitting it would mean.
+    const explained =
+      semantics?.flatMap((entry) => {
+        const fieldId = entry.kind === 'copy' ? entry.into : entry.fieldId;
+        if (fieldId === undefined) {
+          return [];
+        }
+        const write = operation.writes.find(
+          (candidate) => fieldIdOf(candidate.objectType, candidate.field) === fieldId,
+        );
+        return write === undefined ? [] : [{ kind: entry.kind, write }];
+      }) ?? [];
+    const omittable =
+      semantics !== undefined &&
+      semantics.length > 0 &&
+      explained.length === semantics.length &&
+      operation.writes.length === explained.length &&
+      operation.writes.every((write) => explained.some((entry) => entry.write === write)) &&
+      explained.every(({ kind }) => isOmittableSemantics(kind) && kind !== 'copy');
+    const objects = explained.map(({ write }) =>
+      fieldRef(write.objectType, write.objectId, fieldIdOf(write.objectType, write.field)),
     );
-    const objects = target === undefined ? [] : [priceField(target.objectId)];
     const ref = `operation:${operationId}`;
 
     const citing = applicable.filter((confirmation) =>
@@ -1059,16 +1127,13 @@ function checkIncident(input: IncidentCheckInput): {
       );
     }
 
-    const semantics = operation.templateInterpretable
-      ? findSemantics(operation.operationType, operation.templateVersion)
-      : undefined;
-    if (target === undefined || (semantics !== 'absolute_price' && semantics !== 'price_delta')) {
+    if (!omittable) {
       findings.push(
         preflight('incident_operation_not_omittable', COMPILE_OBLIGATIONS.incidentOmittable, {
           objects,
           expected: {
             condition:
-              'an incident operation is a price write of a registered template (absolute price or price delta); creations of products and orders cannot be omitted',
+              'an incident operation writes exactly the fields a registered absolute or delta template explains; creations of products and orders cannot be omitted',
             ruleSource: { kind: 'platform', ref: 'repair-protocol:supported-templates' },
           },
           observed: { sourceKind: 'snapshot', ref, content: describe(operation) },
@@ -1101,14 +1166,26 @@ function checkIncident(input: IncidentCheckInput): {
         }),
       );
     }
-    if (!baselineProducts.has(target.objectId)) {
+    for (const { write } of explained) {
+      const fieldId = fieldIdOf(write.objectType, write.field);
+      if (
+        baselineFields.has(
+          baselineEntryKey({
+            objectType: write.objectType,
+            objectId: write.objectId,
+            fieldId,
+          }),
+        )
+      ) {
+        continue;
+      }
       findings.push(
         preflight('baseline_insufficient', COMPILE_OBLIGATIONS.baselineCoversIncident, {
-          objects,
+          objects: [fieldRef(write.objectType, write.objectId, fieldId)],
           missingInputs: [
             {
               kind: 'baseline_entry',
-              description: `a confirmed trusted version and price of product "${target.objectId}"`,
+              description: `a confirmed trusted version and value of ${fieldId} on ${write.objectType} "${write.objectId}"`,
             },
           ],
           expected: {
@@ -1117,7 +1194,7 @@ function checkIncident(input: IncidentCheckInput): {
           },
           observed: { sourceKind: 'snapshot', ref, content: describe(operation) },
           suggestions: [
-            { action: 'confirm_baseline', detail: 'confirm a baseline that includes this product' },
+            { action: 'confirm_baseline', detail: 'confirm a baseline that includes this field' },
           ],
         }),
       );

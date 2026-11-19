@@ -8,6 +8,7 @@ import {
   semanticsRef,
 } from '@aftercare/contracts';
 import { digestJson, type JsonObject } from '@aftercare/domain';
+import { isObjectType } from './checker/outcome.ts';
 
 // The dependency record of one stored evidence record, derived from the
 // record alone. It turns the dependency list the tool wrote at collection
@@ -32,11 +33,9 @@ function statedObjects(evidence: Evidence): ObjectRef[] | null {
       { objectType, objectId },
     ]),
   );
-  if (typeof query.productId === 'string') {
-    objects.set(`product/${query.productId}`, { objectType: 'product', objectId: query.productId });
-  }
-  if (typeof query.orderId === 'string') {
-    objects.set(`order/${query.orderId}`, { objectType: 'order', objectId: query.orderId });
+  const { objectType, objectId } = query;
+  if (typeof objectType === 'string' && typeof objectId === 'string' && isObjectType(objectType)) {
+    objects.set(`${objectType}/${objectId}`, { objectType, objectId });
   }
   return [...objects.values()];
 }
@@ -81,7 +80,7 @@ export function evidenceDependencyManifest(evidence: Evidence): DependencyManife
         items.push({
           node: self,
           kind: 'field_version',
-          key: `${dependency.objectType}/${dependency.objectId}@${dependency.version}/${dependency.via}`,
+          key: `${dependency.objectType}/${dependency.objectId}.${dependency.fieldId ?? '*'}@${dependency.objectVersion}/${dependency.via}`,
           detail: { ...dependency, snapshotId },
         });
         break;

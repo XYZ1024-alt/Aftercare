@@ -18,7 +18,11 @@ import {
 import { type JsonObject, OPERATION_TYPES } from '@aftercare/domain';
 import { buildCoverageManifest, createEvidenceService } from '@aftercare/evidence';
 import { createCaseExecutor } from '@aftercare/execution';
-import { createRegistrationService, createRepairCompiler } from '@aftercare/repair';
+import {
+  createRegistrationService,
+  createRepairCompiler,
+  REPAIR_SEMANTICS_VERSION,
+} from '@aftercare/repair';
 import {
   createAuthorityAdmin,
   createBusinessEntry,
@@ -52,7 +56,7 @@ const APPROVER: IdentityContext = {
   source: 'demo-operator-session',
 };
 const SOURCE = { kind: 'business_decision_record', reference: 'stage 6 demo' } as const;
-const EVERYTHING = { kind: 'all_products' } as const;
+const EVERYTHING = { kind: 'all', objectType: 'product' } as const;
 const ALWAYS = { fromInclusive: '0', toInclusive: null };
 
 function written<T>(step: string, outcome: WriteOutcome<T>): T {
@@ -221,7 +225,15 @@ try {
   for (const productId of [a, b, c]) {
     const history = accepted(
       `history ${productId}`,
-      await evidence.collect({ ...ref, query: { tool: 'product.version_history', productId } }),
+      await evidence.collect({
+        ...ref,
+        query: {
+          tool: 'field.history',
+          objectType: 'product',
+          objectId: productId,
+          fieldId: 'product.price_cents',
+        },
+      }),
     );
     await must(caseId, { type: 'activate_evidence', evidenceId: history.evidenceId });
     evidenceIds.push(history.evidenceId);
@@ -252,16 +264,16 @@ try {
     entries: [a, b, c].map((objectId) => ({
       objectType: 'product',
       objectId,
-      field: 'price_cents',
-      version: '1',
-      priceCents: '10000',
+      fieldId: 'product.price_cents',
+      fieldVersion: '1',
+      value: '10000',
     })),
     statement: 'These prices were right before the batch.',
     evidenceRefs: evidenceIds,
     source: SOURCE,
   });
   const policy = await registrations.registerPolicyVersion({
-    policyFormat: 1,
+    policyFormat: 2,
     sourceEnvironment,
     scope: {
       objects: EVERYTHING,
@@ -272,11 +284,12 @@ try {
     supportedTemplates: OPERATION_TYPES.map((operationType) => ({
       operationType,
       templateVersion: 1,
-      semanticsVersion: 1,
+      semanticsVersion: REPAIR_SEMANTICS_VERSION,
     })),
     deltaReplayRules: [
       {
         ruleId: 'replay-deltas',
+        fieldId: 'product.price_cents',
         objects: EVERYTHING,
         watermark: ALWAYS,
         disposition: 'recompute_on_corrected_input',
@@ -426,7 +439,7 @@ try {
     `INSERT INTO ${rehearsalSchema}.products SELECT product_id, name, price_cents, version FROM ${created.snapshot.schemaName}.products`,
   );
   await pools.migrator.query(
-    `INSERT INTO ${rehearsalSchema}.orders SELECT order_id, product_id, quantity, unit_price_cents, price_version, version FROM ${created.snapshot.schemaName}.orders`,
+    `INSERT INTO ${rehearsalSchema}.orders SELECT order_id, product_id, quantity, unit_price_cents, product_version, version FROM ${created.snapshot.schemaName}.orders`,
   );
   const exported = await artefacts.produce(OPERATOR, {
     caseId,
@@ -534,7 +547,15 @@ try {
   // 7. New evidence: every published report of the case stops being current; nothing is deleted.
   const later = accepted(
     'later evidence',
-    await evidence.collect({ ...ref, query: { tool: 'product.version_history', productId: a } }),
+    await evidence.collect({
+      ...ref,
+      query: {
+        tool: 'field.history',
+        objectType: 'product',
+        objectId: a,
+        fieldId: 'product.price_cents',
+      },
+    }),
   );
   await must(caseId, { type: 'activate_evidence', evidenceId: later.evidenceId });
   const current = await artefacts.obtain(OPERATOR, {

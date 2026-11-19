@@ -1,6 +1,14 @@
 import { DEPENDENCY_CLASSES, OBJECT_TYPES, OPERATION_TYPES } from '@aftercare/domain';
 import { z } from 'zod';
-import { counterSchema, priceCentsSchema, quantitySchema } from './primitives.ts';
+import {
+  counterSchema,
+  fieldIdSchema,
+  int64NonNegativeSchema,
+  objectIdSchema,
+  objectTypeSchema,
+  orderIdSchema,
+  quantitySchema,
+} from './primitives.ts';
 import { jsonObjectSchema } from './wire.ts';
 
 export const auditReadSchema = z.object({
@@ -50,19 +58,26 @@ export const auditBatchSchema = z.object({
 
 export const commitWatermarkSchema = z.object({ value: counterSchema });
 
-export const productSnapshotSchema = z.object({
-  productId: z.string(),
-  name: z.string(),
-  priceCents: priceCentsSchema,
+/**
+ * One registered object row as the snapshot holds it: its object version and
+ * the values of the registered fields of that object type.
+ */
+export const objectSnapshotSchema = z.object({
+  objectType: objectTypeSchema,
+  objectId: objectIdSchema,
   version: counterSchema,
+  /** A row holds the registered fields of its own object type only. */
+  fields: z.partialRecord(fieldIdSchema, int64NonNegativeSchema),
 });
 
+/** An order row with the field value it copied, and the object version it read that value at. */
 export const orderSnapshotSchema = z.object({
-  orderId: z.string(),
-  productId: z.string(),
+  orderId: orderIdSchema,
+  productId: objectIdSchema,
   quantity: quantitySchema,
-  unitPriceCents: priceCentsSchema,
-  priceVersion: counterSchema,
+  fieldId: fieldIdSchema,
+  readObjectVersion: counterSchema,
+  recordedValue: int64NonNegativeSchema,
   version: counterSchema,
 });
 
@@ -70,5 +85,5 @@ export type AuditRead = z.output<typeof auditReadSchema>;
 export type AuditWrite = z.output<typeof auditWriteSchema>;
 export type AuditOperation = z.output<typeof auditOperationSchema>;
 export type AuditBatch = z.output<typeof auditBatchSchema>;
-export type ProductSnapshot = z.output<typeof productSnapshotSchema>;
+export type ObjectSnapshot = z.output<typeof objectSnapshotSchema>;
 export type OrderSnapshot = z.output<typeof orderSnapshotSchema>;

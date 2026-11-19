@@ -1,4 +1,4 @@
-import { productScopeSchema } from '@aftercare/contracts';
+import { objectIdSchema } from '@aftercare/contracts';
 import { z } from 'zod';
 import { citeEvidence, currentState, priceDomain } from './basis.ts';
 import { commandRejected, defineTool, type RegisteredTool } from './registry.ts';
@@ -18,12 +18,16 @@ export function hypothesisTools(): RegisteredTool[] {
   return [
     defineTool({
       name: 'register_hypothesis',
-      description: `Registers a candidate explanation of the incident about the price of the named products, citing the evidence it rests on. Use absenceEvidenceIds only for a "nothing matching exists" claim, with evidence that read its WHOLE range and matched nothing; a single page is refused. ${AS_AGENT}`,
+      description: `Registers a candidate explanation of the incident about the named objects, citing the evidence it rests on. Use absenceEvidenceIds only for a "nothing matching exists" claim, with evidence that read its WHOLE range and matched nothing; a single page is refused. ${AS_AGENT}`,
       access: 'write',
       inputVersion: 'case_revision',
       parameters: z.strictObject({
         statement: z.string().min(1).max(1000).describe('The hypothesis, in one or two sentences.'),
-        productIds: productScopeSchema.describe('Products whose price the hypothesis is about.'),
+        productIds: z
+          .array(objectIdSchema)
+          .min(1)
+          .max(200)
+          .describe('Products whose fields the hypothesis is about.'),
         supportingEvidenceIds: evidenceIdsSchema,
         absenceEvidenceIds: z.array(z.uuid()).max(20).default([]),
       }),

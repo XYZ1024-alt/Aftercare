@@ -2,6 +2,7 @@ import { digestJson, type JsonObject, OBJECT_TYPES } from '@aftercare/domain';
 import { z } from 'zod';
 import { baselineEntrySchema, MAX_CONFIRMED_ITEMS } from './confirmation.ts';
 import { ELIGIBILITIES } from './coverage.ts';
+import { fieldIdSchema, objectIdSchema, objectTypeSchema } from './primitives.ts';
 import {
   instantSchema,
   int64TextSchema,
@@ -99,8 +100,8 @@ export const COUNTEREXAMPLE_CODES = [
   'history_gap',
   'unknown_semantics',
   'impact_scope_unknown',
-  'amount_out_of_range',
-  'negative_final_price',
+  /** A value lies outside the registered bounds of its field. Never clamped. */
+  'value_out_of_bounds',
   'terminal_constraint_violated',
   'unresolved_domain_not_isolable',
   /** The run is not planning, or the snapshot is not the current one. */
@@ -190,9 +191,9 @@ export type Counterexample = z.output<typeof counterexampleSchema>;
 // ── Compiled plan ───────────────────────────────────────────────────────────
 
 const fieldRef = {
-  objectType: z.literal('product'),
-  objectId: z.string(),
-  field: z.literal('price_cents'),
+  objectType: objectTypeSchema,
+  objectId: objectIdSchema,
+  fieldId: fieldIdSchema,
 };
 export const repairFieldRefSchema = z.strictObject(fieldRef);
 export type RepairFieldRef = z.output<typeof repairFieldRefSchema>;
@@ -219,14 +220,14 @@ export const derivationStepSchema = z.strictObject({
   /** The policy rules that licensed the treatment; empty where no rule is needed. */
   ruleIds: z.array(z.string()),
   /** The value the operation recorded. */
-  recordedCents: int64TextSchema,
+  recordedValue: int64TextSchema,
   /** The value of the field after this step in the replayed history; null while it is unresolved. */
-  replayedCents: int64TextSchema.nullable(),
+  replayedValue: int64TextSchema.nullable(),
 });
 export type DerivationStep = z.output<typeof derivationStepSchema>;
 
 export const planContentSchema = z.strictObject({
-  planFormat: z.literal(1),
+  planFormat: z.literal(2),
   proposalKind: z.literal('omit_operations_replay_supported'),
   caseId: z.uuid(),
   snapshotId: z.uuid(),
@@ -351,8 +352,10 @@ export const planContentSchema = z.strictObject({
     fieldHistories: z.array(
       z.strictObject({
         ...fieldRef,
-        baselineVersion: int64TextSchema,
-        snapshotVersion: int64TextSchema,
+        /** The object version of the last write of this field at or before the baseline. */
+        baselineFieldVersion: int64TextSchema,
+        /** The object version the field was read at. */
+        snapshotObjectVersion: int64TextSchema,
         operationIds: z.array(z.uuid()),
       }),
     ),
@@ -361,7 +364,7 @@ export const planContentSchema = z.strictObject({
       z.strictObject({
         ...fieldRef,
         statement: z.literal('no_write_after_version'),
-        afterVersion: int64TextSchema,
+        afterObjectVersion: int64TextSchema,
         watermark: z.strictObject({
           afterExclusive: int64TextSchema,
           toInclusive: int64TextSchema,
@@ -383,11 +386,11 @@ export const planContentSchema = z.strictObject({
   candidates: z.array(
     z.strictObject({
       ...fieldRef,
-      baselineVersion: int64TextSchema,
-      baselineCents: int64TextSchema,
-      snapshotVersion: int64TextSchema,
-      snapshotCents: int64TextSchema,
-      candidateCents: int64TextSchema,
+      baselineFieldVersion: int64TextSchema,
+      baselineValue: int64TextSchema,
+      snapshotObjectVersion: int64TextSchema,
+      snapshotValue: int64TextSchema,
+      candidateValue: int64TextSchema,
       derivation: z.array(derivationStepSchema),
     }),
   ),
@@ -395,9 +398,9 @@ export const planContentSchema = z.strictObject({
   patch: z.array(
     z.strictObject({
       ...fieldRef,
-      expectedVersion: int64TextSchema,
-      fromCents: int64TextSchema,
-      toCents: int64TextSchema,
+      expectedObjectVersion: int64TextSchema,
+      fromValue: int64TextSchema,
+      toValue: int64TextSchema,
     }),
   ),
   /** The only fields a later execution of this plan may write: exactly the patch targets. */
@@ -413,35 +416,46 @@ export const planContentSchema = z.strictObject({
         'retained_outside_affected_domain',
       ]),
       ruleIds: z.array(z.string()),
-      recordedCents: int64TextSchema,
+      recordedValue: int64TextSchema,
     }),
   ),
-  /** Orders struck at a price the incident touched. Orders are facts: they are never changed. */
-  orderImpacts: z.array(
+  /**
+   * Downstream readers of the affected fields. A reader recorded the value it
+   * read (for the price field: an order struck at that unit price); readers are
+   * facts and are never changed by a repair. Any amount difference a reader
+   * implies is an interpretation of the report layer, not part of the plan.
+   */
+  readerImpacts: z.array(
     z.strictObject({
-      orderId: z.string(),
-      productId: z.string(),
+      /** The downstream object that read the field. */
+      readerObjectType: objectTypeSchema,
+      readerObjectId: objectIdSchema,
+      /** The object the read field belongs to. */
+      readObjectType: objectTypeSchema,
+      readObjectId: objectIdSchema,
+      fieldId: fieldIdSchema,
       operationId: z.uuid(),
       commitSeq: int64TextSchema,
-      quantity: z.number().int(),
-      priceVersionRead: int64TextSchema,
-      struckUnitPriceCents: int64TextSchema,
-      /** The operation that wrote the price version the order read, and how the replay treated it. */
-      priceSource: z.strictObject({
+      /** The object version of the write the reader read. */
+      readObjectVersion: int64TextSchema,
+      /** The value the reader recorded. */
+      recordedValue: int64TextSchema,
+      /** The operation that wrote the version the reader read, and how the replay treated it. */
+      source: z.strictObject({
         operationId: z.uuid(),
         treatment: z.enum(['omitted_incident', 'recomputed_on_corrected_input', 'unresolved']),
       }),
-      /** The replayed price at the time of the order; null while that price is unresolved. */
-      replayedUnitPriceCents: int64TextSchema.nullable(),
-      disposition: z.literal('order_unchanged'),
+      /** The value the replay produces at the reader; null while it is unresolved. */
+      replayedValue: int64TextSchema.nullable(),
+      disposition: z.literal('reader_unchanged'),
     }),
   ),
   /** Domains the plan does not decide. Their snapshot state is left as it is. */
   unresolved: z.array(
     z.strictObject({
       domain: domainRefSchema,
-      snapshotVersion: int64TextSchema.nullable(),
-      snapshotCents: int64TextSchema.nullable(),
+      snapshotObjectVersion: int64TextSchema.nullable(),
+      snapshotValue: int64TextSchema.nullable(),
       counterexample: counterexampleSchema,
     }),
   ),

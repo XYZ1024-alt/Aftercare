@@ -1,4 +1,4 @@
-import type { AutonomyDecisionAction, Stage } from '@aftercare/console/client';
+import type { AutonomyDecisionAction, RegistryView, Stage } from '@aftercare/console/client';
 
 // Display wording. Codes of the records stay as they are recorded; these
 // tables only say what a code means to an operator.
@@ -219,11 +219,36 @@ export const APPLICABILITY_LABEL: Readonly<Record<string, string>> = {
   basis_changed: '依据已变更，需重新评估',
 };
 
-export const cents = (value: string | null): string => {
-  if (value === null) return '—';
-  const padded = value.padStart(3, '0');
-  return `${padded.slice(0, -2)}.${padded.slice(-2)}`;
+/** An int64 as decimal text: the point goes before the last two digits, in string space, never a float. */
+const decimalText = (value: string): string => {
+  const negative = value.startsWith('-');
+  const digits = (negative ? value.slice(1) : value).padStart(3, '0');
+  return `${negative ? '-' : ''}${digits.slice(0, -2)}.${digits.slice(-2)}`;
 };
+
+/** A field value in the unit its FieldSpec declares: cents as money, counts as pieces. */
+export const formatFieldValue = (value: string, unit: 'cents' | 'count'): string =>
+  unit === 'count' ? `${value} 件` : `¥${decimalText(value)}`;
+
+export const cents = (value: string | null): string =>
+  value === null ? '—' : formatFieldValue(value, 'cents');
+
+/** The title the console sends for a field; the field id itself when the registry does not name it. */
+export const fieldTitle = (registry: RegistryView, fieldId: string): string =>
+  registry.fields.find((field) => field.fieldId === fieldId)?.title ?? fieldId;
+
+/** A value in the unit of its field; a field the registry does not know is shown as it was recorded. */
+export const fieldValue = (registry: RegistryView, fieldId: string, value: string): string => {
+  const field = registry.fields.find((entry) => entry.fieldId === fieldId);
+  return field === undefined ? value : formatFieldValue(value, field.unit);
+};
+
+/** The key of one object field: "type/id.fieldId". */
+export const fieldKey = (entry: {
+  readonly objectType: string;
+  readonly objectId: string;
+  readonly fieldId: string;
+}): string => `${entry.objectType}/${entry.objectId}.${entry.fieldId}`;
 
 export const shortId = (id: string): string => id.slice(0, 8);
 

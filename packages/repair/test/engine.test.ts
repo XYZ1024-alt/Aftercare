@@ -33,11 +33,11 @@ interface Row {
   readonly writtenFrom?: bigint;
 }
 
-const EVERYTHING = { kind: 'all_products' } as const;
+const EVERYTHING = { kind: 'all', objectType: 'product' } as const;
 const ALWAYS = { fromInclusive: '0', toInclusive: null };
 
 const POLICY = policyBodySchema.parse({
-  policyFormat: 1,
+  policyFormat: 2,
   sourceEnvironment: 'unit-test',
   scope: {
     objects: EVERYTHING,
@@ -48,11 +48,12 @@ const POLICY = policyBodySchema.parse({
   supportedTemplates: OPERATION_TYPES.map((operationType) => ({
     operationType,
     templateVersion: 1,
-    semanticsVersion: 1,
+    semanticsVersion: 2,
   })),
   deltaReplayRules: [
     {
       ruleId: 'replay',
+      fieldId: 'product.price_cents',
       objects: EVERYTHING,
       watermark: ALWAYS,
       disposition: 'recompute_on_corrected_input',
@@ -61,6 +62,7 @@ const POLICY = policyBodySchema.parse({
   overrideRetentionRules: [
     {
       ruleId: 'keep',
+      fieldId: 'product.price_cents',
       objects: EVERYTHING,
       watermark: ALWAYS,
       operationTypes: ['set_price', 'batch_set_price'],
@@ -159,8 +161,11 @@ function snapshotRows(
     operation_templates: OPERATION_TYPES.map((operation_type) => ({
       operation_type,
       template_version: 1,
+      is_batch: operation_type === 'batch_set_price',
       definition: templateDefinition(OPERATION_TEMPLATES[operation_type]),
     })),
+    object_types: [],
+    repairable_fields: [],
     coverage_baselines: [],
     schema_migrations: [],
     catalog_roles: [],
@@ -178,14 +183,30 @@ function replay(
   trustedWatermark: bigint,
 ): ReplayResult {
   return replayHistory({
-    history: buildHistory({ rows: snapshotRows(rows, finalState) }),
+    history: buildHistory({
+      rows: snapshotRows(rows, finalState),
+      objectTables: new Map([
+        [
+          'products',
+          Object.entries(finalState).map(([objectId, [version, priceCents]]) => ({
+            product_id: objectId,
+            name: objectId,
+            price_cents: priceCents.toString(),
+            version: version.toString(),
+          })),
+        ],
+        ['orders', []],
+      ]),
+    }),
     incidentOperationIds: new Set(incident),
     baseline: {
       trustedWatermark,
       entries: Object.entries(baseline).map(([objectId, priceCents]) => ({
+        objectType: 'product',
         objectId,
-        version: 1n,
-        priceCents,
+        fieldId: 'product.price_cents',
+        fieldVersion: 1n,
+        value: priceCents.toString(),
       })),
     },
     policy: POLICY,
@@ -201,7 +222,7 @@ function summary(field: FieldOutcome | undefined): string {
   }
   const { resolution } = field;
   return resolution.kind === 'resolved'
-    ? `resolved ${resolution.cents}`
+    ? `resolved ${resolution.value}`
     : resolution.kind === 'unresolved'
       ? `unresolved ${resolution.cause.code}`
       : 'untouched';
@@ -257,11 +278,11 @@ describe('order inside one transaction', () => {
     expect(result.blocking).toEqual([]);
     expect(summary(field(result, 'x'))).toBe('resolved 11500');
     expect(
-      field(result, 'x')?.steps.map((step) => [step.operation.operationId, step.replayedCents]),
+      field(result, 'x')?.steps.map((step) => [step.operation.operationId, step.replayedValue]),
     ).toEqual([
-      ['wrong', 10_000n],
-      ['d1', 11_000n],
-      ['d2', 11_500n],
+      ['wrong', '10000'],
+      ['d1', '11000'],
+      ['d2', '11500'],
     ]);
   });
 
@@ -504,8 +525,8 @@ describe('gaps in the recorded history', () => {
 
     expect(result.blocking.map((entry) => entry.code)).toEqual(['history_gap']);
     expect(result.blocking[0]).toMatchObject({
-      expected: { value: { version: '2', priceCents: '8000' } },
-      observed: { content: { version: '3', priceCents: '8100' } },
+      expected: { value: { fieldId: 'product.price_cents', fieldVersion: '2', value: '8000' } },
+      observed: { content: { objectVersion: '3', value: '8100' } },
     });
   });
 });

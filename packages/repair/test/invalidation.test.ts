@@ -83,9 +83,9 @@ afterAll(recreateTestDatabase);
 
 const caseIdOf = () => frozen.ref.caseId;
 const CANDIDATE = (productId: string) =>
-  `plan_candidate:${plan.planId}:product/${productId}.price_cents`;
+  `plan_candidate:${plan.planId}:product/${productId}.product.price_cents`;
 const UNRESOLVED = (productId: string) =>
-  `plan_unresolved:${plan.planId}:product/${productId}.price_cents`;
+  `plan_unresolved:${plan.planId}:product/${productId}.product.price_cents`;
 const PLAN = () => `plan:${plan.planId}`;
 const ISOLATION = () => `plan_isolation:${plan.planId}`;
 
@@ -138,7 +138,7 @@ async function lastEvent(): Promise<CaseEvent> {
 const CLARIFY_C: JsonObject = {
   kind: 'clarification',
   statement: 'The 80.00 -> 90.00 write of c was a manual correction to the list price.',
-  scope: { domains: [{ objectType: 'product', objectId: 'c', field: 'price_cents' }] },
+  scope: { domains: [{ objectType: 'product', objectId: 'c', field: 'product.price_cents' }] },
   evidenceRefs: [],
   source: { kind: 'operations_review', reference: 'ticket 42' },
 };
@@ -189,7 +189,7 @@ describe('what a conclusion depends on', () => {
     ]);
     expect(roles('scoped_by')).toEqual([`impact_scope:${frozen.ref.snapshotId}`]);
     expect(roles('interpreted_under')).toContain(
-      'semantics_version:template_semantics:add_price_delta@1:price_delta@1',
+      'semantics_version:template_semantics:add_price_delta@1:delta@2',
     );
     expect(
       dependencies.dependents.map((entry) => `${entry.role} ${key(entry.node)}`).sort(),
@@ -201,13 +201,13 @@ describe('what a conclusion depends on', () => {
     const items = dependencies.items.map((item) => `${item.kind}:${item.key}`).sort();
     expect(items).toEqual(
       [
-        'field_version:product/a.price_cents@1:baseline',
-        'field_version:product/a.price_cents@3:snapshot',
-        'field_version:product/a.price_cents@2:derivation',
-        'field_version:product/a.price_cents@3:derivation',
+        'field_version:product/a.product.price_cents@1:baseline',
+        'field_version:product/a.product.price_cents@3:snapshot',
+        'field_version:product/a.product.price_cents@2:derivation',
+        'field_version:product/a.product.price_cents@3:derivation',
         'collection_range:compiler-read:0',
         'watermark_integrity:5..10',
-        'negative_query:no_write_after_version:product/a.price_cents@3',
+        'negative_query:no_write_after_version:product/a.product.price_cents@3',
       ].sort(),
     );
     const negative = dependencies.items.find((item) => item.kind === 'negative_query');
@@ -227,12 +227,12 @@ describe('what a conclusion depends on', () => {
     const refs = dependencies.businessRefs.map((ref) => `${ref.role} ${ref.businessKey}`).sort();
     expect(refs).toEqual(
       [
-        'baseline_version fv:product/a.price_cents@1',
-        'snapshot_version fv:product/a.price_cents@3',
+        'baseline_version fv:product/a.product.price_cents@1',
+        'snapshot_version fv:product/a.product.price_cents@3',
         `derivation_operation op:${incidentA}`,
-        'derived_version fv:product/a.price_cents@2',
+        'derived_version fv:product/a.product.price_cents@2',
         `derivation_operation op:${plan.content.candidates.find((c) => c.objectId === 'a')?.derivation[1]?.operationId}`,
-        'derived_version fv:product/a.price_cents@3',
+        'derived_version fv:product/a.product.price_cents@3',
       ].sort(),
     );
     const { rows } = await h.db.runtimePool.query<{
@@ -249,7 +249,7 @@ describe('what a conclusion depends on', () => {
       ?.operationId;
     expect(rows).toEqual([
       {
-        from_key: 'fv:product/a.price_cents@2',
+        from_key: 'fv:product/a.product.price_cents@2',
         to_key: `op:${deltaA}`,
         kind: 'business_value_read',
       },
@@ -266,8 +266,8 @@ describe('what a conclusion depends on', () => {
             kind: 'concurrency_guard_read',
           })),
         ),
-      { from_key: `op:${incidentA}`, to_key: 'fv:product/a.price_cents@2', kind: 'wrote' },
-      { from_key: `op:${deltaA}`, to_key: 'fv:product/a.price_cents@3', kind: 'wrote' },
+      { from_key: `op:${incidentA}`, to_key: 'fv:product/a.product.price_cents@2', kind: 'wrote' },
+      { from_key: `op:${deltaA}`, to_key: 'fv:product/a.product.price_cents@3', kind: 'wrote' },
     ]);
     // c's unknown write reads from the whole snapshot, and d's order is a successor that cannot be replayed.
     const { rows: others } = await h.db.runtimePool.query<{ from_key: string; kind: string }>(
@@ -341,7 +341,7 @@ describe('a clarification about C', () => {
     expect(invalidated.map((effect) => `${effect.nodeType}:${effect.nodeKey}`).sort()).toEqual(
       [UNRESOLVED('c'), ISOLATION(), PLAN()].sort(),
     );
-    const anchor = `domain_statements:${frozen.ref.snapshotId}/product/c.price_cents`;
+    const anchor = `domain_statements:${frozen.ref.snapshotId}/product/c.product.price_cents`;
     const nodes = await h.db.caseStore.listNodes(caseIdOf());
     for (const effect of invalidated) {
       const root = nodes.find((node) => node.nodeId === effect.rootNodeId);
@@ -359,7 +359,7 @@ describe('a clarification about C', () => {
     const next = planOf(await h.compiler.compile(prepared.proposal));
     expect(next.planId).not.toBe(plan.planId);
     expect(candidatesOf(next)).toEqual(candidatesOf(plan));
-    expect(unresolvedOf(next)).toEqual(['product/c.price_cents: unknown_semantics']);
+    expect(unresolvedOf(next)).toEqual(['product/c.product.price_cents: unknown_semantics']);
     expect(next.content.inputs.declarations).toEqual([
       { digest: expect.any(String), kind: 'clarification', treatment: 'recorded_not_interpreted' },
     ]);
@@ -367,7 +367,7 @@ describe('a clarification about C', () => {
 
     const nodes = await h.db.caseStore.listNodes(caseIdOf());
     const byKey = new Map(nodes.map((node) => [key(node), node]));
-    const reused = byKey.get(`plan_candidate:${next.planId}:product/a.price_cents`);
+    const reused = byKey.get(`plan_candidate:${next.planId}:product/a.product.price_cents`);
     const previous = byKey.get(CANDIDATE('a'));
     expect(reused).toMatchObject({
       validity: 'valid',
@@ -376,11 +376,13 @@ describe('a clarification about C', () => {
     });
     // c is undecided for the same reason as before: the part is recomputed
     // identically, but it is a NEW node — the stale one is not flipped back.
-    expect(byKey.get(`plan_unresolved:${next.planId}:product/c.price_cents`)).toMatchObject({
-      validity: 'valid',
-      derivedFromNodeId: byKey.get(UNRESOLVED('c'))?.nodeId,
-      reuseBasis: 'recomputed_identical',
-    });
+    expect(byKey.get(`plan_unresolved:${next.planId}:product/c.product.price_cents`)).toMatchObject(
+      {
+        validity: 'valid',
+        derivedFromNodeId: byKey.get(UNRESOLVED('c'))?.nodeId,
+        reuseBasis: 'recomputed_identical',
+      },
+    );
     expect(byKey.get(UNRESOLVED('c'))?.validity).toBe('stale');
     expect(byKey.get(`plan:${next.planId}`)).toMatchObject({
       derivedFromNodeId: byKey.get(PLAN())?.nodeId,
@@ -411,8 +413,9 @@ describe('a clarification about C', () => {
     });
     expect(await conclusions()).toMatchObject({
       [`plan:${next.planId}`]: 'stale:declaration_withdrawn',
-      [`plan_unresolved:${next.planId}:product/c.price_cents`]: 'stale:declaration_withdrawn',
-      [`plan_candidate:${next.planId}:product/a.price_cents`]: 'valid',
+      [`plan_unresolved:${next.planId}:product/c.product.price_cents`]:
+        'stale:declaration_withdrawn',
+      [`plan_candidate:${next.planId}:product/a.product.price_cents`]: 'valid',
     });
     expect(
       (await h.db.caseStore.findNode(caseIdOf(), 'declaration', declarationId))?.applicability,
@@ -429,7 +432,7 @@ describe('a refuted hypothesis', () => {
           snapshotId: frozen.ref.snapshotId,
           statement: `The later write of ${productId} was intended.`,
           scope: {
-            domains: [{ objectType: 'product', objectId: productId, field: 'price_cents' }],
+            domains: [{ objectType: 'product', objectId: productId, field: 'product.price_cents' }],
           },
           basis: [{ kind: 'evidence', id: required(frozen.evidenceIds[0], 'evidence') }],
         },
@@ -507,7 +510,9 @@ describe('a refuted hypothesis', () => {
           hypothesis: {
             snapshotId: frozen.ref.snapshotId,
             statement: 'No operation touched e after the incident.',
-            scope: { domains: [{ objectType: 'product', objectId: 'e', field: 'price_cents' }] },
+            scope: {
+              domains: [{ objectType: 'product', objectId: 'e', field: 'product.price_cents' }],
+            },
             basis: [{ kind: 'evidence', id: page.evidenceId }],
             negativeClaims: [{ evidenceId: page.evidenceId }],
           },
@@ -531,7 +536,9 @@ describe('a refuted hypothesis', () => {
         hypothesis: {
           snapshotId: frozen.ref.snapshotId,
           statement: 'Nothing was committed after the order.',
-          scope: { domains: [{ objectType: 'product', objectId: 'e', field: 'price_cents' }] },
+          scope: {
+            domains: [{ objectType: 'product', objectId: 'e', field: 'product.price_cents' }],
+          },
           basis: [{ kind: 'evidence', id: empty.evidenceId }],
           negativeClaims: [{ evidenceId: empty.evidenceId }],
         },
@@ -618,8 +625,8 @@ describe('root inputs change conservatively', () => {
     const next = planOf(await h.compiler.compile(prepared.proposal));
     expect(candidatesOf(next)).toEqual({ b: '9500', d: '10000', e: '10000' });
     expect(unresolvedOf(next).sort()).toEqual([
-      'product/a.price_cents: unknown_semantics',
-      'product/c.price_cents: unknown_semantics',
+      'product/a.product.price_cents: unknown_semantics',
+      'product/c.product.price_cents: unknown_semantics',
     ]);
     expect(next.content.inputs.declarations).toEqual([
       {
@@ -694,7 +701,7 @@ describe('integrity and snapshot changes', () => {
       caseId: caseIdOf(),
       evidenceId: required(frozen.evidenceIds[4], 'evidence'),
     });
-    expect(history.ok && history.value.observations.tool).toBe('product.version_history');
+    expect(history.ok && history.value.observations.tool).toBe('field.history');
 
     // Nothing carries over: the proposal must be confirmed and activated anew.
     const state = await h.db.caseStore.readCaseState(caseIdOf());
@@ -780,11 +787,12 @@ describe('policy and semantics versions', () => {
       standardPolicy(h, {
         terminalConstraints: [
           {
-            kind: 'price_range',
+            kind: 'value_range',
             ruleId: 'cap',
-            objects: { kind: 'all_products' },
-            minCents: '0',
-            maxCents: '99999',
+            fieldId: 'product.price_cents',
+            objects: { kind: 'all', objectType: 'product' },
+            min: '0',
+            max: '99999',
           },
         ],
       }),

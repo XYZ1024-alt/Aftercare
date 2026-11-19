@@ -30,7 +30,7 @@ const TARGET = 'development';
 /** Stands in for an authenticated operator session; never taken from a request. */
 const OPERATOR = { principal: 'ops:demo-pricing-lead', source: 'demo-operator-session' };
 const SOURCE = { kind: 'business_decision_record', reference: 'stage 4 demo' } as const;
-const EVERYTHING = { kind: 'all_products' } as const;
+const EVERYTHING = { kind: 'all', objectType: 'product' } as const;
 const ALWAYS = { fromInclusive: '0', toInclusive: null };
 
 function written<T>(step: string, outcome: WriteOutcome<T>): T {
@@ -197,7 +197,15 @@ try {
   for (const productId of [a, b, c]) {
     const history = accepted(
       `history ${productId}`,
-      await evidence.collect({ ...ref, query: { tool: 'product.version_history', productId } }),
+      await evidence.collect({
+        ...ref,
+        query: {
+          tool: 'field.history',
+          objectType: 'product',
+          objectId: productId,
+          fieldId: 'product.price_cents',
+        },
+      }),
     );
     await must(caseId, { type: 'activate_evidence', evidenceId: history.evidenceId });
     evidenceIds.push(history.evidenceId);
@@ -224,9 +232,9 @@ try {
     entries: [a, b, c].map((objectId) => ({
       objectType: 'product',
       objectId,
-      field: 'price_cents',
-      version: '1',
-      priceCents: '10000',
+      fieldId: 'product.price_cents',
+      fieldVersion: '1',
+      value: '10000',
     })),
     statement: 'These prices were right before the batch.',
     evidenceRefs: evidenceIds,
@@ -235,7 +243,7 @@ try {
   const policy = accepted(
     'policy',
     await registrations.registerPolicyVersion({
-      policyFormat: 1,
+      policyFormat: 2,
       sourceEnvironment,
       scope: {
         objects: EVERYTHING,
@@ -246,11 +254,12 @@ try {
       supportedTemplates: OPERATION_TYPES.map((operationType) => ({
         operationType,
         templateVersion: 1,
-        semanticsVersion: 1,
+        semanticsVersion: 2,
       })),
       deltaReplayRules: [
         {
           ruleId: 'replay-deltas',
+          fieldId: 'product.price_cents',
           objects: EVERYTHING,
           watermark: ALWAYS,
           disposition: 'recompute_on_corrected_input',
@@ -299,9 +308,10 @@ try {
     planDigest: plan.planDigest,
     binding: plan.binding,
     result: plan.content.result,
-    candidates: plan.content.candidates.map(({ objectId, candidateCents }) => ({
+    candidates: plan.content.candidates.map(({ objectId, fieldId, candidateValue }) => ({
       objectId,
-      candidateCents,
+      fieldId,
+      candidateValue,
     })),
     applicability: await inspection.planApplicability({ caseId, planId: plan.planId }),
   });
@@ -309,7 +319,8 @@ try {
   // 4. What the candidate for a depends on.
   const described = await inspection.describeCase({ caseId });
   const candidateA = described?.nodes.find(
-    (node) => node.nodeType === 'plan_candidate' && node.nodeKey.endsWith(`${a}.price_cents`),
+    (node) =>
+      node.nodeType === 'plan_candidate' && node.nodeKey.endsWith(`${a}.product.price_cents`),
   );
   const dependencies =
     candidateA === undefined
@@ -333,7 +344,9 @@ try {
       kind: 'clarification',
       snapshotId: ref.snapshotId,
       statement: 'The 95.00 on c was a deliberate list-price correction.',
-      scope: { domains: [{ objectType: 'product', objectId: c, field: 'price_cents' }] },
+      scope: {
+        domains: [{ objectType: 'product', objectId: c, field: 'product.price_cents' }],
+      },
       evidenceRefs: [],
       source: { kind: 'operations_review', reference: 'ticket 42' },
     },

@@ -15,9 +15,21 @@ export function percent(bps: number): string {
   return `${Number((bps / 100).toFixed(2))}%`;
 }
 
-/** The envelope an autopilot charter allows, in one line. */
+type Envelope = AutonomyCharterSummary['fields'][string]['approval'];
+
+/** One field's bound: the absolute change always, the relative one where the charter sets it. */
+const envelopeLabel = (envelope: Envelope): string =>
+  envelope.maxRelativeChangeBps === undefined
+    ? `不超过 ${cents(envelope.maxAbsoluteChange)}`
+    : `不超过 ${cents(envelope.maxAbsoluteChange)} 或 ${percent(envelope.maxRelativeChangeBps)}`;
+
+/** The envelope an autopilot charter allows, field by field, in one line. */
 export function charterEnvelope(charter: AutonomyCharterSummary): string {
   const { approval } = charter;
-  const envelope = `最多 ${approval.maxChangedObjects} 个对象，单项变动不超过 ${cents(approval.maxAbsoluteChangeCents)} 且不超过 ${percent(approval.maxRelativeChangeBps)}`;
+  const fields = Object.entries(charter.fields).map(
+    ([fieldId, rules]) =>
+      `${fieldId}：批准 ${envelopeLabel(rules.approval)}，写回 ${envelopeLabel(rules.promotion)}`,
+  );
+  const envelope = `最多 ${approval.maxChangedObjects} 个对象；${fields.join('；')}`;
   return charter.promotion.enabled ? `${envelope}；封存后写回源库` : envelope;
 }

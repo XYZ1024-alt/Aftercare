@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { principalSchema, productIdSchema } from './primitives.ts';
+import { fieldIdSchema, objectIdSchema, objectTypeSchema, principalSchema } from './primitives.ts';
 import { instantSchema, int64TextSchema, sha256HexSchema } from './wire.ts';
 
 // Business confirmations: statements by an authorised human principal that the
@@ -93,13 +93,26 @@ const sortedUnique = (values: readonly string[]) => [...new Set(values)].sort();
 
 const uuidListSchema = (max: number) => z.array(z.uuid()).max(max).transform(sortedUnique);
 
-/** One trusted starting point: this field of this object held this value at this version. */
+/** Sort key of a baseline entry: one object field, compared canonically. */
+export const baselineEntryKey = (entry: {
+  readonly objectType: string;
+  readonly objectId: string;
+  readonly fieldId: string;
+}): string => `${entry.objectType}/${entry.objectId}.${entry.fieldId}`;
+
+/**
+ * One trusted starting point: this field of this object held this value at this
+ * object version, and that version is the last write of the field at or before
+ * the baseline. The value is canonical text for the field's value kind.
+ */
 export const baselineEntrySchema = z.strictObject({
-  objectType: z.literal('product'),
-  objectId: productIdSchema,
-  field: z.literal('price_cents'),
-  version: int64TextSchema,
-  priceCents: int64TextSchema,
+  objectType: objectTypeSchema,
+  objectId: objectIdSchema,
+  fieldId: fieldIdSchema,
+  /** The object version of the last write of this field at or before the baseline. */
+  fieldVersion: int64TextSchema,
+  /** Canonical text of the field value (a canonical decimal for an int64 field). */
+  value: int64TextSchema,
 });
 export type BaselineEntry = z.output<typeof baselineEntrySchema>;
 
@@ -108,11 +121,15 @@ const baselineEntriesSchema = z
   .min(1)
   .max(MAX_CONFIRMED_ITEMS)
   .refine(
-    (entries) => new Set(entries.map((entry) => entry.objectId)).size === entries.length,
+    (entries) => new Set(entries.map(baselineEntryKey)).size === entries.length,
     'a baseline names each object field at most once',
   )
   .transform((entries) =>
-    [...entries].sort((left, right) => (left.objectId < right.objectId ? -1 : 1)),
+    [...entries].sort((left, right) => {
+      const leftKey = baselineEntryKey(left);
+      const rightKey = baselineEntryKey(right);
+      return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+    }),
   );
 
 const policyVersionRefSchema = z.strictObject({
@@ -162,7 +179,7 @@ export const confirmationRequestSchema = z.discriminatedUnion('kind', [
 export type ConfirmationRequest = z.input<typeof confirmationRequestSchema>;
 
 const storedScope = {
-  confirmationFormat: z.literal(1),
+  confirmationFormat: z.literal(2),
   ...confirmationScope,
   sourceEnvironment: z.string().min(1),
 };

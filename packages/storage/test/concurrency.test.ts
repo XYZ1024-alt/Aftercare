@@ -49,7 +49,7 @@ describe('concurrent controlled writes', () => {
 
       // Both are in flight and neither has changed anything: the lock is taken before any modification.
       expect(await db.reader.readProduct(productId)).toMatchObject({
-        priceCents: 1000n,
+        fields: { 'product.price_cents': 1000n },
         version: 1n,
       });
       expect(await db.reader.readCommitWatermark()).toBe(watermarkBefore);
@@ -63,7 +63,7 @@ describe('concurrent controlled writes', () => {
 
       // No lost update.
       expect(await db.reader.readProduct(productId)).toMatchObject({
-        priceCents: 1350n,
+        fields: { 'product.price_cents': 1350n },
         version: 3n,
       });
       // Watermark advanced once per write, and commit order equals version order.
@@ -84,6 +84,7 @@ describe('concurrent controlled writes', () => {
         (typeof operations)[number],
         (typeof operations)[number],
       ];
+      const productName = productId;
       expect(earlierAudit.writes[0]).toMatchObject({ versionBefore: 1n, versionAfter: 2n });
       expect(laterAudit.writes[0]).toMatchObject({ versionBefore: 2n, versionAfter: 3n });
       const laterBusinessRead = laterAudit.reads.find(
@@ -94,7 +95,12 @@ describe('concurrent controlled writes', () => {
         objectVersion: earlierAudit.writes[0]?.versionAfter,
       });
       expect(laterAudit.beforeState).toEqual(earlierAudit.afterState);
-      expect(laterAudit.afterState).toEqual({ price_cents: '1350', version: '3' });
+      expect(laterAudit.afterState).toEqual({
+        product_id: productId,
+        name: productName,
+        price_cents: '1350',
+        version: '3',
+      });
     } finally {
       await releaseGate();
     }
@@ -140,7 +146,7 @@ describe('concurrent controlled writes', () => {
       for (const operation of operations) {
         if (operation.operationType === 'create_order') {
           // …and the order struck exactly the price version that was current at its commit.
-          expect(struck).toMatchObject({ unitPriceCents: price, priceVersion: version });
+          expect(struck).toMatchObject({ unitPriceCents: price, productVersion: version });
           expect(operation.reads[0]).toMatchObject({
             objectVersion: version,
             dependencyClass: 'business_value',
@@ -148,17 +154,24 @@ describe('concurrent controlled writes', () => {
           continue;
         }
         expect(operation.beforeState).toEqual({
+          product_id: productId,
+          name: productId,
           price_cents: price.toString(),
           version: version.toString(),
         });
         price = operation.operationType === 'set_price' ? 800n : price + 30n;
         version += 1n;
         expect(operation.afterState).toEqual({
+          product_id: productId,
+          name: productId,
           price_cents: price.toString(),
           version: version.toString(),
         });
       }
-      expect(await db.reader.readProduct(productId)).toMatchObject({ priceCents: price, version });
+      expect(await db.reader.readProduct(productId)).toMatchObject({
+        fields: { 'product.price_cents': price },
+        version,
+      });
       expect(version).toBe(3n);
     } finally {
       await releaseGate();

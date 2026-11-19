@@ -4,6 +4,9 @@
 --                              now on it can read published snapshot schemas
 --                              (granted by create_snapshot) and nothing else,
 --                              so evidence cannot silently mix in live data.
+--                              The two registry mirrors are the one exception:
+--                              their table-level SELECT (0005) is restored at
+--                              the end of this file.
 --   aftercare_snapshot_manager may call create_snapshot / drop_snapshot.
 --                              No table access, no control-plane access.
 --   aftercare_runtime          reads the control tables and appends through
@@ -40,3 +43,8 @@ GRANT EXECUTE ON FUNCTION aftercare_control.append_evidence(uuid, uuid, uuid, te
 GRANT EXECUTE ON FUNCTION aftercare_control.instant_text(timestamptz) TO aftercare_runtime;
 GRANT EXECUTE ON FUNCTION aftercare_control.snapshot_json(aftercare_control.snapshots) TO aftercare_runtime;
 GRANT EXECUTE ON FUNCTION aftercare_control.source_environment() TO aftercare_runtime;
+
+-- The registry mirrors are deliberately NOT granted to the investigator here.
+-- They are copied into every snapshot schema, and the investigator reads them
+-- there; a live-source SELECT would be an unexpected read privilege that the
+-- eligibility checker reports as an entry bypass.

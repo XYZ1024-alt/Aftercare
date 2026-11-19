@@ -179,14 +179,24 @@ describe('questions, answers and authority', () => {
     await h
       .worker(
         scripted([
-          () => ({ calls: [call('get_product_history', { productId: 'c' })] }),
+          () => ({
+            calls: [
+              call('get_field_history', {
+                objectType: 'product',
+                objectId: 'c',
+                fieldId: 'product.price_cents',
+              }),
+            ],
+          }),
           (view) => ({
             calls: [
               call('ask_clarification', {
                 proposition: 'What was the change of c meant to do?',
                 relevance: 'Its template is not interpretable.',
-                productIds: ['c'],
-                evidenceIds: [String(view.data('get_product_history').evidenceId)],
+                fieldScope: [
+                  { objectType: 'product', objectId: 'c', fieldId: 'product.price_cents' },
+                ],
+                evidenceIds: [String(view.data('get_field_history').evidenceId)],
               }),
             ],
           }),

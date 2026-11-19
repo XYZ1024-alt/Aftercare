@@ -12,7 +12,7 @@ import {
   type PlanContent,
   semanticsRef,
 } from '@aftercare/contracts';
-import { digestJson, type JsonObject } from '@aftercare/domain';
+import { digestJson, fieldIdOf, type JsonObject, OBJECT_TYPES } from '@aftercare/domain';
 import { readsFitSemantics } from './engine.ts';
 import type { History, HistoryOperation } from './history.ts';
 import type { ConsideredDeclaration } from './plan.ts';
@@ -37,8 +37,32 @@ type BusinessRef = DependencyManifest['businessRefs'][number];
 const PLAN: NodeRef = { type: 'plan', key: 'plan' };
 const ISOLATION: NodeRef = { type: 'plan_isolation', key: 'isolation' };
 
-function fieldDomain(objectId: string): DomainRef {
-  return { objectType: 'product', objectId, field: 'price_cents' };
+function objectTypeOf(value: string): DomainRef['objectType'] {
+  if ((OBJECT_TYPES as readonly string[]).includes(value)) {
+    return value as DomainRef['objectType'];
+  }
+  throw new Error(`unknown object type "${value}"`);
+}
+
+function fieldDomain(ref: {
+  readonly objectType: string;
+  readonly objectId: string;
+  readonly fieldId: string;
+}): DomainRef {
+  return {
+    objectType: objectTypeOf(ref.objectType),
+    objectId: ref.objectId,
+    field: ref.fieldId,
+  };
+}
+
+/** The physical column of a registered field id, e.g. price_cents. */
+function columnOf(fieldId: string): string {
+  const dot = fieldId.indexOf('.');
+  if (dot <= 0 || dot === fieldId.length - 1) {
+    throw new Error(`invalid field id "${fieldId}"`);
+  }
+  return fieldId.slice(dot + 1);
 }
 
 /** Is the read set of the operation what its registered template says it is? */
@@ -51,6 +75,42 @@ function readSetVerified(operation: HistoryOperation, distrusted: ReadonlySet<st
     readsFitSemantics(operation, semantics) &&
     !distrusted.has(operation.operationId)
   );
+}
+
+/** Every recorded write version of each (object, field), in commit order. */
+function fieldWriteVersions(history: History): ReadonlyMap<string, readonly bigint[]> {
+  const versions = new Map<string, bigint[]>();
+  for (const operation of history.operations) {
+    for (const write of operation.writes) {
+      const key = `${write.objectType}/${write.objectId}.${write.field}`;
+      const existing = versions.get(key);
+      if (existing === undefined) {
+        versions.set(key, [write.versionAfter]);
+      } else {
+        existing.push(write.versionAfter);
+      }
+    }
+  }
+  return versions;
+}
+
+/**
+ * The version of the field's last recorded write at or before the object
+ * version a read cites. A read at object version V sees the field value from
+ * the last write of that field at or before V, not the object version itself.
+ */
+function lastFieldVersionAtOrBefore(
+  versions: readonly bigint[] | undefined,
+  objectVersion: bigint,
+): bigint {
+  let found: bigint | null = null;
+  for (const version of versions ?? []) {
+    if (version > objectVersion) {
+      break;
+    }
+    found = version;
+  }
+  return found ?? objectVersion;
 }
 
 /**
@@ -67,12 +127,24 @@ function readSetVerified(operation: HistoryOperation, distrusted: ReadonlySet<st
 export function businessImpactOf(
   operations: readonly HistoryOperation[],
   distrusted: ReadonlySet<string>,
+  history: History,
+  versions: ReadonlyMap<string, readonly bigint[]> = fieldWriteVersions(history),
 ): BusinessImpact {
   const nodes = new Map<string, BusinessImpact['nodes'][number]>();
   const edges = new Map<string, BusinessImpact['edges'][number]>();
   const edge = (from: string, to: string, kind: BusinessImpact['edges'][number]['kind']) =>
     edges.set(`${from}|${to}|${kind}`, { from, to, kind });
-  const fieldVersion = (objectType: string, objectId: string, field: string, version: bigint) => {
+  const fieldVersion = (objectType: string, objectId: string, fieldId: string, version: bigint) => {
+    const key = businessKey.fieldVersion(objectType, objectId, fieldId, version.toString());
+    nodes.set(key, {
+      key,
+      kind: 'field_version',
+      detail: { objectType, objectId, fieldId, version: version.toString() },
+    });
+    return key;
+  };
+  /** A concurrency guard reads the object version itself, not a field version. */
+  const objectVersion = (objectType: string, objectId: string, field: string, version: bigint) => {
     const key = businessKey.fieldVersion(objectType, objectId, field, version.toString());
     nodes.set(key, {
       key,
@@ -99,7 +171,17 @@ export function businessImpactOf(
     });
     for (const read of operation.reads) {
       edge(
-        fieldVersion(read.objectType, read.objectId, read.field, read.objectVersion),
+        read.dependencyClass === 'concurrency_guard'
+          ? objectVersion(read.objectType, read.objectId, read.field, read.objectVersion)
+          : fieldVersion(
+              read.objectType,
+              read.objectId,
+              fieldIdOf(read.objectType, read.field),
+              lastFieldVersionAtOrBefore(
+                versions.get(`${read.objectType}/${read.objectId}.${read.field}`),
+                read.objectVersion,
+              ),
+            ),
         key,
         read.dependencyClass === 'concurrency_guard'
           ? 'concurrency_guard_read'
@@ -123,7 +205,12 @@ export function businessImpactOf(
       } else {
         edge(
           key,
-          fieldVersion(write.objectType, write.objectId, write.field, write.versionAfter),
+          fieldVersion(
+            write.objectType,
+            write.objectId,
+            fieldIdOf(write.objectType, write.field),
+            write.versionAfter,
+          ),
           'wrote',
         );
       }
@@ -253,18 +340,24 @@ export function planDependencyManifest(
   );
   const involved = [
     ...content.inputs.fieldHistories.flatMap((field) => field.operationIds),
-    ...content.orderImpacts.map((impact) => impact.operationId),
+    ...content.readerImpacts.map((impact) => impact.operationId),
   ].flatMap((operationId) => operations.get(operationId) ?? []);
-  const impact = businessImpactOf(involved, distrusted);
+  const fieldVersions = fieldWriteVersions(history);
+  const impact = businessImpactOf(involved, distrusted, history, fieldVersions);
   const businessNodes = new Map(impact.nodes.map((node) => [node.key, node]));
-  const fieldVersionKey = (objectId: string, version: string) => {
-    const key = businessKey.fieldVersion('product', objectId, 'price_cents', version);
+  const fieldVersionKey = (
+    objectType: string,
+    objectId: string,
+    fieldId: string,
+    version: string,
+  ) => {
+    const key = businessKey.fieldVersion(objectType, objectId, fieldId, version);
     if (!businessNodes.has(key)) {
       // A version the result refers to but no involved operation wrote (the baseline).
       businessNodes.set(key, {
         key,
         kind: 'field_version',
-        detail: { objectType: 'product', objectId, field: 'price_cents', version },
+        detail: { objectType, objectId, fieldId, version },
       });
     }
     return key;
@@ -290,12 +383,14 @@ export function planDependencyManifest(
   for (const ref of [...checkers, ...[...templateRefs.values()].flat()]) {
     depend(PLAN, ref, 'interpreted_under');
   }
-  for (const order of content.orderImpacts) {
-    businessRefs.push({
-      node: PLAN,
-      businessKey: businessKey.order(order.orderId),
-      role: 'irreversible_successor',
-    });
+  for (const reader of content.readerImpacts) {
+    if (reader.readerObjectType === 'order') {
+      businessRefs.push({
+        node: PLAN,
+        businessKey: businessKey.order(reader.readerObjectId),
+        role: 'irreversible_successor',
+      });
+    }
   }
 
   // ── Repaired fields ───────────────────────────────────────────────────────
@@ -305,22 +400,29 @@ export function planDependencyManifest(
     snapshotEligibility: content.inputs.certificate.snapshotEligibility,
   };
   const candidateRefs = content.candidates.map((candidate) => {
-    const domain = fieldDomain(candidate.objectId);
+    const domain = fieldDomain(candidate);
     const key = domainRefKey(domain);
     const negative = content.inputs.negativeQueries.find(
-      (query) => query.objectId === candidate.objectId,
+      (query) =>
+        query.objectType === candidate.objectType &&
+        query.objectId === candidate.objectId &&
+        query.fieldId === candidate.fieldId,
     );
+    // The snapshot value is the value of the field's last write at or before
+    // the object version the snapshot row holds. The negative query states
+    // exactly that field version.
+    const snapshotFieldVersion = negative?.afterObjectVersion ?? candidate.snapshotObjectVersion;
     const self: NodeRef = { type: 'plan_candidate', key };
     nodes.set(`plan_candidate|${key}`, {
       ...self,
       digest: digestJson({ candidate, negativeQuery: negative ?? null }),
-      detail: { domain: key, candidateCents: candidate.candidateCents },
+      detail: { domain: key, candidateValue: candidate.candidateValue },
     });
     root(self);
     depend(PLAN, self, 'composed_of');
     depend(
       self,
-      ensure(anchorRef.objectIntegrity(snapshotId, 'product', candidate.objectId)),
+      ensure(anchorRef.objectIntegrity(snapshotId, candidate.objectType, candidate.objectId)),
       'guaranteed_by',
     );
     for (const step of candidate.derivation) {
@@ -335,7 +437,12 @@ export function planDependencyManifest(
         },
         {
           node: self,
-          businessKey: fieldVersionKey(candidate.objectId, step.versionAfter),
+          businessKey: fieldVersionKey(
+            candidate.objectType,
+            candidate.objectId,
+            candidate.fieldId,
+            step.versionAfter,
+          ),
           role: 'derived_version',
         },
       );
@@ -356,12 +463,22 @@ export function planDependencyManifest(
     businessRefs.push(
       {
         node: self,
-        businessKey: fieldVersionKey(candidate.objectId, candidate.baselineVersion),
+        businessKey: fieldVersionKey(
+          candidate.objectType,
+          candidate.objectId,
+          candidate.fieldId,
+          candidate.baselineFieldVersion,
+        ),
         role: 'baseline_version',
       },
       {
         node: self,
-        businessKey: fieldVersionKey(candidate.objectId, candidate.snapshotVersion),
+        businessKey: fieldVersionKey(
+          candidate.objectType,
+          candidate.objectId,
+          candidate.fieldId,
+          snapshotFieldVersion,
+        ),
         role: 'snapshot_version',
       },
     );
@@ -369,11 +486,11 @@ export function planDependencyManifest(
       {
         node: self,
         kind: 'field_version',
-        key: `${key}@${candidate.baselineVersion}:baseline`,
+        key: `${key}@${candidate.baselineFieldVersion}:baseline`,
         detail: {
           ...domain,
-          version: candidate.baselineVersion,
-          cents: candidate.baselineCents,
+          version: candidate.baselineFieldVersion,
+          value: candidate.baselineValue,
           role: 'baseline',
           snapshotId,
         },
@@ -381,11 +498,11 @@ export function planDependencyManifest(
       {
         node: self,
         kind: 'field_version',
-        key: `${key}@${candidate.snapshotVersion}:snapshot`,
+        key: `${key}@${snapshotFieldVersion}:snapshot`,
         detail: {
           ...domain,
-          version: candidate.snapshotVersion,
-          cents: candidate.snapshotCents,
+          version: snapshotFieldVersion,
+          value: candidate.snapshotValue,
           role: 'snapshot',
           snapshotId,
         },
@@ -414,16 +531,22 @@ export function planDependencyManifest(
       items.push({
         node: self,
         kind: 'negative_query',
-        key: `no_write_after_version:${key}@${negative.afterVersion}`,
+        key: `no_write_after_version:${key}@${negative.afterObjectVersion}`,
         detail: {
           statement: negative.statement,
+          fieldId: negative.fieldId,
+          afterObjectVersion: negative.afterObjectVersion,
           predicate: {
             tables: ['operation_writes'],
             conditions: [
-              { field: 'object_type', operator: 'eq', value: 'product' },
+              { field: 'object_type', operator: 'eq', value: candidate.objectType },
               { field: 'object_id', operator: 'eq', value: candidate.objectId },
-              { field: 'field', operator: 'eq', value: 'price_cents' },
-              { field: 'version_after', operator: 'gt', value: negative.afterVersion },
+              {
+                field: 'field',
+                operator: 'eq',
+                value: columnOf(negative.fieldId),
+              },
+              { field: 'version_after', operator: 'gt', value: negative.afterObjectVersion },
             ],
           },
           snapshotId,
@@ -473,10 +596,20 @@ export function planDependencyManifest(
         depend(self, { type: 'declaration', key: record.declarationId }, 'considers');
       }
     }
-    if (entry.domain.objectType === 'product' && entry.snapshotVersion !== null) {
+    if (entry.domain.field !== null && entry.snapshotObjectVersion !== null) {
+      const field = entry.domain.field;
+      const fieldVersion = lastFieldVersionAtOrBefore(
+        fieldVersions.get(`${entry.domain.objectType}/${entry.domain.objectId}.${columnOf(field)}`),
+        BigInt(entry.snapshotObjectVersion),
+      );
       businessRefs.push({
         node: self,
-        businessKey: fieldVersionKey(entry.domain.objectId, entry.snapshotVersion),
+        businessKey: fieldVersionKey(
+          entry.domain.objectType,
+          entry.domain.objectId,
+          field,
+          fieldVersion.toString(),
+        ),
         role: 'unresolved_at_version',
       });
     }

@@ -60,7 +60,9 @@ function clarifyC() {
       statement: 'c was set to 90.00 on purpose',
       evidenceRefs: [],
       source: { kind: 'operations_review', reference: 'ticket 9' },
-      scope: { domains: [{ objectType: 'product', objectId: 'c', field: 'price_cents' }] },
+      scope: {
+        domains: [{ objectType: 'product', objectId: 'c', field: 'product.price_cents' }],
+      },
     },
   });
 }
@@ -73,7 +75,7 @@ async function prepareTarget(targetId = 'rehearsal-1') {
     `INSERT INTO ${TARGET}.products SELECT product_id, name, price_cents, version FROM ${snapshot.schemaName}.products`,
   );
   await h.db.adminPool.query(
-    `INSERT INTO ${TARGET}.orders SELECT order_id, product_id, quantity, unit_price_cents, price_version, version FROM ${snapshot.schemaName}.orders`,
+    `INSERT INTO ${TARGET}.orders SELECT order_id, product_id, quantity, unit_price_cents, product_version, version FROM ${snapshot.schemaName}.orders`,
   );
 }
 
@@ -128,7 +130,7 @@ describe('report artefacts: who may obtain what, and when', () => {
     if (!obtained.ok) throw new Error('unreachable');
     const text = obtained.value.content.toString('utf8');
     expect(text).toContain(report.reportId);
-    expect(text).toContain('UNRESOLVED product/c.price_cents');
+    expect(text).toContain('UNRESOLVED product/c.product.price_cents');
     expect(text).toContain('4. Business appropriateness: acknowledged_by_approver');
     expect(text).not.toMatch(/business (was|is) (correctly )?restored/i);
     expect(obtained.value.grant).toMatchObject({ currency: 'current', historicalReason: null });
@@ -409,7 +411,7 @@ describe('controlled SQL export', () => {
       const text = obtained.value.content.toString('utf8');
       expect(text.startsWith('-- NOT EXECUTABLE')).toBe(true);
       expect(text).not.toMatch(/^\s*(UPDATE|BEGIN|DO|INSERT)\b/m);
-      expect(text).toContain('product/a.price_cents: 9000 -> 11000 @ 3');
+      expect(text).toContain('product/a.product.price_cents: 9000 -> 11000 @ 3');
     }
     const registered = await h.run(ARCHIVIST, h.caseId, {
       type: 'register_artefact',

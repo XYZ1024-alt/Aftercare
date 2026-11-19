@@ -119,7 +119,7 @@ describe('batch_set_price', () => {
     [
       'a negative price',
       (existing: string) => ({ productId: existing, priceCents: -1n }),
-      'negative_price',
+      'value_out_of_bounds',
     ],
   ] as const)(
     'rolls back everything when a later target fails on %s',
@@ -197,6 +197,9 @@ describe('batch_set_price', () => {
     ).rejects.toMatchObject({ code: 'AC001' });
 
     expect(await readLedgerSummary(db.migratorPool)).toEqual(ledgerBefore);
-    expect(await db.reader.readProduct(productId)).toMatchObject({ priceCents: 100n, version: 1n });
+    expect(await db.reader.readProduct(productId)).toMatchObject({
+      fields: { 'product.price_cents': 100n },
+      version: 1n,
+    });
   });
 });

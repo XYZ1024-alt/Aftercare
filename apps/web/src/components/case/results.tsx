@@ -4,7 +4,16 @@ import type { Artefact, Refusal, VerificationReport } from '@aftercare/console/c
 import { Download, FileCheck2, History, RotateCcw } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
 import { downloadFile } from '../../lib/api.ts';
-import { cents, reasonLabel, shortId, type Tone, VERDICT_LABEL, when } from '../../lib/labels.ts';
+import {
+  fieldKey,
+  fieldTitle,
+  fieldValue,
+  reasonLabel,
+  shortId,
+  type Tone,
+  VERDICT_LABEL,
+  when,
+} from '../../lib/labels.ts';
 import { useCan, useSession } from '../../lib/session.tsx';
 import { ConfirmDialog } from '../overlay.tsx';
 import {
@@ -306,6 +315,8 @@ function Report({
   readonly report: VerificationReport;
   readonly latest: boolean;
 }) {
+  const { view } = useCase();
+  const registry = view.registry;
   const { objects, layers, findings, scope } = report.body;
   const current = report.validity === 'current';
   const failing = findings.filter((finding) => finding.status !== 'passed').length;
@@ -345,8 +356,8 @@ function Report({
           tone="mint"
           title="已修改"
           entries={objects.modified.map((entry) => ({
-            key: entry.objectId,
-            text: `product/${entry.objectId}：${cents(entry.centsBefore)} → ${cents(entry.centsAfter)}`,
+            key: fieldKey(entry),
+            text: `${entry.objectType}/${entry.objectId} ${fieldTitle(registry, entry.fieldId)}：${fieldValue(registry, entry.fieldId, entry.valueBefore)} → ${fieldValue(registry, entry.fieldId, entry.valueAfter)}`,
           }))}
         />
         <Objects
@@ -354,8 +365,8 @@ function Report({
           tone="sky"
           title="已保留"
           entries={objects.preserved.map((entry) => ({
-            key: entry.field,
-            text: `${entry.field}：保持 ${cents(entry.cents)}`,
+            key: fieldKey(entry),
+            text: `${fieldKey(entry)}：保持 ${fieldValue(registry, entry.fieldId, entry.value)}`,
           }))}
         />
         <Objects

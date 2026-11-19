@@ -140,10 +140,10 @@ describe('a pricing incident carried through by the autopilot, with no person an
     expect(report?.verdict).toBe('partially_resolved');
     expect(
       Object.fromEntries(
-        (report?.body.objects.modified ?? []).map((entry) => [entry.objectId, entry.centsAfter]),
+        (report?.body.objects.modified ?? []).map((entry) => [entry.objectId, entry.valueAfter]),
       ),
     ).toEqual({ a: '11000', d: '10000', e: '10000' });
-    expect(report?.body.objects.unresolved).toEqual(['product/c.price_cents']);
+    expect(report?.body.objects.unresolved).toEqual(['product/c.product.price_cents']);
     const delivered = view.decisions.find((entry) => entry.action === 'deliver');
     expect(delivered?.outcome).toMatchObject({ webhook: null });
     expect(typeof delivered?.outcome?.artefactId).toBe('string');
@@ -452,7 +452,7 @@ describe('recovery and delivery', () => {
         caseId,
         status: 'partially_resolved',
         verdict: 'partially_resolved',
-        unresolved: ['product/c.price_cents'],
+        unresolved: ['product/c.product.price_cents'],
       });
       expect(received[1]?.delivery).toBe(payload.reportId);
     } finally {

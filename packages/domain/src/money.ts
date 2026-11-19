@@ -1,6 +1,3 @@
-/** Money is always integer cents, carried as bigint. Never a float, never an unchecked Number. */
-export type Cents = bigint;
-
 export const INT64_MAX = 9_223_372_036_854_775_807n;
 export const INT64_MIN = -9_223_372_036_854_775_808n;
 

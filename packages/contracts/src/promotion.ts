@@ -1,19 +1,27 @@
 import { z } from 'zod';
-import { productIdSchema } from './primitives.ts';
+import { fieldIdSchema, objectIdSchema, objectTypeSchema } from './primitives.ts';
 import { instantSchema, int64TextSchema, sha256HexSchema } from './wire.ts';
 
 // Stage nine: promotion — writing a sealed sandbox repair back to the source
 // business data. The targets come from the application ledger of the sealed
-// branch, never from a request; the expected source version of each target is
-// the version the snapshot held. A source row that moved since the snapshot is
+// branch, never from a request; the expected source state of each target is
+// the state the snapshot held. A source field that moved since the snapshot is
 // drift: nothing is written and the refusal is recorded.
 
-/** One field a promotion writes: product price, from the snapshot value at the snapshot version to the repaired value. */
+/**
+ * One field a promotion writes: from the snapshot value at the snapshot
+ * version of the field to the repaired value. The object version the source
+ * row held at the snapshot is the guard of the source write.
+ */
 export const promotionTargetSchema = z.strictObject({
-  productId: productIdSchema,
-  expectedVersion: int64TextSchema,
-  fromCents: int64TextSchema,
-  toCents: int64TextSchema,
+  objectType: objectTypeSchema,
+  objectId: objectIdSchema,
+  fieldId: fieldIdSchema,
+  expectedObjectVersion: int64TextSchema,
+  /** The object version of the last write of this field at or before the snapshot. */
+  snapshotFieldVersion: int64TextSchema,
+  fromValue: int64TextSchema,
+  toValue: int64TextSchema,
 });
 export type PromotionTarget = z.output<typeof promotionTargetSchema>;
 
@@ -46,21 +54,32 @@ export const PROMOTION_STATUSES = ['applied', 'drift_refused'] as const;
 export type PromotionStatus = (typeof PROMOTION_STATUSES)[number];
 
 export const promotionDriftSchema = z.strictObject({
-  productId: productIdSchema,
-  expectedVersion: int64TextSchema,
-  /** null: the product no longer exists in the source. */
-  sourceVersion: int64TextSchema.nullable(),
+  objectType: objectTypeSchema,
+  objectId: objectIdSchema,
+  fieldId: fieldIdSchema,
+  /** The field version the snapshot held. */
+  expectedFieldVersion: int64TextSchema,
+  /** The field version the source holds now; null: the object no longer exists in the source. */
+  sourceFieldVersion: int64TextSchema.nullable(),
 });
 
 export const promotionWriteSchema = z.strictObject({
-  productId: productIdSchema,
+  objectType: objectTypeSchema,
+  objectId: objectIdSchema,
+  fieldId: fieldIdSchema,
   operationId: z.uuid(),
-  priceCents: int64TextSchema,
-  version: int64TextSchema,
+  /** The object version before the source write. */
+  versionBefore: int64TextSchema,
+  /** The object version after the source write. */
+  versionAfter: int64TextSchema,
+  /** The value the source write recorded. */
+  value: int64TextSchema,
 });
 
 export const promotionSchema = z.strictObject({
   promotionId: z.uuid(),
+  /** The format of the record and of every target, drift and write in it. */
+  promotionFormat: z.literal(2),
   caseId: z.uuid(),
   reportId: z.uuid(),
   approvalId: z.uuid(),
@@ -71,9 +90,9 @@ export const promotionSchema = z.strictObject({
   targets: z.array(promotionTargetSchema),
   /** Non-empty exactly when the promotion was refused for drift. */
   drift: z.array(promotionDriftSchema),
-  /** The source commit and batch of an applied promotion; null when refused. */
+  /** The source commit and batches of an applied promotion; null/empty when refused. */
   sourceCommitSeq: int64TextSchema.nullable(),
-  batchId: z.uuid().nullable(),
+  batchIds: z.array(z.uuid()),
   writes: z.array(promotionWriteSchema),
   recordedRevision: int64TextSchema,
   recordedAt: instantSchema,
@@ -94,6 +113,10 @@ export const PROMOTION_CHECK_CONCLUSIONS = [
 ] as const;
 export type PromotionCheckConclusion = (typeof PROMOTION_CHECK_CONCLUSIONS)[number];
 
+/**
+ * One check covers the whole promotion; each finding names the field it is
+ * about, so a promotion that wrote several fields is checked per target.
+ */
 export const promotionCheckSchema = z.strictObject({
   checkId: z.uuid(),
   promotionId: z.uuid(),
@@ -102,11 +125,15 @@ export const promotionCheckSchema = z.strictObject({
   conclusion: z.enum(PROMOTION_CHECK_CONCLUSIONS),
   findings: z.array(
     z.strictObject({
-      productId: productIdSchema,
+      objectType: objectTypeSchema,
+      objectId: objectIdSchema,
+      fieldId: fieldIdSchema,
       conclusion: z.enum(PROMOTION_CHECK_CONCLUSIONS),
       detail: z.string(),
-      sourceVersion: int64TextSchema.nullable(),
-      sourceCents: int64TextSchema.nullable(),
+      /** The field version the source holds now; null: the object no longer exists. */
+      sourceFieldVersion: int64TextSchema.nullable(),
+      /** The value the source field holds now; null: the object no longer exists. */
+      sourceValue: int64TextSchema.nullable(),
     }),
   ),
   sourceWatermark: int64TextSchema,

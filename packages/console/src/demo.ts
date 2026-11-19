@@ -11,7 +11,7 @@ import {
 } from '@aftercare/contracts';
 import { OPERATION_TYPES } from '@aftercare/domain';
 import { buildCoverageManifest } from '@aftercare/evidence';
-import { createRegistrationService } from '@aftercare/repair';
+import { createRegistrationService, REPAIR_SEMANTICS_VERSION } from '@aftercare/repair';
 import {
   type BusinessEntry,
   createAuthorityAdmin,
@@ -41,25 +41,33 @@ export const DEMO_OWNER = 'ops:demo-owner';
 export const DEMO_AUTOPILOT = 'autopilot:demo-pricing';
 
 /**
- * The charter of the demonstration: price decreases of 15 % or more by a
- * single or a batch price change are incidents; the baseline is the version
- * before the first of them; the demo policy applies; approvals and promotions
- * stand within 50 objects, 200.00 per object and 200 %.
+ * The charter of the demonstration: for the price field, decreases of 15 % or
+ * more by a single or a batch price change are incidents; the baseline is the
+ * version before the first of them; the demo policy applies. Approvals and
+ * promotions stand within 50 objects, and per field within 200.00 and 200 %.
+ * Another repairable field (for example a stock count) would add its own entry
+ * under `fields`; it is never decided by the pricing rule.
  */
 export function demoCharter(sourceEnvironment: string, policyVersionId: string): AutonomyCharter {
   return parseCharter({
-    charterFormat: 1,
+    charterFormat: 2,
     name: '定价事故自主处置（演示）',
     sourceEnvironment,
     autopilotPrincipal: DEMO_AUTOPILOT,
     delegated: [...DELEGABLE_CAPABILITIES],
     intake: { acknowledgeDataEgress: true, limits: {} },
-    incidentRule: {
-      operationTypes: ['batch_set_price', 'set_price'],
-      direction: 'decrease',
-      minRelativeChangeBps: 1500,
-      onNoMatch: 'decline',
+    fields: {
+      'product.price_cents': {
+        incident: {
+          operationTypes: ['batch_set_price', 'set_price'],
+          direction: 'decrease',
+          minRelativeChangeBps: 1500,
+        },
+        approval: { maxAbsoluteChange: '20000', maxRelativeChangeBps: 20000 },
+        promotion: { maxAbsoluteChange: '20000', maxRelativeChangeBps: 20000 },
+      },
     },
+    onNoMatch: 'decline',
     baselineRule: { kind: 'version_before_first_incident' },
     replayPolicy: { policyVersionId },
     clarification: {
@@ -68,8 +76,6 @@ export function demoCharter(sourceEnvironment: string, policyVersionId: string):
     },
     approval: {
       maxChangedObjects: 50,
-      maxAbsoluteChangeCents: '20000',
-      maxRelativeChangeBps: 20000,
       maxUnresolvedDomains: 50,
       validForSeconds: 1800,
     },
@@ -87,8 +93,6 @@ export function demoCharter(sourceEnvironment: string, policyVersionId: string):
       enabled: true,
       allowPartial: true,
       maxChangedObjects: 50,
-      maxAbsoluteChangeCents: '20000',
-      maxRelativeChangeBps: 20000,
       maxDriftReopens: 1,
     },
     delivery: { produceReport: true, webhookUrl: null },
@@ -135,7 +139,7 @@ const ACCOUNTS: readonly {
 ];
 
 const SIMULATOR = 'simulator:demo-init';
-const EVERYTHING = { kind: 'all_products' } as const;
+const EVERYTHING_PRODUCT = { kind: 'all', objectType: 'product' } as const;
 const ALWAYS = { fromInclusive: '0', toInclusive: null };
 
 function written<T>(step: string, outcome: WriteOutcome<T>): T {
@@ -328,10 +332,10 @@ export async function initialiseDemo(env: NodeJS.ProcessEnv): Promise<DemoInitRe
     })
       .forIdentity({ principal: 'ops:demo-pricing-lead', source: 'demo-init' })
       .registerPolicyVersion({
-        policyFormat: 1,
+        policyFormat: 2,
         sourceEnvironment,
         scope: {
-          objects: EVERYTHING,
+          objects: EVERYTHING_PRODUCT,
           fields: ['product.price_cents'],
           operationTypes: [...OPERATION_TYPES],
           watermark: ALWAYS,
@@ -339,12 +343,13 @@ export async function initialiseDemo(env: NodeJS.ProcessEnv): Promise<DemoInitRe
         supportedTemplates: OPERATION_TYPES.map((operationType) => ({
           operationType,
           templateVersion: 1,
-          semanticsVersion: 1,
+          semanticsVersion: REPAIR_SEMANTICS_VERSION,
         })),
         deltaReplayRules: [
           {
             ruleId: 'replay-deltas',
-            objects: EVERYTHING,
+            fieldId: 'product.price_cents',
+            objects: EVERYTHING_PRODUCT,
             watermark: ALWAYS,
             disposition: 'recompute_on_corrected_input',
           },

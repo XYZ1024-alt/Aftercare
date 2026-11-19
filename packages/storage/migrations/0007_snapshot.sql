@@ -1,10 +1,10 @@
 -- 0007_snapshot.sql — consistent snapshots (see docs/snapshot-protocol.md).
 --
--- create_snapshot() copies the supported business tables plus everything
--- needed to interpret them (audit, read/write items, template versions,
--- baseline records, migration ledger, access-control catalog facts) into a
--- fresh schema, digests the copy and registers it — all in the caller's one
--- transaction, so a failed creation leaves nothing behind.
+-- create_snapshot() copies the registered object tables plus everything
+-- needed to interpret them (the object and field registries, audit, read/write
+-- items, template versions, baseline records, migration ledger, access-control
+-- catalog facts) into a fresh schema, digests the copy and registers it — all
+-- in the caller's one transaction, so a failed creation leaves nothing behind.
 --
 -- The caller (the dedicated snapshot manager connection) must
 --   1. take the SESSION-level controlled-write lock
@@ -21,9 +21,11 @@
 --            AC103 stale_snapshot     AC104 case_not_found
 --            AC105 quota_exceeded     AC106 snapshot_unavailable
 --
--- Every identifier used in dynamic SQL is either a literal of this file or the
--- schema name generated here from gen_random_uuid(). No function accepts a
--- schema name, a table name or SQL text.
+-- Every identifier used in dynamic SQL is either a literal of this file, the
+-- schema name generated here from gen_random_uuid(), or a table/column name
+-- read from aftercare.object_types. That table is written only by migrations,
+-- is append-only, and is itself copied and digested into every snapshot. No
+-- function accepts a schema name, a table name, a column name or SQL text.
 
 CREATE FUNCTION aftercare_control.source_environment() RETURNS text
 LANGUAGE sql
@@ -76,9 +78,9 @@ AS $fn$
 DECLARE
   -- Semantic versions of what this function produces. The TypeScript adapter
   -- (packages/domain) carries the same numbers and refuses a mismatch.
-  c_adapter_id      constant text    := 'aftercare-product-pricing';
-  c_adapter_version constant integer := 1;
-  c_audit_version   constant integer := 1;
+  c_adapter_id      constant text    := 'aftercare-generalized';
+  c_adapter_version constant integer := 2;
+  c_audit_version   constant integer := 2;
   c_digest_format   constant integer := 1;
   -- Hard ceilings; callers may only ask for less.
   c_cap_rows_per_table constant bigint := 1000000;
@@ -173,107 +175,133 @@ BEGIN
   END IF;
   EXECUTE format('CREATE SCHEMA %I', v_schema);
 
-  -- The fixed copy specification: explicit column lists only, so a column
-  -- added to a source table is never copied unless it is added here.
+  -- The copy specification. Registered object tables take their complete column
+  -- list, and the column order, from aftercare.object_types; a column added to
+  -- the business table is copied only if it is registered there. The other
+  -- tables keep explicit column lists, and the two registries themselves are
+  -- copied right after the object tables so a snapshot can interpret itself.
+  -- Object-table ordinals start at 1, fixed tables at 101; the relative order
+  -- of both groups is therefore stable.
   FOR v_spec IN
-    SELECT s.table_name, s.source_query, s.key_columns, s.lookup_columns
-      FROM (VALUES
-        (1, 'products',
-         $q$SELECT p.product_id, p.name, p.price_cents, p.version FROM aftercare.products AS p$q$,
-         ARRAY['product_id'], NULL::text[]),
-        (2, 'orders',
-         $q$SELECT o.order_id, o.product_id, o.quantity, o.unit_price_cents, o.price_version, o.version
-              FROM aftercare.orders AS o$q$,
-         ARRAY['order_id'], NULL),
-        (3, 'commits',
-         $q$SELECT c.commit_seq, c.pg_txid::text AS pg_txid, c.principal, c.db_role,
-                   aftercare_control.instant_text(c.recorded_at) AS recorded_at
-              FROM aftercare.commits AS c$q$,
-         ARRAY['commit_seq'], NULL),
-        (4, 'batches',
-         $q$SELECT b.batch_id, b.commit_seq, b.operation_type, b.template_version, b.target_count
-              FROM aftercare.batches AS b$q$,
-         ARRAY['batch_id'], ARRAY['commit_seq']),
-        (5, 'operations',
-         $q$SELECT o.operation_id, o.commit_seq, o.ordinal_in_commit, o.operation_type, o.template_version,
-                   o.params, o.batch_id, o.before_state, o.after_state
-              FROM aftercare.operations AS o$q$,
-         ARRAY['operation_id'], ARRAY['commit_seq', 'ordinal_in_commit']),
-        (6, 'operation_reads',
-         $q$SELECT r.operation_id, r.ordinal, r.object_type, r.object_id, r.field, r.object_version,
-                   r.dependency_class
-              FROM aftercare.operation_reads AS r$q$,
-         ARRAY['operation_id', 'ordinal'], NULL),
-        (7, 'operation_writes',
-         $q$SELECT w.operation_id, w.ordinal, w.object_type, w.object_id, w.field, w.version_before,
-                   w.version_after
-              FROM aftercare.operation_writes AS w$q$,
-         ARRAY['operation_id', 'ordinal'], ARRAY['object_type', 'object_id', 'version_after']),
-        (8, 'operation_templates',
-         $q$SELECT t.operation_type, t.template_version, t.definition FROM aftercare.operation_templates AS t$q$,
-         ARRAY['operation_type', 'template_version'], NULL),
-        (9, 'coverage_baselines',
-         $q$SELECT b.baseline_id, b.baseline_watermark, b.product_count, b.order_count, b.declared_by, b.statement
-              FROM aftercare.coverage_baselines AS b$q$,
-         ARRAY['baseline_id'], NULL),
-        (10, 'schema_migrations',
-         $q$SELECT m.name, m.checksum FROM aftercare_meta.schema_migrations AS m$q$,
-         ARRAY['name'], NULL),
-        -- Access-control facts of the source, as of this very transaction.
-        (11, 'catalog_roles',
-         $q$SELECT r.rolname::text AS role_name,
-                   r.rolsuper AS is_superuser,
-                   r.rolbypassrls AS bypasses_rls,
-                   r.rolcanlogin AS can_login,
-                   has_database_privilege(r.oid, current_database()::text, 'CONNECT') AS can_connect,
-                   -- Can act as the owner of the source schema (directly, through
-                   -- any chain of memberships, or as a superuser).
-                   pg_has_role(r.oid, (SELECT n.nspowner FROM pg_namespace AS n WHERE n.nspname = 'aftercare'), 'MEMBER')
-                     AS owner_member
-              FROM pg_roles AS r
-             WHERE r.rolname !~ '^pg_'$q$,
-         ARRAY['role_name'], NULL),
-        (12, 'catalog_table_privileges',
-         $q$SELECT DISTINCT c.relname::text AS table_name,
-                   ''::text AS column_name,
-                   CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE a.grantee::regrole::text END AS grantee,
-                   a.privilege_type::text AS privilege
-              FROM pg_class AS c
-             CROSS JOIN LATERAL aclexplode(COALESCE(c.relacl, acldefault('r', c.relowner))) AS a
-             WHERE c.relnamespace = 'aftercare'::regnamespace AND c.relkind IN ('r', 'p', 'v', 'm')
-            UNION
-            SELECT c.relname::text,
-                   t.attname::text,
-                   CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE a.grantee::regrole::text END,
-                   a.privilege_type::text
-              FROM pg_class AS c
-              JOIN pg_attribute AS t ON t.attrelid = c.oid AND t.attnum > 0 AND NOT t.attisdropped
-             CROSS JOIN LATERAL aclexplode(t.attacl) AS a
-             WHERE c.relnamespace = 'aftercare'::regnamespace AND c.relkind IN ('r', 'p', 'v', 'm')
-               AND t.attacl IS NOT NULL$q$,
-         ARRAY['table_name', 'column_name', 'grantee', 'privilege'], NULL),
-        (13, 'catalog_functions',
-         $q$SELECT p.proname::text AS function_name,
-                   pg_get_function_identity_arguments(p.oid) AS identity_arguments,
-                   pg_get_function_result(p.oid) AS result_type,
-                   l.lanname::text AS language,
-                   p.prosecdef AS security_definer,
-                   p.proowner::regrole::text AS owner,
-                   COALESCE(array_to_string(p.proconfig, ';'), '') AS config,
-                   encode(sha256(convert_to(p.prosrc, 'UTF8')), 'hex') AS source_digest
-              FROM pg_proc AS p
-              JOIN pg_language AS l ON l.oid = p.prolang
-             WHERE p.pronamespace = 'aftercare'::regnamespace$q$,
-         ARRAY['function_name', 'identity_arguments'], NULL),
-        (14, 'catalog_function_privileges',
-         $q$SELECT DISTINCT p.proname::text AS function_name,
-                   pg_get_function_identity_arguments(p.oid) AS identity_arguments,
-                   CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE a.grantee::regrole::text END AS grantee
-              FROM pg_proc AS p
-             CROSS JOIN LATERAL aclexplode(COALESCE(p.proacl, acldefault('f', p.proowner))) AS a
-             WHERE p.pronamespace = 'aftercare'::regnamespace AND a.privilege_type = 'EXECUTE'$q$,
-         ARRAY['function_name', 'identity_arguments', 'grantee'], NULL)
-      ) AS s (ordinal, table_name, source_query, key_columns, lookup_columns)
+    WITH object_specs AS (
+      SELECT row_number() OVER (ORDER BY t.object_type)::integer AS ordinal,
+             t.table_name,
+             format('SELECT %s FROM aftercare.%I AS s',
+                    string_agg(format('s.%I', c.column_name), ', ' ORDER BY c.ordinality),
+                    t.table_name) AS source_query,
+             ARRAY[t.pk_column] AS key_columns,
+             NULL::text[] AS lookup_columns
+        FROM aftercare.object_types AS t
+        CROSS JOIN LATERAL unnest(t.columns) WITH ORDINALITY AS c (column_name, ordinality)
+       GROUP BY t.object_type, t.table_name, t.pk_column
+    )
+    SELECT s.ordinal, s.table_name, s.source_query, s.key_columns, s.lookup_columns
+      FROM (
+        SELECT * FROM object_specs
+        UNION ALL
+        SELECT * FROM (VALUES
+          (101, 'object_types',
+           $q$SELECT t.object_type, t.table_name, t.pk_column, t.version_column, t.display_column,
+                     t.columns, t.repairable
+                FROM aftercare.object_types AS t$q$,
+           ARRAY['object_type'], NULL::text[]),
+          (102, 'repairable_fields',
+           $q$SELECT f.field_id, f.object_type, f.column_name, f.value_kind, f.bounds, f.unit,
+                     f.title, f.writeback_mode, f.batch_operation_type, f.batch_param_name,
+                     f.copy_readers
+                FROM aftercare.repairable_fields AS f$q$,
+           ARRAY['field_id'], NULL),
+          (103, 'commits',
+           $q$SELECT c.commit_seq, c.pg_txid::text AS pg_txid, c.principal, c.db_role,
+                     aftercare_control.instant_text(c.recorded_at) AS recorded_at
+                FROM aftercare.commits AS c$q$,
+           ARRAY['commit_seq'], NULL),
+          (104, 'batches',
+           $q$SELECT b.batch_id, b.commit_seq, b.operation_type, b.template_version, b.target_count
+                FROM aftercare.batches AS b$q$,
+           ARRAY['batch_id'], ARRAY['commit_seq']),
+          (105, 'operations',
+           $q$SELECT o.operation_id, o.commit_seq, o.ordinal_in_commit, o.operation_type, o.template_version,
+                     o.params, o.batch_id, o.before_state, o.after_state
+                FROM aftercare.operations AS o$q$,
+           ARRAY['operation_id'], ARRAY['commit_seq', 'ordinal_in_commit']),
+          (106, 'operation_reads',
+           $q$SELECT r.operation_id, r.ordinal, r.object_type, r.object_id, r.field, r.object_version,
+                     r.dependency_class
+                FROM aftercare.operation_reads AS r$q$,
+           ARRAY['operation_id', 'ordinal'], NULL),
+          (107, 'operation_writes',
+           $q$SELECT w.operation_id, w.ordinal, w.object_type, w.object_id, w.field, w.version_before,
+                     w.version_after
+                FROM aftercare.operation_writes AS w$q$,
+           ARRAY['operation_id', 'ordinal'], ARRAY['object_type', 'object_id', 'version_after']),
+          (108, 'operation_templates',
+           $q$SELECT t.operation_type, t.template_version, t.is_batch, t.definition
+                FROM aftercare.operation_templates AS t$q$,
+           ARRAY['operation_type', 'template_version'], NULL),
+          (109, 'coverage_baselines',
+           $q$SELECT b.baseline_id, b.baseline_watermark, b.product_count, b.order_count, b.declared_by, b.statement
+                FROM aftercare.coverage_baselines AS b$q$,
+           ARRAY['baseline_id'], NULL),
+          (110, 'schema_migrations',
+           $q$SELECT m.name, m.checksum FROM aftercare_meta.schema_migrations AS m$q$,
+           ARRAY['name'], NULL),
+          -- Access-control facts of the source, as of this very transaction.
+          (111, 'catalog_roles',
+           $q$SELECT r.rolname::text AS role_name,
+                     r.rolsuper AS is_superuser,
+                     r.rolbypassrls AS bypasses_rls,
+                     r.rolcanlogin AS can_login,
+                     has_database_privilege(r.oid, current_database()::text, 'CONNECT') AS can_connect,
+                     -- Can act as the owner of the source schema (directly, through
+                     -- any chain of memberships, or as a superuser).
+                     pg_has_role(r.oid, (SELECT n.nspowner FROM pg_namespace AS n WHERE n.nspname = 'aftercare'), 'MEMBER')
+                       AS owner_member
+                FROM pg_roles AS r
+               WHERE r.rolname !~ '^pg_'$q$,
+           ARRAY['role_name'], NULL),
+          (112, 'catalog_table_privileges',
+           $q$SELECT DISTINCT c.relname::text AS table_name,
+                     ''::text AS column_name,
+                     CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE a.grantee::regrole::text END AS grantee,
+                     a.privilege_type::text AS privilege
+                FROM pg_class AS c
+               CROSS JOIN LATERAL aclexplode(COALESCE(c.relacl, acldefault('r', c.relowner))) AS a
+               WHERE c.relnamespace = 'aftercare'::regnamespace AND c.relkind IN ('r', 'p', 'v', 'm')
+              UNION
+              SELECT c.relname::text,
+                     t.attname::text,
+                     CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE a.grantee::regrole::text END,
+                     a.privilege_type::text
+                FROM pg_class AS c
+                JOIN pg_attribute AS t ON t.attrelid = c.oid AND t.attnum > 0 AND NOT t.attisdropped
+               CROSS JOIN LATERAL aclexplode(t.attacl) AS a
+               WHERE c.relnamespace = 'aftercare'::regnamespace AND c.relkind IN ('r', 'p', 'v', 'm')
+                 AND t.attacl IS NOT NULL$q$,
+           ARRAY['table_name', 'column_name', 'grantee', 'privilege'], NULL),
+          (113, 'catalog_functions',
+           $q$SELECT p.proname::text AS function_name,
+                     pg_get_function_identity_arguments(p.oid) AS identity_arguments,
+                     pg_get_function_result(p.oid) AS result_type,
+                     l.lanname::text AS language,
+                     p.prosecdef AS security_definer,
+                     p.proowner::regrole::text AS owner,
+                     COALESCE(array_to_string(p.proconfig, ';'), '') AS config,
+                     encode(sha256(convert_to(p.prosrc, 'UTF8')), 'hex') AS source_digest
+                FROM pg_proc AS p
+                JOIN pg_language AS l ON l.oid = p.prolang
+               WHERE p.pronamespace = 'aftercare'::regnamespace$q$,
+           ARRAY['function_name', 'identity_arguments'], NULL),
+          (114, 'catalog_function_privileges',
+           $q$SELECT DISTINCT p.proname::text AS function_name,
+                     pg_get_function_identity_arguments(p.oid) AS identity_arguments,
+                     CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE a.grantee::regrole::text END AS grantee
+                FROM pg_proc AS p
+               CROSS JOIN LATERAL aclexplode(COALESCE(p.proacl, acldefault('f', p.proowner))) AS a
+               WHERE p.pronamespace = 'aftercare'::regnamespace AND a.privilege_type = 'EXECUTE'$q$,
+           ARRAY['function_name', 'identity_arguments', 'grantee'], NULL)
+        ) AS f (ordinal, table_name, source_query, key_columns, lookup_columns)
+      ) AS s
      ORDER BY s.ordinal
   LOOP
     -- Copy at most one row more than the quota: enough to detect the overflow
@@ -312,9 +340,9 @@ BEGIN
     --   field  = 'N' for NULL, else 'S' || byte length of the text || ':' || text
     --   row    = sha256(UTF-8 of the fields concatenated in column order)
     --   table  = sha256(row hashes concatenated in ascending bytewise order)
-    -- Snapshot columns are only text, bigint, integer, uuid, boolean and jsonb,
-    -- whose ::text output does not depend on any session setting. bigint is
-    -- its canonical decimal text. Sorting by row hash makes the table digest
+    -- Snapshot columns are only text, text[], bigint, integer, uuid, boolean and
+    -- jsonb, whose ::text output does not depend on any session setting. bigint
+    -- is its canonical decimal text. Sorting by row hash makes the table digest
     -- independent of physical order, scan order and collation.
     SELECT string_agg(
              format($q$(CASE WHEN %1$I IS NULL THEN 'N' ELSE 'S' || octet_length(%1$I::text)::text || ':' || %1$I::text END)$q$, c.name),

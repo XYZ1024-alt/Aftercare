@@ -1,7 +1,8 @@
+import { DEFAULT_REGISTRY, type DomainRegistry, fieldsOf, parseInt64 } from '@aftercare/domain';
 import {
   interpretableTemplates,
   type OperationRow,
-  type SnapshotModel,
+  type SnapshotRows,
   templateKey,
 } from '@aftercare/evidence';
 
@@ -44,20 +45,66 @@ export interface HistoryOperation {
   readonly templateInterpretable: boolean;
 }
 
-export interface ProductState {
-  readonly version: bigint;
-  readonly priceCents: bigint;
+/** The recorded end state of one business object in the snapshot. */
+export interface ObjectSnapshotState {
+  readonly objectType: string;
+  readonly objectId: string;
+  readonly objectVersion: bigint;
+  /** Every registered field value of the object in the snapshot, keyed by physical column. */
+  readonly fields: ReadonlyMap<string, string>;
 }
 
 export interface History {
   /** Every recorded operation, ordered by (commitSeq, ordinalInCommit). */
   readonly operations: readonly HistoryOperation[];
-  /** The business rows as they stand in the snapshot. */
-  readonly products: ReadonlyMap<string, ProductState>;
+  /** The business objects as they stand in the snapshot, keyed by objectType/objectId. */
+  readonly objects: ReadonlyMap<string, ObjectSnapshotState>;
   readonly batches: ReadonlyMap<
     string,
     { readonly commitSeq: bigint; readonly targetCount: number }
   >;
+  /**
+   * Keyed by objectType/objectId: the object version of each field's last
+   * recorded write, keyed by physical column. A field without a recorded write
+   * has no entry.
+   */
+  readonly fieldVersions: ReadonlyMap<string, ReadonlyMap<string, bigint>>;
+}
+
+/**
+ * A business row of the snapshot, keyed by physical column name. The values are
+ * the text cells the snapshot digest is computed over.
+ */
+export type SnapshotObjectRow = Readonly<Record<string, string>>;
+
+export interface HistorySnapshot {
+  /** The recorded audit tables of the snapshot. */
+  readonly rows: SnapshotRows;
+  /** The registered business tables of the snapshot, keyed by ObjectTypeSpec.tableName. */
+  readonly objectTables: ReadonlyMap<string, readonly SnapshotObjectRow[]>;
+}
+
+function objectKey(objectType: string, objectId: string): string {
+  return `${objectType}/${objectId}`;
+}
+
+function cellOf(table: string, row: SnapshotObjectRow, column: string): string {
+  const cell = row[column];
+  if (cell === undefined) {
+    throw new Error(`snapshot table "${table}" has a row without column "${column}"`);
+  }
+  return cell;
+}
+
+function objectVersionOf(table: string, row: SnapshotObjectRow, column: string): bigint {
+  const text = cellOf(table, row, column);
+  const parsed = parseInt64(text, 'non_negative');
+  if (!parsed.ok) {
+    throw new Error(
+      `snapshot table "${table}" records object version "${text}": ${parsed.message}`,
+    );
+  }
+  return parsed.value;
 }
 
 export function compareOperations(left: HistoryOperation, right: HistoryOperation): number {
@@ -89,7 +136,10 @@ function groupByOperation<Row extends { operation_id: string; ordinal: number }>
 }
 
 /** Types the rows of a loaded snapshot into the history the replay engine walks. */
-export function buildHistory({ rows }: Pick<SnapshotModel, 'rows'>): History {
+export function buildHistory(
+  { rows, objectTables }: HistorySnapshot,
+  registry: DomainRegistry = DEFAULT_REGISTRY,
+): History {
   const interpretable = interpretableTemplates(rows);
   const reads = groupByOperation(rows.operation_reads);
   const writes = groupByOperation(rows.operation_writes);
@@ -126,19 +176,50 @@ export function buildHistory({ rows }: Pick<SnapshotModel, 'rows'>): History {
     )
     .sort(compareOperations);
 
+  // The end state of every business object, read through the registry: the
+  // object type says which table and primary key, the field registry says which
+  // columns are field values.
+  const objects = new Map<string, ObjectSnapshotState>();
+  for (const spec of registry.objects) {
+    for (const row of objectTables.get(spec.tableName) ?? []) {
+      const fields = new Map<string, string>();
+      for (const field of fieldsOf(registry, spec.objectType)) {
+        fields.set(field.column, cellOf(spec.tableName, row, field.column));
+      }
+      const objectId = cellOf(spec.tableName, row, spec.pkColumn);
+      objects.set(objectKey(spec.objectType, objectId), {
+        objectType: spec.objectType,
+        objectId,
+        objectVersion: objectVersionOf(spec.tableName, row, spec.versionColumn),
+        fields,
+      });
+    }
+  }
+
+  // The field genealogy: walking the writes in the authoritative order leaves,
+  // per (object, field), the version its last write produced.
+  const fieldVersions = new Map<string, Map<string, bigint>>();
+  for (const operation of operations) {
+    for (const write of operation.writes) {
+      const key = objectKey(write.objectType, write.objectId);
+      let versions = fieldVersions.get(key);
+      if (versions === undefined) {
+        versions = new Map();
+        fieldVersions.set(key, versions);
+      }
+      versions.set(write.field, write.versionAfter);
+    }
+  }
+
   return {
     operations,
-    products: new Map(
-      rows.products.map((product) => [
-        product.product_id,
-        { version: product.version, priceCents: product.price_cents },
-      ]),
-    ),
+    objects,
     batches: new Map(
       rows.batches.map((batch) => [
         batch.batch_id,
         { commitSeq: batch.commit_seq, targetCount: batch.target_count },
       ]),
     ),
+    fieldVersions,
   };
 }

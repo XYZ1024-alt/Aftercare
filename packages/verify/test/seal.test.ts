@@ -61,7 +61,9 @@ function clarifyC() {
       statement: 'c was set to 90.00 by a pricing manager on purpose',
       evidenceRefs: [],
       source: { kind: 'operations_review', reference: 'ticket 7' },
-      scope: { domains: [{ objectType: 'product', objectId: 'c', field: 'price_cents' }] },
+      scope: {
+        domains: [{ objectType: 'product', objectId: 'c', field: 'product.price_cents' }],
+      },
     },
   });
 }
@@ -112,6 +114,30 @@ describe('the verifier refuses what the execution did not do', () => {
       obligation: 'preserved_value_intact',
       code: 'preserved_value_lost',
       objects: ['b'],
+    },
+    {
+      // The allow set used to be keyed by object id, so an object inside the
+      // footprint could take a write to any other column. The footprint is
+      // keyed by (object, field) now: a renamed allowed object is outside it.
+      name: 'an unauthorised column of an allowed object (a renamed)',
+      sql: (s: string) => [
+        `UPDATE ${s}.products SET name = 'renamed', version = version + 1 WHERE product_id = 'a'`,
+      ],
+      obligation: 'footprint_within_allowed',
+      code: 'footprint_exceeded',
+      objects: ['a'],
+    },
+    {
+      // A same-value later write only advances the object version: the object
+      // id is still inside the allow set, but no allowed field changed. This
+      // is the write the old object-keyed footprint could not see.
+      name: 'a same-value later write on an allowed object (a restated at 110.00, version 5)',
+      sql: (s: string) => [
+        `UPDATE ${s}.products SET price_cents = 11000, version = 5 WHERE product_id = 'a'`,
+      ],
+      obligation: 'footprint_within_allowed',
+      code: 'footprint_exceeded',
+      objects: ['a'],
     },
   ] as const;
 
@@ -255,7 +281,12 @@ describe('changes that arrive while the verifier is reading', () => {
 
   it('new evidence activated first: the late result does not seal', async () => {
     const { branch, me, verificationId, body } = await readUnderway();
-    await collect(h, h.frozen.ref, { tool: 'product.version_history', productId: 'a' });
+    await collect(h, h.frozen.ref, {
+      tool: 'field.history',
+      objectType: 'product',
+      objectId: 'a',
+      fieldId: 'product.price_cents',
+    });
     expect(await h.verifierStore.publish(h.caseId, verificationId, me, body)).toMatchObject({
       ok: false,
       rejection: { code: 'report_not_publishable' },

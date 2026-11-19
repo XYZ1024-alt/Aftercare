@@ -90,7 +90,7 @@ export interface ScriptScenario {
  * who knows the scenario: it tests the Runtime, not a model.
  */
 export function standardSteps(scenario: ScriptScenario): Record<StandardStage, ScriptStep> {
-  const histories = (view: ScriptView) => evidenceIdsOf(view, 'get_product_history');
+  const histories = (view: ScriptView) => evidenceIdsOf(view, 'get_field_history');
   return {
     observe: () => {
       const range =
@@ -103,7 +103,13 @@ export function standardSteps(scenario: ScriptScenario): Record<StandardStage, S
       };
     },
     histories: () => ({
-      calls: scenario.products.map((productId) => call('get_product_history', { productId })),
+      calls: scenario.products.map((productId) =>
+        call('get_field_history', {
+          objectType: 'product',
+          objectId: productId,
+          fieldId: 'product.price_cents',
+        }),
+      ),
     }),
     askIncident: (view) => ({
       calls: [
@@ -121,7 +127,12 @@ export function standardSteps(scenario: ScriptScenario): Record<StandardStage, S
           proposition: 'Version 1 of each product held the right price.',
           relevance: 'The replay starts from a confirmed baseline.',
           trustedWatermark: scenario.trustedWatermark.toString(),
-          entries: scenario.products.map((productId) => ({ productId, version: '1' })),
+          entries: scenario.products.map((productId) => ({
+            objectType: 'product',
+            objectId: productId,
+            fieldId: 'product.price_cents',
+            fieldVersion: '1',
+          })),
           evidenceIds: histories(view),
         }),
       ],

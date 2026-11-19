@@ -19,8 +19,10 @@ import type { AgentService } from '../src/index.ts';
 export interface HiddenTruth {
   /** The operation instances that really were wrong. */
   readonly incidentOperationIds: readonly string[];
-  /** The trusted starting point per product: version and price before the incident. */
-  readonly baseline: Readonly<Record<string, { readonly version: string; readonly cents: string }>>;
+  /** The trusted starting point per product: field version and value before the incident. */
+  readonly baseline: Readonly<
+    Record<string, { readonly fieldVersion: string; readonly value: string }>
+  >;
   /** Registered policy versions the business would accept. */
   readonly policyVersionIds: readonly string[];
   /** The final price per product the business expects a repair to write; products absent here must not be written. */
@@ -93,8 +95,9 @@ export function createOperatorOracle(options: {
           const known = truth.baseline[entry.objectId];
           return (
             known === undefined ||
-            known.version !== entry.version ||
-            known.cents !== entry.priceCents
+            entry.fieldId !== 'product.price_cents' ||
+            known.fieldVersion !== entry.fieldVersion ||
+            known.value !== entry.value
           );
         });
         if (wrong.length > 0) {
@@ -144,14 +147,19 @@ export function createOperatorOracle(options: {
           note: 'clarified',
         };
       case 'execution_approval': {
-        const changed = new Set(body.changes.map((change) => change.field));
+        const keyOf = (change: { objectType: string; objectId: string; fieldId: string }): string =>
+          `${change.objectType}/${change.objectId}.${change.fieldId}`;
+        const changed = new Set(body.changes.map(keyOf));
         const mismatches = [
           ...body.changes.flatMap((change) => {
-            const productId = change.field.replace(/^product\//, '').replace(/\.price_cents$/, '');
-            return truth.expectedFinalCents[productId] === change.toCents ? [] : [change.field];
+            const matches =
+              change.objectType === 'product' &&
+              change.fieldId === 'product.price_cents' &&
+              truth.expectedFinalCents[change.objectId] === change.toValue;
+            return matches ? [] : [keyOf(change)];
           }),
           ...Object.keys(truth.expectedFinalCents)
-            .map((productId) => `product/${productId}.price_cents`)
+            .map((productId) => `product/${productId}.product.price_cents`)
             .filter((field) => !changed.has(field)),
         ];
         if (mismatches.length > 0) {

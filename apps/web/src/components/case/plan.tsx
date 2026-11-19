@@ -3,7 +3,15 @@
 import type { ContractView, PlanSummaryView } from '@aftercare/console/client';
 import { ClipboardList, History, ShieldCheck } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
-import { cents, reasonLabel, shortId, type Tone, when } from '../../lib/labels.ts';
+import {
+  fieldKey,
+  fieldTitle,
+  fieldValue,
+  reasonLabel,
+  shortId,
+  type Tone,
+  when,
+} from '../../lib/labels.ts';
 import { useCan } from '../../lib/session.tsx';
 import { ConfirmDialog } from '../overlay.tsx';
 import {
@@ -30,9 +38,6 @@ const TREATMENT: Readonly<Record<string, string>> = {
   retained_independent_override: '保留（独立后续修改）',
   retained_outside_affected_domain: '保留（未受事故波及）',
 };
-const fieldOf = (entry: { readonly objectType: string; readonly objectId: string }) =>
-  `${entry.objectType}/${entry.objectId}`;
-
 /** One group of a plan: a coloured dot, a title with its count, the entries. */
 function Group({
   tone,
@@ -58,6 +63,8 @@ function Group({
 }
 
 function PlanPreview({ plan }: { readonly plan: PlanSummaryView }) {
+  const { view } = useCase();
+  const registry = view.registry;
   const content = plan.content;
   if (content === null) return <Empty>历史计划（未加载详情）</Empty>;
   return (
@@ -75,6 +82,7 @@ function PlanPreview({ plan }: { readonly plan: PlanSummaryView }) {
             <thead>
               <tr>
                 <th>对象</th>
+                <th>字段</th>
                 <th className="num">修改前</th>
                 <th className="num">修改后</th>
                 <th className="num">要求版本</th>
@@ -82,11 +90,18 @@ function PlanPreview({ plan }: { readonly plan: PlanSummaryView }) {
             </thead>
             <tbody>
               {content.patch.map((entry) => (
-                <tr key={entry.objectId} data-testid="patch-row" data-object={entry.objectId}>
-                  <td>{fieldOf(entry)} 价格</td>
-                  <td className="num text-muted">{cents(entry.fromCents)}</td>
-                  <td className="num font-semibold">{cents(entry.toCents)}</td>
-                  <td className="num">{entry.expectedVersion}</td>
+                <tr key={fieldKey(entry)} data-testid="patch-row" data-object={entry.objectId}>
+                  <td>
+                    {entry.objectType}/{entry.objectId}
+                  </td>
+                  <td>{fieldTitle(registry, entry.fieldId)}</td>
+                  <td className="num text-muted">
+                    {fieldValue(registry, entry.fieldId, entry.fromValue)}
+                  </td>
+                  <td className="num font-semibold">
+                    {fieldValue(registry, entry.fieldId, entry.toValue)}
+                  </td>
+                  <td className="num">{entry.expectedObjectVersion}</td>
                 </tr>
               ))}
             </tbody>
@@ -97,10 +112,19 @@ function PlanPreview({ plan }: { readonly plan: PlanSummaryView }) {
         <Group tone="sky" title="保留的后续合法变更" count={content.preserved.length}>
           <ul className="space-y-2">
             {content.preserved.map((entry) => (
-              <li key={entry.operationId} data-testid="preserved-row" data-object={entry.objectId}>
-                <span className="font-medium">{fieldOf(entry)}</span>：{entry.operationType} 记录的{' '}
-                <span className="tabular-nums">{cents(entry.recordedCents)}</span> —{' '}
-                {TREATMENT[entry.treatment] ?? entry.treatment}
+              <li
+                key={`${fieldKey(entry)}@${entry.operationId}`}
+                data-testid="preserved-row"
+                data-object={entry.objectId}
+              >
+                <span className="font-medium">
+                  {entry.objectType}/{entry.objectId}
+                </span>{' '}
+                · {fieldTitle(registry, entry.fieldId)}：{entry.operationType} 记录的{' '}
+                <span className="tabular-nums">
+                  {fieldValue(registry, entry.fieldId, entry.recordedValue)}
+                </span>{' '}
+                — {TREATMENT[entry.treatment] ?? entry.treatment}
                 {entry.ruleIds.length > 0 && (
                   <span className="text-xs text-muted">（规则 {entry.ruleIds.join('，')}）</span>
                 )}
@@ -108,32 +132,54 @@ function PlanPreview({ plan }: { readonly plan: PlanSummaryView }) {
             ))}
           </ul>
         </Group>
-        <Group tone="neutral" title="受影响但不修改" count={content.orderImpacts.length}>
+        <Group tone="neutral" title="受影响但不修改" count={content.readerImpacts.length}>
           <ul className="space-y-2">
-            {content.orderImpacts.map((order) => (
-              <li key={order.orderId} data-testid="affected-row" data-object={order.orderId}>
-                订单 <span className="font-medium">{order.orderId}</span>（商品 {order.productId}
-                ）按 <span className="tabular-nums">{cents(order.struckUnitPriceCents)}</span> 成交
-                {order.replayedUnitPriceCents !== null &&
-                  `，回放价格 ${cents(order.replayedUnitPriceCents)}`}
-                （订单已成交，不修改）
+            {content.readerImpacts.map((impact) => (
+              <li
+                key={`${impact.readerObjectType}/${impact.readerObjectId}.${impact.fieldId}@${impact.operationId}`}
+                data-testid="affected-row"
+                data-object={impact.readerObjectId}
+              >
+                <span className="font-medium">
+                  {impact.readerObjectType}/{impact.readerObjectId}
+                </span>{' '}
+                读到 {impact.readObjectType}/{impact.readObjectId} 的{' '}
+                {fieldTitle(registry, impact.fieldId)}，记录{' '}
+                <span className="tabular-nums">
+                  {fieldValue(registry, impact.fieldId, impact.recordedValue)}
+                </span>
+                {impact.replayedValue !== null &&
+                  `，回放 ${fieldValue(registry, impact.fieldId, impact.replayedValue)}`}
+                （读者记录不修改）
               </li>
             ))}
           </ul>
         </Group>
         <Group tone="violet" title="未决项" count={content.unresolved.length}>
           <ul className="space-y-2">
-            {content.unresolved.map((entry) => (
-              <li
-                key={fieldOf(entry.domain)}
-                data-testid="unresolved-row"
-                data-object={entry.domain.objectId}
-              >
-                <span className="font-medium">{fieldOf(entry.domain)}</span>：保持快照中的{' '}
-                <span className="tabular-nums">{cents(entry.snapshotCents)}</span> 不动 —{' '}
-                {entry.counterexample.code}：{entry.counterexample.expected.condition}
-              </li>
-            ))}
+            {content.unresolved.map((entry) => {
+              const { domain } = entry;
+              const key =
+                domain.field === null
+                  ? `${domain.objectType}/${domain.objectId}`
+                  : `${domain.objectType}/${domain.objectId}.${domain.field}`;
+              const held =
+                entry.snapshotValue === null
+                  ? '—'
+                  : domain.field === null
+                    ? entry.snapshotValue
+                    : fieldValue(registry, domain.field, entry.snapshotValue);
+              return (
+                <li key={key} data-testid="unresolved-row" data-object={domain.objectId}>
+                  <span className="font-medium">
+                    {domain.objectType}/{domain.objectId}
+                  </span>
+                  {domain.field !== null && <> · {fieldTitle(registry, domain.field)}</>}
+                  ：保持快照中的 <span className="tabular-nums">{held}</span> 不动 —{' '}
+                  {entry.counterexample.code}：{entry.counterexample.expected.condition}
+                </li>
+              );
+            })}
           </ul>
           {content.isolation !== null && (
             <p className="mt-2 text-xs text-ink-soft">
@@ -149,7 +195,10 @@ function PlanPreview({ plan }: { readonly plan: PlanSummaryView }) {
         <p className="text-meta text-ink-soft">
           基线：可信水位 {content.baseline.trustedWatermark}，
           {content.baseline.entries
-            .map((entry) => `${entry.objectId}@${entry.version}=${cents(entry.priceCents)}`)
+            .map(
+              (entry) =>
+                `${entry.objectType}/${entry.objectId}@${entry.fieldVersion}=${fieldValue(registry, entry.fieldId, entry.value)}`,
+            )
             .join('，')}
         </p>
         <p className="text-meta text-ink-soft">
@@ -189,6 +238,8 @@ function Checks({ title, checks }: { readonly title: string; readonly checks: re
 }
 
 function Approval({ contract }: { readonly contract: ContractView }) {
+  const { view } = useCase();
+  const registry = view.registry;
   const mayApprove = useCan('approve_execution');
   const approve = useCaseAction('approve');
   const decline = useCaseAction('decline-approval');
@@ -211,6 +262,7 @@ function Approval({ contract }: { readonly contract: ContractView }) {
           <Table>
             <thead>
               <tr>
+                <th>对象</th>
                 <th>字段</th>
                 <th className="num">修改前</th>
                 <th className="num">修改后</th>
@@ -219,11 +271,18 @@ function Approval({ contract }: { readonly contract: ContractView }) {
             </thead>
             <tbody>
               {contract.changes.map((change) => (
-                <tr key={change.field}>
-                  <td>{change.field}</td>
-                  <td className="num text-muted">{cents(change.fromCents)}</td>
-                  <td className="num font-semibold">{cents(change.toCents)}</td>
-                  <td className="num">{change.expectedVersion}</td>
+                <tr key={fieldKey(change)}>
+                  <td>
+                    {change.objectType}/{change.objectId}
+                  </td>
+                  <td>{fieldTitle(registry, change.fieldId)}</td>
+                  <td className="num text-muted">
+                    {fieldValue(registry, change.fieldId, change.fromValue)}
+                  </td>
+                  <td className="num font-semibold">
+                    {fieldValue(registry, change.fieldId, change.toValue)}
+                  </td>
+                  <td className="num">{change.expectedObjectVersion}</td>
                 </tr>
               ))}
             </tbody>

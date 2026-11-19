@@ -185,7 +185,7 @@ export interface PlanSummaryView {
     | 'candidates'
     | 'patch'
     | 'preserved'
-    | 'orderImpacts'
+    | 'readerImpacts'
     | 'unresolved'
     | 'isolation'
     | 'baseline'
@@ -206,10 +206,12 @@ export interface ContractView {
   readonly dependencyRevision: string;
   readonly boundAt: string;
   readonly changes: readonly {
-    readonly field: string;
-    readonly fromCents: string;
-    readonly toCents: string;
-    readonly expectedVersion: string;
+    readonly objectType: string;
+    readonly objectId: string;
+    readonly fieldId: string;
+    readonly fromValue: string;
+    readonly toValue: string;
+    readonly expectedObjectVersion: string;
   }[];
   readonly untouched: readonly string[];
   readonly rules: readonly string[];
@@ -237,9 +239,13 @@ export interface ExecutionView {
     readonly stillCurrent: boolean;
     readonly contractStatus: string;
     readonly written: readonly {
-      readonly field: string;
-      readonly centsBefore: string;
-      readonly centsAfter: string;
+      readonly objectType: string;
+      readonly objectId: string;
+      readonly fieldId: string;
+      readonly versionBefore: string;
+      readonly versionAfter: string;
+      readonly valueBefore: string;
+      readonly valueAfter: string;
     }[];
   }[];
   readonly verificationRuns: readonly VerificationRun[];
@@ -282,6 +288,8 @@ export interface CaseView {
   readonly autonomy: AutonomyCaseView;
   /** Approvals, promotions of sealed repairs to the source and their checks. */
   readonly promotion: PromotionView;
+  /** The object types and repairable fields of this deployment: display column, titles and units. */
+  readonly registry: RegistryView;
   /** Conclusions and inputs that may no longer be relied on, with the recorded reason. */
   readonly invalidated: readonly Pick<
     BasisNode,
@@ -294,6 +302,20 @@ export interface CaseView {
     | 'statusRevision'
     | 'statusRootNodeId'
   >[];
+}
+
+/** What the interface needs to label an object or a field: no value, no rule, only registry metadata. */
+export interface RegistryView {
+  readonly objects: readonly {
+    readonly objectType: string;
+    readonly displayColumn: string | null;
+  }[];
+  readonly fields: readonly {
+    readonly fieldId: string;
+    readonly objectType: string;
+    readonly title: string;
+    readonly unit: 'cents' | 'count';
+  }[];
 }
 
 export interface FeedItem {

@@ -34,7 +34,7 @@ const REQUEST: ModelRequest = {
       content: null,
       toolCalls: [
         { id: 'tc-1', name: 'list_batches', argumentsText: '{}' },
-        { id: 'tc-2', name: 'get_product_history', argumentsText: '{"productId":"a"}' },
+        { id: 'tc-2', name: 'get_field_history', argumentsText: '{"objectId":"a"}' },
       ],
     },
     { role: 'tool', toolCallId: 'tc-1', content: '{"ok":true}' },
@@ -42,7 +42,7 @@ const REQUEST: ModelRequest = {
   ],
   tools: [
     {
-      name: 'get_product_history',
+      name: 'get_field_history',
       description: 'reads a product history',
       parameters: {
         $schema: 'https://json-schema.org/draft/2020-12/schema',
@@ -115,7 +115,7 @@ describe('the OpenAI-compatible adapter', () => {
             {
               id: 'tc-2',
               type: 'function',
-              function: { name: 'get_product_history', arguments: '{"productId":"a"}' },
+              function: { name: 'get_field_history', arguments: '{"objectId":"a"}' },
             },
           ],
         },
@@ -126,7 +126,7 @@ describe('the OpenAI-compatible adapter', () => {
         {
           type: 'function',
           function: {
-            name: 'get_product_history',
+            name: 'get_field_history',
             description: 'reads a product history',
             // Only portable keywords are sent; the Runtime validates arguments itself.
             parameters: {

@@ -50,7 +50,7 @@ describe('execution approval', () => {
         contractId: contract.contractId,
         executionDigest: contract.executionDigest,
         validForSeconds: 600,
-        acknowledgedUnresolvedDomains: ['product/c.price_cents'],
+        acknowledgedUnresolvedDomains: ['product/c.product.price_cents'],
         statement: 'approve',
       });
       expect(rejectionOf(outcome).code, identity.principal).toBe('not_authorized');
@@ -63,7 +63,7 @@ describe('execution approval', () => {
           contractId: contract.contractId,
           executionDigest: contract.executionDigest,
           validForSeconds: 600,
-          acknowledgedUnresolvedDomains: ['product/c.price_cents'],
+          acknowledgedUnresolvedDomains: ['product/c.product.price_cents'],
           statement: 'approve',
           actorId: 'ops:someone-else',
         }),
@@ -88,7 +88,7 @@ describe('execution approval', () => {
       contractId: contract.contractId,
       executionDigest: contract.executionDigest,
       validForSeconds: 600,
-      acknowledgedUnresolvedDomains: ['product/c.price_cents'],
+      acknowledgedUnresolvedDomains: ['product/c.product.price_cents'],
       statement: 'approve',
     };
     expect(
@@ -219,7 +219,9 @@ describe('input changes block an old contract', () => {
         statement: 'c was repriced on purpose',
         evidenceRefs: [],
         source: { kind: 'operations_review', reference: 'ticket 1' },
-        scope: { domains: [{ objectType: 'product', objectId: 'c', field: 'price_cents' }] },
+        scope: {
+          domains: [{ objectType: 'product', objectId: 'c', field: 'product.price_cents' }],
+        },
       },
     });
     expect(changed.invalidation.execution).toEqual({
@@ -252,7 +254,7 @@ describe('input changes block an old contract', () => {
           contractId: contract.contractId,
           executionDigest: contract.executionDigest,
           validForSeconds: 60,
-          acknowledgedUnresolvedDomains: ['product/c.price_cents'],
+          acknowledgedUnresolvedDomains: ['product/c.product.price_cents'],
           statement: 'again',
         }),
       ).code,
@@ -268,7 +270,9 @@ describe('input changes block an old contract', () => {
       hypothesis: {
         snapshotId: h.frozen.ref.snapshotId,
         statement: 'e may have been intentionally discounted',
-        scope: { domains: [{ objectType: 'product', objectId: 'e', field: 'price_cents' }] },
+        scope: {
+          domains: [{ objectType: 'product', objectId: 'e', field: 'product.price_cents' }],
+        },
         basis: [],
         negativeClaims: [],
       },

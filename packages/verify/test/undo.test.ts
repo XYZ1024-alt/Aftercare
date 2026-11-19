@@ -71,26 +71,26 @@ describe('protected undo', () => {
       {
         objectType: 'product',
         objectId: 'a',
-        field: 'price_cents',
-        expectedVersion: '4',
-        fromCents: '11000',
-        toCents: '9000',
+        fieldId: 'product.price_cents',
+        expectedObjectVersion: '4',
+        fromValue: '11000',
+        toValue: '9000',
       },
       {
         objectType: 'product',
         objectId: 'd',
-        field: 'price_cents',
-        expectedVersion: '3',
-        fromCents: '10000',
-        toCents: '8000',
+        fieldId: 'product.price_cents',
+        expectedObjectVersion: '3',
+        fromValue: '10000',
+        toValue: '8000',
       },
       {
         objectType: 'product',
         objectId: 'e',
-        field: 'price_cents',
-        expectedVersion: '3',
-        fromCents: '10000',
-        toCents: '8000',
+        fieldId: 'product.price_cents',
+        expectedObjectVersion: '3',
+        fromValue: '10000',
+        toValue: '8000',
       },
     ]);
     expect(contract.body.unresolvedDomains).toEqual([]);
@@ -224,11 +224,14 @@ describe('protected undo', () => {
       plan,
       target,
       lineage,
-      targetProducts: Object.entries(staleView).map(([objectId, v]) => {
-        const [cents, version] = v.split('@') as [string, string];
-        return { objectId, cents, version };
+      targetRows: Object.entries(staleView).map(([objectId, v]) => {
+        const [value, objectVersion] = v.split('@') as [string, string];
+        return {
+          objectType: 'product',
+          objectId,
+          columns: { product_id: objectId, price_cents: value, version: objectVersion },
+        };
       }),
-      targetOrders: [],
       policy,
     });
     if (!derived.ok) throw new Error('the stale view should derive a contract');
@@ -242,9 +245,15 @@ describe('protected undo', () => {
       },
       { body: derived.body as unknown as JsonObject, digest: derived.digest },
     );
+    // The submitted body was derived from a stale view of the target: the
+    // branch moved after it was read, so the database refuses the patch it
+    // would record instead of accepting the caller's version.
     expect(outcome).toMatchObject({
       ok: false,
-      rejection: { code: 'undo_conflict', conflict: { reason: 'version_advanced', objectId: 'a' } },
+      rejection: {
+        code: 'execution_scope_rejected',
+        message: expect.stringMatching(/undo patch must be exactly the reversal/),
+      },
     });
   });
 

@@ -343,9 +343,9 @@ BEGIN
   PERFORM aftercare_control.assert_principal(p_registered_by);
   PERFORM aftercare_control.assert_identity_source(p_identity_source);
   IF p_charter_id IS NULL OR p_body IS NULL OR jsonb_typeof(p_body) <> 'object'
-     OR p_body ->> 'charterFormat' IS DISTINCT FROM '1' OR p_digest IS NULL OR p_digest !~ '^[0-9a-f]{64}$'
+     OR p_body ->> 'charterFormat' IS DISTINCT FROM '2' OR p_digest IS NULL OR p_digest !~ '^[0-9a-f]{64}$'
      OR jsonb_typeof(p_body -> 'delegated') IS DISTINCT FROM 'array' THEN
-    RAISE EXCEPTION 'a charter is a format-1 document with its digest' USING ERRCODE = 'AC201';
+    RAISE EXCEPTION 'a charter is a format-2 document with its digest' USING ERRCODE = 'AC201';
   END IF;
   PERFORM aftercare_control.assert_principal(v_autopilot);
   IF v_autopilot NOT LIKE 'autopilot:%' OR p_registered_by LIKE 'autopilot:%' THEN
@@ -631,15 +631,70 @@ SET search_path = pg_catalog, pg_temp
 AS $$
 DECLARE
   v_charter jsonb;
+  v_fields  jsonb;
+  v_operation record;
+  v_write   record;
+  v_field_id text;
+  v_repairable integer;
+  v_named   bigint;
+  v_found   bigint;
 BEGIN
   IF aftercare_control.autonomy_check_actor(NEW.confirmed_by, NEW.identity_source) THEN
     v_charter := aftercare_control.autonomy_require(NEW.confirmed_by, CASE NEW.kind
       WHEN 'incident' THEN 'confirm_incident' WHEN 'baseline' THEN 'confirm_baseline'
       ELSE 'confirm_replay_policy' END);
+    v_fields := v_charter -> 'body' -> 'fields';
+    IF v_fields IS NULL OR jsonb_typeof(v_fields) <> 'object' THEN
+      RAISE EXCEPTION 'the charter of "%" rules no field', NEW.confirmed_by USING ERRCODE = 'AC703';
+    END IF;
     IF NEW.kind = 'replay_policy' AND NEW.body -> 'policyVersion' ->> 'policyVersionId'
          IS DISTINCT FROM v_charter -> 'body' -> 'replayPolicy' ->> 'policyVersionId' THEN
       RAISE EXCEPTION 'the charter of "%" stands behind policy version % only', NEW.confirmed_by,
         v_charter -> 'body' -> 'replayPolicy' ->> 'policyVersionId' USING ERRCODE = 'AC704';
+    END IF;
+    -- An incident is confirmed operation by operation. Every operation must
+    -- write exactly one registered repairable field, that field must have a
+    -- rule in the charter, and the operation type must be one the field's
+    -- incident rule names.
+    IF NEW.kind = 'incident' THEN
+      SELECT count(*) INTO v_named FROM jsonb_array_elements_text(NEW.body -> 'operationIds') AS e;
+      SELECT count(*) INTO v_found
+        FROM aftercare.operations AS o
+       WHERE o.operation_id IN (SELECT (e)::uuid FROM jsonb_array_elements_text(NEW.body -> 'operationIds') AS e);
+      IF v_found <> v_named THEN
+        RAISE EXCEPTION 'the confirmation names an operation the audit does not hold' USING ERRCODE = 'AC704';
+      END IF;
+      FOR v_operation IN
+        SELECT o.operation_id, o.operation_type
+          FROM aftercare.operations AS o
+         WHERE o.operation_id IN (SELECT (e)::uuid FROM jsonb_array_elements_text(NEW.body -> 'operationIds') AS e)
+      LOOP
+        v_repairable := 0;
+        FOR v_write IN
+          SELECT w.object_type, w.field
+            FROM aftercare.operation_writes AS w
+           WHERE w.operation_id = v_operation.operation_id
+        LOOP
+          SELECT f.field_id INTO v_field_id
+            FROM aftercare.repairable_fields AS f
+           WHERE f.object_type = v_write.object_type AND f.column_name = v_write.field;
+          CONTINUE WHEN v_field_id IS NULL;
+          v_repairable := v_repairable + 1;
+          IF NOT (v_fields ? v_field_id) THEN
+            RAISE EXCEPTION 'the confirmed operation % writes field %, for which the charter of "%" has no rule',
+              v_operation.operation_id, v_field_id, NEW.confirmed_by USING ERRCODE = 'AC704';
+          END IF;
+          IF NOT (COALESCE(v_fields -> v_field_id -> 'incident' -> 'operationTypes', '[]'::jsonb)
+                    ? v_operation.operation_type) THEN
+            RAISE EXCEPTION 'the incident rule of field % does not name operation type %',
+              v_field_id, v_operation.operation_type USING ERRCODE = 'AC704';
+          END IF;
+        END LOOP;
+        IF v_repairable <> 1 THEN
+          RAISE EXCEPTION 'the confirmed operation % must write exactly one registered repairable field (writes %)',
+            v_operation.operation_id, v_repairable USING ERRCODE = 'AC704';
+        END IF;
+      END LOOP;
     END IF;
   END IF;
   RETURN NEW;
@@ -683,8 +738,6 @@ AS $$
   SELECT date_trunc('second', p_expires_at - p_effective_at) <= make_interval(secs => p_seconds);
 $$;
 
--- The approval envelope is checked against the contract's patch and the values
--- of the contract's snapshot, not against anything the approving code says.
 CREATE FUNCTION aftercare_control.guard_autonomy_approval() RETURNS trigger
 LANGUAGE plpgsql
 SET search_path = pg_catalog, pg_temp
@@ -692,17 +745,26 @@ AS $$
 DECLARE
   v_charter  jsonb;
   v_envelope jsonb;
+  v_fields   jsonb;
+  v_field_envelope jsonb;
   v_contract aftercare_control.execution_contracts;
   v_schema   text;
   v_entry    jsonb;
-  v_before   bigint;
-  v_delta    bigint;
+  v_field    record;
+  v_before   text;
+  v_delta    numeric;
+  v_relative numeric;
+  v_changed  bigint;
 BEGIN
   IF NOT aftercare_control.autonomy_check_actor(NEW.principal, NEW.identity_source) THEN
     RETURN NEW;
   END IF;
   v_charter := aftercare_control.autonomy_require(NEW.principal, 'approve_execution');
   v_envelope := v_charter -> 'body' -> 'approval';
+  v_fields := v_charter -> 'body' -> 'fields';
+  IF v_fields IS NULL OR jsonb_typeof(v_fields) <> 'object' THEN
+    RAISE EXCEPTION 'the charter of "%" rules no field', NEW.principal USING ERRCODE = 'AC703';
+  END IF;
   SELECT c.* INTO STRICT v_contract FROM aftercare_control.execution_contracts AS c
    WHERE c.case_id = NEW.case_id AND c.contract_id = NEW.contract_id;
   IF v_contract.kind <> 'repair' THEN
@@ -713,8 +775,13 @@ BEGIN
     RAISE EXCEPTION 'the charter lets an approval stand for % seconds at most', v_envelope ->> 'validForSeconds'
       USING ERRCODE = 'AC704';
   END IF;
-  IF jsonb_array_length(v_contract.body -> 'patch') > (v_envelope ->> 'maxChangedObjects')::int THEN
-    RAISE EXCEPTION 'the contract changes % objects; the charter allows %', jsonb_array_length(v_contract.body -> 'patch'),
+  -- Changed objects are counted per (object type, object id), not per patch
+  -- entry: one product with two patched fields is one object.
+  SELECT count(*) INTO v_changed
+    FROM (SELECT DISTINCT p ->> 'objectType', p ->> 'objectId'
+            FROM jsonb_array_elements(v_contract.body -> 'patch') AS p) AS s;
+  IF v_changed > (v_envelope ->> 'maxChangedObjects')::int THEN
+    RAISE EXCEPTION 'the contract changes % objects; the charter allows %', v_changed,
       v_envelope ->> 'maxChangedObjects' USING ERRCODE = 'AC704';
   END IF;
   IF jsonb_array_length(v_contract.body -> 'unresolvedDomains') > (v_envelope ->> 'maxUnresolvedDomains')::int THEN
@@ -724,22 +791,50 @@ BEGIN
   END IF;
   SELECT s.schema_name INTO STRICT v_schema FROM aftercare_control.snapshots AS s
    WHERE s.case_id = v_contract.case_id AND s.snapshot_id = v_contract.snapshot_id AND s.status = 'published';
-  FOR v_entry IN SELECT * FROM jsonb_array_elements(v_contract.body -> 'patch') LOOP
-    IF v_entry ->> 'objectType' <> 'product' OR v_entry ->> 'field' <> 'price_cents' THEN
-      RAISE EXCEPTION 'an autopilot approves product price changes only' USING ERRCODE = 'AC704';
+  FOR v_entry IN SELECT p FROM jsonb_array_elements(v_contract.body -> 'patch') AS p LOOP
+    SELECT f.field_id, f.object_type, f.column_name, t.table_name, t.pk_column
+      INTO v_field
+      FROM aftercare.repairable_fields AS f
+      JOIN aftercare.object_types AS t ON t.object_type = f.object_type
+     WHERE f.field_id = v_entry ->> 'fieldId'
+       AND f.object_type = v_entry ->> 'objectType';
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'the patch names % of %, which is not a registered repairable field',
+        v_entry ->> 'fieldId', v_entry ->> 'objectType' USING ERRCODE = 'AC704';
     END IF;
-    EXECUTE format('SELECT p.price_cents FROM %I.products AS p WHERE p.product_id = $1', v_schema)
-       INTO v_before USING v_entry ->> 'objectId';
-    IF v_before IS NULL OR v_before <> (v_entry ->> 'fromCents')::bigint THEN
-      RAISE EXCEPTION 'the patch of % does not start from the snapshot value', v_entry ->> 'objectId'
+    IF NOT (v_fields ? (v_entry ->> 'fieldId')) THEN
+      RAISE EXCEPTION 'the charter of "%" has no rule for field %', NEW.principal, v_entry ->> 'fieldId'
         USING ERRCODE = 'AC704';
     END IF;
-    v_delta := abs((v_entry ->> 'toCents')::bigint - v_before);
-    IF v_delta > (v_envelope ->> 'maxAbsoluteChangeCents')::bigint
-       OR (v_before = 0 AND v_delta > 0)
-       OR (v_before > 0 AND v_delta::numeric * 10000 > (v_envelope ->> 'maxRelativeChangeBps')::numeric * v_before) THEN
-      RAISE EXCEPTION 'the change of % (% -> % cents) is outside the charter envelope', v_entry ->> 'objectId',
-        v_before, v_entry ->> 'toCents' USING ERRCODE = 'AC704';
+    v_field_envelope := v_fields -> (v_entry ->> 'fieldId') -> 'approval';
+    IF v_field_envelope IS NULL OR (v_field_envelope ->> 'maxAbsoluteChange') IS NULL THEN
+      RAISE EXCEPTION 'the charter of "%" has no approval envelope for field %', NEW.principal,
+        v_entry ->> 'fieldId' USING ERRCODE = 'AC704';
+    END IF;
+    EXECUTE format('SELECT t.%I::text FROM %I.%I AS t WHERE t.%I = $1',
+                   v_field.column_name, v_schema, v_field.table_name, v_field.pk_column)
+       INTO v_before USING v_entry ->> 'objectId';
+    IF v_before IS NULL OR v_before IS DISTINCT FROM (v_entry ->> 'fromValue') THEN
+      RAISE EXCEPTION 'the patch of % starts from %, the snapshot holds %',
+        v_entry ->> 'objectId', v_entry ->> 'fromValue', COALESCE(v_before, '(absent)')
+        USING ERRCODE = 'AC704';
+    END IF;
+    v_delta := abs((v_entry ->> 'toValue')::numeric - v_before::numeric);
+    IF v_delta > (v_field_envelope ->> 'maxAbsoluteChange')::numeric THEN
+      RAISE EXCEPTION 'the change of %/% (% -> %) is outside the charter envelope',
+        v_entry ->> 'objectId', v_entry ->> 'fieldId', v_before, v_entry ->> 'toValue' USING ERRCODE = 'AC704';
+    END IF;
+    -- "0 -> non-zero" is a relative bound: it is refused only when the
+    -- charter configures maxRelativeChangeBps for the field.
+    IF v_field_envelope ? 'maxRelativeChangeBps' THEN
+      v_relative := (v_field_envelope ->> 'maxRelativeChangeBps')::numeric;
+      IF v_before::numeric = 0 AND v_delta > 0 THEN
+        RAISE EXCEPTION 'the change of %/% from zero is outside the charter relative envelope',
+          v_entry ->> 'objectId', v_entry ->> 'fieldId' USING ERRCODE = 'AC704';
+      ELSIF v_before::numeric > 0 AND v_delta * 10000 > v_relative * v_before::numeric THEN
+        RAISE EXCEPTION 'the change of %/% (% -> %) is outside the charter relative envelope',
+          v_entry ->> 'objectId', v_entry ->> 'fieldId', v_before, v_entry ->> 'toValue' USING ERRCODE = 'AC704';
+      END IF;
     END IF;
   END LOOP;
   RETURN NEW;

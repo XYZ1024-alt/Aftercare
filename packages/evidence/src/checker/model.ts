@@ -5,8 +5,10 @@ import {
   type SnapshotScopeTable,
 } from '@aftercare/contracts';
 import {
+  DEFAULT_REGISTRY,
   digestSnapshotContent,
   digestSnapshotTable,
+  findObject,
   type SnapshotRow,
   type SnapshotTable,
   type SnapshotTableDigest,
@@ -37,20 +39,105 @@ const jsonText = z.string().transform((raw, ctx) => {
   return parsed.data;
 });
 
+/** A PostgreSQL text[] as its text output: {a,b} with quoting only when needed. */
+const postgresTextArray = z.string().transform((raw, ctx) => {
+  if (!raw.startsWith('{') || !raw.endsWith('}')) {
+    ctx.issues.push({ code: 'custom', message: 'expected a PostgreSQL array literal', input: raw });
+    return z.NEVER;
+  }
+  const inner = raw.slice(1, -1);
+  if (inner === '') {
+    return [];
+  }
+  const values: string[] = [];
+  let current = '';
+  let quoted = false;
+  for (let index = 0; index < inner.length; index += 1) {
+    const character = inner[index] ?? '';
+    if (quoted) {
+      if (character === '\\') {
+        index += 1;
+        current += inner[index] ?? '';
+      } else if (character === '"') {
+        quoted = false;
+      } else {
+        current += character;
+      }
+    } else if (character === '"') {
+      quoted = true;
+    } else if (character === ',') {
+      values.push(current);
+      current = '';
+    } else {
+      current += character;
+    }
+  }
+  values.push(current);
+  return values;
+});
+
+/** The copy readers of a repairable field, as the registry mirror stores them. */
+const copyReadersText = z.string().transform((raw, ctx) => {
+  const parsed = z
+    .array(z.strictObject({ objectType: z.string(), versionColumn: z.string() }))
+    .safeParse(JSON.parse(raw));
+  if (!parsed.success) {
+    ctx.issues.push({ code: 'custom', message: 'expected a copy reader array', input: raw });
+    return z.NEVER;
+  }
+  return parsed.data;
+});
+
+/**
+ * The cell schema of one registered object column. The column list comes from
+ * the domain registry; this map only says how a column reads as scanned text.
+ * A column that is neither a quantity nor one of the registered text columns
+ * holds an int64 and is compared as such.
+ */
+const TEXT_COLUMNS = new Set(['product_id', 'order_id', 'name']);
+
+function cellSchema(column: string) {
+  if (column === 'quantity') {
+    return integerText;
+  }
+  return TEXT_COLUMNS.has(column) ? z.string() : counterSchema;
+}
+
+/** One business row of a registered object type: exactly its registry columns. */
+function objectRowSchema(objectType: string) {
+  const spec = findObject(DEFAULT_REGISTRY, objectType);
+  if (spec === undefined) {
+    throw new Error(`object type "${objectType}" has no registry entry`);
+  }
+  return z.strictObject(
+    Object.fromEntries(spec.columns.map((column) => [column, cellSchema(column)])),
+  );
+}
+
 const ROW_SCHEMAS = {
-  products: z.strictObject({
-    product_id: z.string(),
-    name: z.string(),
-    price_cents: counterSchema,
-    version: counterSchema,
+  products: objectRowSchema('product'),
+  orders: objectRowSchema('order'),
+  object_types: z.strictObject({
+    object_type: z.string(),
+    table_name: z.string(),
+    pk_column: z.string(),
+    version_column: z.string(),
+    display_column: z.string().nullable(),
+    columns: postgresTextArray,
+    repairable: booleanText,
   }),
-  orders: z.strictObject({
-    order_id: z.string(),
-    product_id: z.string(),
-    quantity: integerText,
-    unit_price_cents: counterSchema,
-    price_version: counterSchema,
-    version: counterSchema,
+  repairable_fields: z.strictObject({
+    field_id: z.string(),
+    object_type: z.string(),
+    column_name: z.string(),
+    value_kind: z.string(),
+    bounds: jsonText,
+    unit: z.string(),
+    title: z.string(),
+    writeback_mode: z.string(),
+    batch_operation_type: z.string(),
+    batch_param_name: z.string(),
+    copy_readers: copyReadersText,
   }),
   commits: z.strictObject({
     commit_seq: counterSchema,
@@ -98,6 +185,7 @@ const ROW_SCHEMAS = {
   operation_templates: z.strictObject({
     operation_type: z.string(),
     template_version: integerText,
+    is_batch: booleanText,
     definition: jsonText,
   }),
   coverage_baselines: z.strictObject({
@@ -190,6 +278,8 @@ export async function loadSnapshotModel(session: SnapshotSession): Promise<Snaps
   const rows: SnapshotRows = {
     products: await load('products', ROW_SCHEMAS.products),
     orders: await load('orders', ROW_SCHEMAS.orders),
+    object_types: await load('object_types', ROW_SCHEMAS.object_types),
+    repairable_fields: await load('repairable_fields', ROW_SCHEMAS.repairable_fields),
     commits: await load('commits', ROW_SCHEMAS.commits),
     batches: await load('batches', ROW_SCHEMAS.batches),
     operations: await load('operations', ROW_SCHEMAS.operations),

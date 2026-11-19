@@ -1,5 +1,6 @@
-import { OBJECT_TYPES, OPERATION_TYPES } from '@aftercare/domain';
+import { OPERATION_TYPES } from '@aftercare/domain';
 import { z } from 'zod';
+import { objectTypeSchema } from './primitives.ts';
 import {
   instantSchema,
   int64TextSchema,
@@ -45,7 +46,7 @@ export const declarationSchema = z.strictObject({
 
 /** A versioned declaration of what is covered in one source environment. */
 export const coverageManifestSchema = z.strictObject({
-  manifestFormat: z.literal(1),
+  manifestFormat: z.literal(2),
   sourceEnvironment: z.string().min(1),
   adapter: z.strictObject({ id: z.string(), version: z.number().int() }),
   versions: z.strictObject({
@@ -63,13 +64,15 @@ export const coverageManifestSchema = z.strictObject({
     z.strictObject({
       table: z.string().min(1),
       purpose: z.enum(['business', 'audit', 'interpretation']),
-      objectType: z.enum(OBJECT_TYPES).nullable(),
+      objectType: objectTypeSchema.nullable(),
+      /** Physical columns of the table; a business table lists the columns its registry object declares. */
       fields: z.array(z.string().min(1)).min(1),
     }),
   ),
   writeEntryPoints: z.array(
     functionRefSchema.extend({
-      operationType: z.enum(OPERATION_TYPES),
+      /** Every operation type the entry writes; a batch entry may record more than one. */
+      operationTypes: z.array(z.enum(OPERATION_TYPES)).min(1),
       lock: z.strictObject({
         namespace: z.number().int(),
         key: z.number().int(),
@@ -140,6 +143,11 @@ export type CheckBasis = (typeof CHECK_BASES)[number];
 export const MAX_FINDINGS_PER_CHECK = 50;
 export const MAX_DEGRADED_OBJECTS = 500;
 
+/**
+ * A finding is attributable to whole objects, not to fields: eligibility stays
+ * object-level by design (design plan §11.2). A field-level defect therefore
+ * degrades its whole object to investigation_only — the conservative choice.
+ */
 export const checkFindingSchema = z.strictObject({
   code: z.string().min(1),
   detail: z.string().min(1),
@@ -179,7 +187,7 @@ export const certificateBodySchema = z.strictObject({
   eligibility: z.strictObject({
     /** Applies to everything in the checked range not listed under `objects`. */
     snapshot: z.enum(ELIGIBILITIES),
-    /** Objects that are worse off than the snapshot as a whole. */
+    /** Objects that are worse off than the snapshot as a whole; object-level by design (§11.2). */
     objects: z
       .array(
         objectRefSchema.extend({

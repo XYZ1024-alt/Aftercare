@@ -9,7 +9,7 @@ import {
   QUESTION_CAPABILITIES,
   type VerificationReport,
 } from '@aftercare/contracts';
-import type { JsonObject, JsonValue } from '@aftercare/domain';
+import { DEFAULT_REGISTRY, type JsonObject, type JsonValue } from '@aftercare/domain';
 import { reviewContract } from '@aftercare/execution';
 import { type EvidenceFilter, readDatabaseEndpoint } from '@aftercare/storage';
 import type { ConsoleContext } from './context.ts';
@@ -23,6 +23,7 @@ import type {
   FeedPage,
   PlanSummaryView,
   QuestionView,
+  RegistryView,
   RunCostView,
   RunView,
   StageView,
@@ -34,6 +35,20 @@ import type {
 // changes a record.
 
 const PLANS_LOADED_IN_FULL = 8;
+
+/** The registries the interface labels values with: the display column and each field's title and unit. */
+const REGISTRY_VIEW: RegistryView = {
+  objects: DEFAULT_REGISTRY.objects.map((object) => ({
+    objectType: object.objectType,
+    displayColumn: object.displayColumn,
+  })),
+  fields: DEFAULT_REGISTRY.fields.map((field) => ({
+    fieldId: field.fieldId,
+    objectType: field.objectType,
+    title: field.title,
+    unit: field.unit,
+  })),
+};
 const NOT_IN_BASIS: StatusOfRecord = {
   applicability: null,
   validity: null,
@@ -281,7 +296,7 @@ export async function caseView(
                 candidates: content.candidates,
                 patch: content.patch,
                 preserved: content.preserved,
-                orderImpacts: content.orderImpacts,
+                readerImpacts: content.readerImpacts,
                 unresolved: content.unresolved,
                 isolation: content.isolation,
                 baseline: content.baseline,
@@ -332,11 +347,7 @@ export async function caseView(
     appliedAt: application.appliedAt,
     stillCurrent: application.stillCurrent,
     contractStatus: application.contractStatus,
-    written: application.writtenFootprint.map((entry) => ({
-      field: `${entry.objectType}/${entry.objectId}.${entry.field}`,
-      centsBefore: entry.centsBefore,
-      centsAfter: entry.centsAfter,
-    })),
+    written: application.writtenFootprint.map((entry) => ({ ...entry })),
   }));
   const reports = [...verification.reports].sort((left, right) =>
     BigInt(left.publishedRevision) < BigInt(right.publishedRevision) ? -1 : 1,
@@ -412,6 +423,7 @@ export async function caseView(
     artefacts: verification.artefacts,
     autonomy: await context.autonomy.caseView(caseId),
     promotion: await context.promotions.describe(caseId),
+    registry: REGISTRY_VIEW,
     invalidated: nodes
       .filter(
         (node) =>

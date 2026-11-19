@@ -43,8 +43,8 @@ export interface EvaluationCase {
 }
 
 const DESCRIPTION = '导入后商品价格异常';
-const ALL_VERSION_1 = (products: readonly string[], cents = '10000') =>
-  Object.fromEntries(products.map((productId) => [productId, { version: '1', cents }]));
+const ALL_VERSION_1 = (products: readonly string[], value = '10000') =>
+  Object.fromEntries(products.map((productId) => [productId, { fieldVersion: '1', value }]));
 
 export const EVALUATION_CASES: readonly EvaluationCase[] = [
   {
@@ -63,7 +63,7 @@ export const EVALUATION_CASES: readonly EvaluationCase[] = [
         expected: {
           statuses: ['partially_resolved'],
           branchCents: { a: '11000', b: '9500', c: '9000', d: '10000', e: '10000' },
-          unresolvedDomains: ['product/c.price_cents'],
+          unresolvedDomains: ['product/c.product.price_cents'],
         },
         scriptScenario: scenarioOf(scenario),
       };
@@ -116,7 +116,7 @@ export const EVALUATION_CASES: readonly EvaluationCase[] = [
       return {
         truth: {
           incidentOperationIds: [wrong.operationId],
-          baseline: { q1: { version: '1', cents: '10000' } },
+          baseline: { q1: { fieldVersion: '1', value: '10000' } },
           policyVersionIds: [policy.policyVersionId],
           expectedFinalCents: { q1: '10500' },
           clarification: 'The +5.00 on q1 was a deliberate surcharge on whatever the price was.',

@@ -36,13 +36,13 @@ type EntryParameter = string | number | readonly string[];
 /** SQLSTATEs that mean "the business rule refused this write"; nothing was written. */
 const REJECTION_BY_SQLSTATE: Readonly<Record<string, WriteRejectionCode>> = {
   AC001: 'invalid_argument',
-  AC002: 'amount_out_of_range',
-  AC003: 'negative_price',
+  AC002: 'value_out_of_bounds',
+  AC003: 'value_out_of_bounds',
   AC004: 'product_not_found',
   AC005: 'already_exists',
   AC008: 'unsupported_isolation',
   // PostgreSQL's own numeric_value_out_of_range: a parameter did not fit bigint/integer.
-  '22003': 'amount_out_of_range',
+  '22003': 'value_out_of_bounds',
 };
 
 interface EntryRow {

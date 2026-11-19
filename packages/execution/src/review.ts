@@ -1,4 +1,8 @@
-import type { ExecutionContract, PlanApplicability } from '@aftercare/contracts';
+import type {
+  ExecutionContract,
+  PlanApplicability,
+  TerminalConstraint,
+} from '@aftercare/contracts';
 
 /**
  * What a human reads before approving: the target, the exact changes, what
@@ -17,16 +21,21 @@ export interface ContractReview {
     readonly dependencyRevision: string;
   };
   readonly changes: readonly {
-    readonly field: string;
-    readonly fromCents: string;
-    readonly toCents: string;
-    readonly expectedVersion: string;
+    readonly objectType: string;
+    readonly objectId: string;
+    readonly fieldId: string;
+    readonly fromValue: string;
+    readonly toValue: string;
+    readonly expectedObjectVersion: string;
   }[];
   readonly untouched: readonly string[];
   readonly inputVersions: readonly {
-    readonly field: string;
-    readonly version: string;
-    readonly cents: string;
+    readonly objectType: string;
+    readonly objectId: string;
+    readonly fieldId: string;
+    readonly objectVersion: string;
+    readonly fieldVersion: string;
+    readonly value: string;
   }[];
   readonly rules: readonly string[];
   readonly checks: {
@@ -40,6 +49,13 @@ export interface ContractReview {
     readonly state: string;
     readonly expiresAt: string;
   }[];
+}
+
+/** One terminal constraint, in the canonical text of the field it speaks about. */
+function describeTerminalConstraint(rule: TerminalConstraint): string {
+  return rule.kind === 'value_range'
+    ? `${rule.ruleId}: ${rule.fieldId} in [${rule.min}, ${rule.max}]`
+    : `${rule.ruleId}: one ${rule.fieldId} for ${rule.objectIds.join(', ')}`;
 }
 
 export function reviewContract(contract: ExecutionContract): ContractReview {
@@ -56,22 +72,23 @@ export function reviewContract(contract: ExecutionContract): ContractReview {
       dependencyRevision: contract.dependencyRevision,
     },
     changes: body.patch.map((entry) => ({
-      field: `${entry.objectType}/${entry.objectId}.${entry.field}`,
-      fromCents: entry.fromCents,
-      toCents: entry.toCents,
-      expectedVersion: entry.expectedVersion,
+      objectType: entry.objectType,
+      objectId: entry.objectId,
+      fieldId: entry.fieldId,
+      fromValue: entry.fromValue,
+      toValue: entry.toValue,
+      expectedObjectVersion: entry.expectedObjectVersion,
     })),
     untouched: body.unresolvedDomains,
     inputVersions: body.inputVersions.map((entry) => ({
-      field: `${entry.objectType}/${entry.objectId}.price_cents`,
-      version: entry.version,
-      cents: entry.cents,
+      objectType: entry.objectType,
+      objectId: entry.objectId,
+      fieldId: entry.fieldId,
+      objectVersion: entry.objectVersion,
+      fieldVersion: entry.fieldVersion,
+      value: entry.value,
     })),
-    rules: body.terminalConstraints.map((rule) =>
-      rule.kind === 'price_range'
-        ? `${rule.ruleId}: price in [${rule.minCents}, ${rule.maxCents}] cents`
-        : `${rule.ruleId}: one price for ${rule.productIds.join(', ')}`,
-    ),
+    rules: body.terminalConstraints.map(describeTerminalConstraint),
     checks: {
       inTransaction: body.inTransactionChecks,
       afterwards: body.postVerificationObligations,

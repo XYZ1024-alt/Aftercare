@@ -6,7 +6,7 @@ import {
   executionContractBodySchema,
   type RegisteredPolicyVersion,
 } from '@aftercare/contracts';
-import { digestJson, type JsonObject } from '@aftercare/domain';
+import { DEFAULT_REGISTRY, digestJson, type JsonObject } from '@aftercare/domain';
 
 /** Identity and version of the executor whose in-transaction checks a contract expects. */
 export const REPAIR_EXECUTOR = { id: 'aftercare-branch-executor', version: 1 } as const;
@@ -42,8 +42,75 @@ export interface ContractInputs {
   readonly policy: RegisteredPolicyVersion;
 }
 
+/** One field of one object: the identity every contract record is keyed by. */
+export interface FieldRef {
+  readonly objectType: string;
+  readonly objectId: string;
+  readonly fieldId: string;
+}
+
+interface InputVersion extends FieldRef {
+  readonly objectVersion: string;
+  readonly fieldVersion: string;
+  readonly value: string;
+}
+
+/** The one ordering of field records: object type, then object id, then field id. */
+export function compareFieldRefs(left: FieldRef, right: FieldRef): number {
+  if (left.objectType !== right.objectType) {
+    return left.objectType < right.objectType ? -1 : 1;
+  }
+  if (left.objectId !== right.objectId) {
+    return left.objectId < right.objectId ? -1 : 1;
+  }
+  if (left.fieldId !== right.fieldId) {
+    return left.fieldId < right.fieldId ? -1 : 1;
+  }
+  return 0;
+}
+
+/**
+ * The manifest entries of every registered object table of a branch, keyed by
+ * table name. The names come from the registry, never from the manifest or the
+ * caller; a branch missing one of them is refused.
+ */
+export function scopeGuardTables(
+  branch: ExecutionBranch,
+): Record<string, { rowCount: string; digest: string }> {
+  return Object.fromEntries(
+    DEFAULT_REGISTRY.objects.map((object) => {
+      const entry = branch.manifest.find((item) => item.table === object.tableName);
+      if (entry === undefined) {
+        throw new Error(`branch ${branch.branchId} registers no ${object.tableName} table`);
+      }
+      return [object.tableName, { rowCount: entry.rowCount, digest: entry.digest }];
+    }),
+  );
+}
+
+/** "type/id[.field]" of a domain; the field is a field id, or null for the whole object. */
 function domainKey(domain: { objectType: string; objectId: string; field: string | null }): string {
   return `${domain.objectType}/${domain.objectId}${domain.field === null ? '' : `.${domain.field}`}`;
+}
+
+/**
+ * The object version of the last recorded write of one field at the snapshot.
+ * The plan states it as the negative query it ran ("no write after version
+ * V"); when the plan established none (an unresolved domain), the object
+ * version the field was read at is the only recorded bound.
+ */
+function fieldVersionAtSnapshot(
+  plan: CompiledPlan,
+  field: FieldRef,
+  objectVersion: string,
+): string {
+  const query = plan.content.inputs.negativeQueries.find(
+    (entry) =>
+      entry.objectType === field.objectType &&
+      entry.objectId === field.objectId &&
+      entry.fieldId === field.fieldId,
+  );
+  return query?.afterObjectVersion ?? objectVersion;
 }
 
 /**
@@ -58,38 +125,49 @@ export function buildExecutionContract(inputs: ContractInputs): {
 } {
   const { plan, branch, policy } = inputs;
   const { content } = plan;
-  const tableOf = (table: 'products' | 'orders') => {
-    const entry = branch.manifest.find((item) => item.table === table);
-    if (entry === undefined) {
-      throw new Error(`branch ${branch.branchId} registers no ${table} table`);
-    }
-    return { rowCount: entry.rowCount, digest: entry.digest };
-  };
-  const inputVersions = [
+
+  const tables = scopeGuardTables(branch);
+
+  // Every field value the plan read: one pin per candidate and one per
+  // unresolved domain the plan read a field value for. The pin carries the
+  // object version the value was read at and the field's last write version.
+  const inputVersions: InputVersion[] = [
     ...content.candidates.map((candidate) => ({
-      objectType: 'product' as const,
+      objectType: candidate.objectType,
       objectId: candidate.objectId,
-      version: candidate.snapshotVersion,
-      cents: candidate.snapshotCents,
+      fieldId: candidate.fieldId,
+      objectVersion: candidate.snapshotObjectVersion,
+      fieldVersion: fieldVersionAtSnapshot(plan, candidate, candidate.snapshotObjectVersion),
+      value: candidate.snapshotValue,
     })),
     ...content.unresolved.flatMap((entry) =>
-      entry.domain.objectType === 'product' &&
-      entry.snapshotVersion !== null &&
-      entry.snapshotCents !== null
-        ? [
+      entry.domain.field === null ||
+      entry.snapshotObjectVersion === null ||
+      entry.snapshotValue === null
+        ? []
+        : [
             {
-              objectType: 'product' as const,
+              objectType: entry.domain.objectType,
               objectId: entry.domain.objectId,
-              version: entry.snapshotVersion,
-              cents: entry.snapshotCents,
+              fieldId: entry.domain.field,
+              objectVersion: entry.snapshotObjectVersion,
+              fieldVersion: fieldVersionAtSnapshot(
+                plan,
+                {
+                  objectType: entry.domain.objectType,
+                  objectId: entry.domain.objectId,
+                  fieldId: entry.domain.field,
+                },
+                entry.snapshotObjectVersion,
+              ),
+              value: entry.snapshotValue,
             },
-          ]
-        : [],
+          ],
     ),
-  ].sort((left, right) => left.objectId.localeCompare(right.objectId));
+  ].sort(compareFieldRefs);
 
   const body = executionContractBodySchema.parse({
-    contractFormat: 1,
+    contractFormat: 2,
     caseId: content.caseId,
     runId: inputs.runId,
     planId: plan.planId,
@@ -117,8 +195,7 @@ export function buildExecutionContract(inputs: ContractInputs): {
     inputVersions,
     scopeGuard: {
       branchContentDigest: branch.contentDigest,
-      products: tableOf('products'),
-      orders: tableOf('orders'),
+      tables,
     },
     allowedFootprint: content.allowedFootprint,
     patch: content.patch,
@@ -133,7 +210,7 @@ export function buildExecutionContract(inputs: ContractInputs): {
       },
       plan: content.versions,
       executor: REPAIR_EXECUTOR,
-      branchFormat: 1,
+      branchFormat: 2,
     },
     inTransactionChecks: [...IN_TRANSACTION_CHECKS],
     postVerificationObligations: [...POST_VERIFICATION_OBLIGATIONS],

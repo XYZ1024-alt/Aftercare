@@ -50,7 +50,9 @@ UPDATE aftercare_control.execution_branches AS b
    SET baseline_schema = s.schema_name,
        origin_manifest = (SELECT jsonb_agg(jsonb_build_object('table', t ->> 'table', 'digest', t ->> 'digest',
                                                               'rowCount', t ->> 'rowCount'))
-                            FROM jsonb_array_elements(s.scope) AS t WHERE t ->> 'table' IN ('products', 'orders'))
+                            FROM jsonb_array_elements(s.scope) AS t
+                           WHERE EXISTS (SELECT 1 FROM aftercare.object_types AS o
+                                          WHERE o.table_name = t ->> 'table'))
   FROM aftercare_control.snapshots AS s
  WHERE s.snapshot_id = b.snapshot_id;
 ALTER TABLE aftercare_control.execution_branches ENABLE TRIGGER execution_branches_one_way;
@@ -64,6 +66,36 @@ ALTER TABLE aftercare_control.execution_branches
   DROP CONSTRAINT branches_status_known,
   ADD CONSTRAINT branches_status_known CHECK (
     status IN ('creating', 'ready', 'applying', 'applied', 'sealed', 'quarantined', 'failed'));
+
+-- A primary branch is inserted by cmd_create_branch (0017), which predates
+-- the baseline columns. Fill them from the snapshot at insert time unless the
+-- caller supplied them; a successor materialiser supplies both explicitly.
+-- No table is named here: the manifest covers the registered object tables.
+CREATE FUNCTION aftercare_control.fill_branch_origin() RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog, pg_temp
+AS $$
+DECLARE
+  v_snapshot aftercare_control.snapshots;
+BEGIN
+  IF NEW.baseline_schema IS NULL OR NEW.origin_manifest IS NULL THEN
+    SELECT s.* INTO STRICT v_snapshot
+      FROM aftercare_control.snapshots AS s WHERE s.snapshot_id = NEW.snapshot_id;
+    NEW.baseline_schema := COALESCE(NEW.baseline_schema, v_snapshot.schema_name);
+    IF NEW.origin_manifest IS NULL THEN
+      SELECT COALESCE(jsonb_agg(jsonb_build_object(
+               'table', t.table_name, 'digest', e ->> 'digest', 'rowCount', e ->> 'rowCount')
+               ORDER BY t.table_name), '[]'::jsonb)
+        INTO NEW.origin_manifest
+        FROM aftercare.object_types AS t
+        JOIN LATERAL jsonb_array_elements(v_snapshot.scope) AS e ON e ->> 'table' = t.table_name;
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+CREATE TRIGGER execution_branches_origin BEFORE INSERT ON aftercare_control.execution_branches
+  FOR EACH ROW EXECUTE FUNCTION aftercare_control.fill_branch_origin();
 
 -- A sealed branch keeps its status for good; applied may become sealed.
 CREATE OR REPLACE FUNCTION aftercare_control.guard_branch_update() RETURNS trigger
@@ -89,9 +121,9 @@ BEGIN
 END;
 $$;
 
--- Installed on the products table of a branch when it is sealed: every write
--- is refused at the database, whoever issues it (the sandbox owner also loses
--- its UPDATE privilege in the same transaction).
+-- Installed on every registered table of a branch when it is sealed: every
+-- write is refused at the database, whoever issues it (the sandbox owner also
+-- loses its UPDATE privilege in the same transaction).
 CREATE FUNCTION aftercare_control.reject_sealed_branch_write() RETURNS trigger
 LANGUAGE plpgsql
 SET search_path = pg_catalog, pg_temp
@@ -610,10 +642,13 @@ $$;
 
 -- ── Branch creation, generalised: primary (from the snapshot) and successor (from a sealed branch) ──
 
--- Shared body: registers the branch row, copies the two business tables from
--- the baseline schema, verifies the copy against the baseline's registered
--- digests, guards it, grants it and marks it ready. The snapshot content
--- digest is carried through from the predecessor for a successor.
+-- Shared body: registers the branch row, copies every registered object table
+-- from the baseline schema, verifies the copy against the baseline's
+-- registered digests and row counts, guards it, grants it and marks it ready.
+-- The snapshot content digest is carried through from the predecessor for a
+-- successor. Every table, key, version and column name comes from
+-- aftercare.object_types / aftercare.repairable_fields; no list is written
+-- here. The row ceiling is the one the snapshot registered.
 CREATE FUNCTION aftercare_control.materialise_branch(
   p_case aftercare_control.case_control, p_revision bigint, p_principal text, p_snapshot aftercare_control.snapshots,
   p_baseline_schema text, p_baseline_manifest jsonb, p_predecessor uuid
@@ -622,18 +657,21 @@ LANGUAGE plpgsql
 SET search_path = pg_catalog, pg_temp
 AS $fn$
 DECLARE
-  c_max_products constant bigint := 20000;
-  c_max_orders   constant bigint := 100000;
-  v_branch_id   uuid := gen_random_uuid();
-  v_schema      text := 'aftercare_branch_' || replace(v_branch_id::text, '-', '');
-  v_spec        record;
-  v_rows        bigint;
-  v_digest      text;
-  v_expected    text;
-  v_manifest    jsonb := '[]'::jsonb;
-  v_products    text;
-  v_orders      text;
-  v_branch      aftercare_control.execution_branches;
+  v_branch_id      uuid := gen_random_uuid();
+  v_schema         text := 'aftercare_branch_' || replace(v_branch_id::text, '-', '');
+  v_spec           record;
+  v_field          record;
+  v_rows           bigint;
+  v_max_rows       bigint := NULLIF(p_snapshot.limits ->> 'maxRowsPerTable', '')::bigint;
+  v_digest         text;
+  v_expected       text;
+  v_expected_rows  text;
+  v_actual_columns text[];
+  v_manifest       jsonb := '[]'::jsonb;
+  v_table_digests  jsonb := '{}'::jsonb;
+  v_update_columns text[];
+  v_check          text;
+  v_branch         aftercare_control.execution_branches;
 BEGIN
   IF p_baseline_schema !~ '^aftercare_(snap|branch)_[0-9a-f]{32}$' OR v_schema !~ '^aftercare_branch_[0-9a-f]{32}$' THEN
     RAISE EXCEPTION 'malformed schema name' USING ERRCODE = 'AC513';
@@ -650,49 +688,51 @@ BEGIN
        'schema', p_snapshot.schema_version, 'audit', p_snapshot.audit_version,
        'adapter', jsonb_build_object('id', p_snapshot.adapter_id, 'version', p_snapshot.adapter_version),
        'digestFormat', p_snapshot.digest_format, 'templateSetDigest', p_snapshot.template_set_digest,
-       'branchFormat', 1),
+       'branchFormat', 2),
      p_revision, p_principal, clock_timestamp(), p_revision,
      p_baseline_schema, p_baseline_manifest, p_predecessor);
 
   EXECUTE format('CREATE SCHEMA %I', v_schema);
 
+  -- The copy specification is the object registry, in object-type order: the
+  -- column list, the column order, the key and the version column of every
+  -- branch table come from aftercare.object_types.
   FOR v_spec IN
-    SELECT s.table_name, s.columns, s.key_column, s.max_rows
-      FROM (VALUES
-        (1, 'products', 'product_id, name, price_cents, version', 'product_id', c_max_products),
-        (2, 'orders', 'order_id, product_id, quantity, unit_price_cents, price_version, version', 'order_id', c_max_orders)
-      ) AS s (ordinal, table_name, columns, key_column, max_rows)
-     ORDER BY s.ordinal
+    SELECT t.object_type, t.table_name, t.columns, t.pk_column, t.version_column, t.repairable
+      FROM aftercare.object_types AS t
+     ORDER BY t.object_type
   LOOP
-    EXECUTE format('CREATE TABLE %I.%I AS SELECT %s FROM %I.%I LIMIT %s',
-      v_schema, v_spec.table_name, v_spec.columns, p_baseline_schema, v_spec.table_name,
-      v_spec.max_rows + 1);
+    EXECUTE format('CREATE TABLE %I.%I AS SELECT %s FROM %I.%I%s',
+      v_schema, v_spec.table_name,
+      (SELECT string_agg(format('%I', c.column_name), ', ' ORDER BY c.ordinality)
+         FROM unnest(v_spec.columns) WITH ORDINALITY AS c (column_name, ordinality)),
+      p_baseline_schema, v_spec.table_name,
+      CASE WHEN v_max_rows IS NULL THEN '' ELSE format(' LIMIT %s', v_max_rows + 1) END);
     GET DIAGNOSTICS v_rows = ROW_COUNT;
-    IF v_rows > v_spec.max_rows THEN
-      RAISE EXCEPTION 'branch limit exceeded: table % has more than % rows', v_spec.table_name,
-        v_spec.max_rows USING ERRCODE = 'AC512';
+    IF v_max_rows IS NOT NULL AND v_rows > v_max_rows THEN
+      RAISE EXCEPTION 'branch limit exceeded: baseline table % has more than % rows', v_spec.table_name,
+        v_max_rows USING ERRCODE = 'AC512';
     END IF;
-    EXECUTE format('ALTER TABLE %I.%I ADD PRIMARY KEY (%I)', v_schema, v_spec.table_name, v_spec.key_column);
-    IF v_spec.table_name = 'products' THEN
-      EXECUTE format('ALTER TABLE %I.products ADD CONSTRAINT price_non_negative CHECK (price_cents >= 0)', v_schema);
-      EXECUTE format(
-        'CREATE TRIGGER branch_product_versioned BEFORE UPDATE ON %I.products
-           FOR EACH ROW EXECUTE FUNCTION aftercare_control.guard_branch_product_update()', v_schema);
-      EXECUTE format(
-        'CREATE TRIGGER branch_product_no_insert_delete BEFORE INSERT OR DELETE ON %I.products
-           FOR EACH ROW EXECUTE FUNCTION aftercare_control.reject_branch_mutation()', v_schema);
-      EXECUTE format(
-        'CREATE TRIGGER branch_product_no_truncate BEFORE TRUNCATE ON %I.products
-           FOR EACH STATEMENT EXECUTE FUNCTION aftercare_control.reject_branch_mutation()', v_schema);
-    ELSE
-      EXECUTE format(
-        'CREATE TRIGGER branch_orders_immutable BEFORE INSERT OR UPDATE OR DELETE ON %I.orders
-           FOR EACH ROW EXECUTE FUNCTION aftercare_control.reject_branch_mutation()', v_schema);
-      EXECUTE format(
-        'CREATE TRIGGER branch_orders_no_truncate BEFORE TRUNCATE ON %I.orders
-           FOR EACH STATEMENT EXECUTE FUNCTION aftercare_control.reject_branch_mutation()', v_schema);
-    END IF;
+    EXECUTE format('ALTER TABLE %I.%I ADD PRIMARY KEY (%I)', v_schema, v_spec.table_name, v_spec.pk_column);
 
+    -- The copy carries exactly the registered columns, in registry order, and
+    -- is what the baseline registered, row for row.
+    SELECT array_agg(a.attname::text ORDER BY a.attnum)
+      INTO v_actual_columns
+      FROM pg_attribute AS a
+     WHERE a.attrelid = format('%I.%I', v_schema, v_spec.table_name)::regclass
+       AND a.attnum > 0 AND NOT a.attisdropped;
+    IF v_actual_columns IS DISTINCT FROM v_spec.columns THEN
+      RAISE EXCEPTION 'the branch copy of % does not carry exactly the registered columns', v_spec.table_name
+        USING ERRCODE = 'AC513';
+    END IF;
+    SELECT t ->> 'rowCount' INTO v_expected_rows
+      FROM jsonb_array_elements(p_baseline_manifest) AS t
+     WHERE t ->> 'table' = v_spec.table_name;
+    IF v_expected_rows IS NOT NULL AND v_expected_rows IS DISTINCT FROM v_rows::text THEN
+      RAISE EXCEPTION 'the branch copy of % holds % rows, the baseline registered %',
+        v_spec.table_name, v_rows, v_expected_rows USING ERRCODE = 'AC513';
+    END IF;
     v_digest := aftercare_control.relation_digest(v_schema, v_spec.table_name);
     SELECT t ->> 'digest' INTO v_expected
       FROM jsonb_array_elements(p_baseline_manifest) AS t
@@ -701,65 +741,95 @@ BEGIN
       RAISE EXCEPTION 'the branch copy of % does not match the digest its baseline registered', v_spec.table_name
         USING ERRCODE = 'AC513';
     END IF;
-    IF v_spec.table_name = 'products' THEN v_products := v_digest; ELSE v_orders := v_digest; END IF;
+    v_table_digests := v_table_digests || jsonb_build_object(v_spec.table_name, v_digest);
     v_manifest := v_manifest || jsonb_build_array(jsonb_build_object(
       'table', v_spec.table_name, 'rowCount', v_rows::text, 'digest', v_digest));
+
+    -- The platform bounds of the registry become CHECK constraints; the SQL
+    -- type is the fixed mapping of value_kind (int64 -> bigint).
+    FOR v_field IN
+      SELECT f.field_id, f.column_name, f.value_kind, f.bounds
+        FROM aftercare.repairable_fields AS f
+       WHERE f.object_type = v_spec.object_type
+       ORDER BY f.field_id
+    LOOP
+      IF v_field.value_kind <> 'int64' THEN
+        RAISE EXCEPTION 'field % has unsupported value kind %', v_field.field_id, v_field.value_kind
+          USING ERRCODE = 'AC513';
+      END IF;
+      v_check := NULL;
+      IF (v_field.bounds ->> 'min') IS NOT NULL THEN
+        v_check := format('%I >= %L::bigint', v_field.column_name, v_field.bounds ->> 'min');
+      END IF;
+      IF (v_field.bounds ->> 'max') IS NOT NULL THEN
+        v_check := concat_ws(' AND ', v_check,
+                             format('%I <= %L::bigint', v_field.column_name, v_field.bounds ->> 'max'));
+      END IF;
+      IF v_check IS NOT NULL THEN
+        EXECUTE format('ALTER TABLE %I.%I ADD CONSTRAINT %I CHECK (%s)',
+          v_schema, v_spec.table_name, v_spec.table_name || '_' || v_field.column_name || '_bounds', v_check);
+      END IF;
+    END LOOP;
+
+    IF v_spec.repairable THEN
+      EXECUTE format(
+        'CREATE TRIGGER %I BEFORE UPDATE ON %I.%I
+           FOR EACH ROW EXECUTE FUNCTION aftercare_control.guard_branch_object_update(%L)',
+        v_spec.table_name || '_versioned', v_schema, v_spec.table_name, v_spec.object_type);
+      EXECUTE format(
+        'CREATE TRIGGER %I BEFORE INSERT OR DELETE ON %I.%I
+           FOR EACH ROW EXECUTE FUNCTION aftercare_control.reject_branch_mutation()',
+        v_spec.table_name || '_no_insert_delete', v_schema, v_spec.table_name);
+    ELSE
+      EXECUTE format(
+        'CREATE TRIGGER %I BEFORE INSERT OR UPDATE OR DELETE ON %I.%I
+           FOR EACH ROW EXECUTE FUNCTION aftercare_control.reject_branch_mutation()',
+        v_spec.table_name || '_immutable', v_schema, v_spec.table_name);
+    END IF;
+    EXECUTE format(
+      'CREATE TRIGGER %I BEFORE TRUNCATE ON %I.%I
+         FOR EACH STATEMENT EXECUTE FUNCTION aftercare_control.reject_branch_mutation()',
+      v_spec.table_name || '_no_truncate', v_schema, v_spec.table_name);
   END LOOP;
 
+  -- Every registered table is readable by the sandbox owner and the
+  -- investigation role. The sandbox owner may update exactly the registered
+  -- repairable columns plus the object version column.
   EXECUTE format('GRANT USAGE ON SCHEMA %I TO aftercare_sandbox_owner, aftercare_investigator', v_schema);
-  EXECUTE format('GRANT SELECT ON %I.products, %I.orders TO aftercare_sandbox_owner, aftercare_investigator',
-    v_schema, v_schema);
-  EXECUTE format('GRANT UPDATE (price_cents, version) ON %I.products TO aftercare_sandbox_owner', v_schema);
+  FOR v_spec IN
+    SELECT t.object_type, t.table_name, t.version_column
+      FROM aftercare.object_types AS t
+     ORDER BY t.object_type
+  LOOP
+    EXECUTE format('GRANT SELECT ON %I.%I TO aftercare_sandbox_owner, aftercare_investigator',
+      v_schema, v_spec.table_name);
+    SELECT array_agg(f.column_name ORDER BY f.column_name)
+      INTO v_update_columns
+      FROM aftercare.repairable_fields AS f
+     WHERE f.object_type = v_spec.object_type;
+    IF v_update_columns IS NOT NULL THEN
+      EXECUTE format('GRANT UPDATE (%s) ON %I.%I TO aftercare_sandbox_owner',
+        (SELECT string_agg(format('%I', c.column_name), ', ' ORDER BY c.ordinality)
+           FROM unnest(v_update_columns || v_spec.version_column)
+                WITH ORDINALITY AS c (column_name, ordinality)),
+        v_schema, v_spec.table_name);
+    END IF;
+    v_update_columns := NULL;
+  END LOOP;
 
   UPDATE aftercare_control.execution_branches
      SET status = 'ready', manifest = v_manifest,
-         content_digest = aftercare_control.branch_content_digest(p_snapshot.snapshot_id, v_products, v_orders)
+         content_digest = aftercare_control.branch_content_digest(p_snapshot.snapshot_id, v_table_digests)
    WHERE branch_id = v_branch_id
   RETURNING * INTO STRICT v_branch;
   RETURN v_branch;
 END;
 $fn$;
 
-CREATE OR REPLACE FUNCTION aftercare_control.cmd_create_branch(
-  p_case aftercare_control.case_control, p_revision bigint, p_principal text, p_payload jsonb
-) RETURNS jsonb
-LANGUAGE plpgsql
-SET search_path = pg_catalog, pg_temp
-AS $fn$
-DECLARE
-  v_snapshot_id uuid := (p_payload ->> 'snapshotId')::uuid;
-  v_snapshot    aftercare_control.snapshots;
-  v_run         aftercare_control.case_runs;
-  v_branch      aftercare_control.execution_branches;
-BEGIN
-  PERFORM aftercare_control.require_capability(p_principal, 'manage_case');
-  IF v_snapshot_id IS NULL OR v_snapshot_id IS DISTINCT FROM p_case.current_snapshot_id THEN
-    RAISE EXCEPTION 'a branch is created from the current snapshot of the case only' USING ERRCODE = 'AC403';
-  END IF;
-  SELECT r.* INTO STRICT v_run FROM aftercare_control.case_runs AS r WHERE r.run_id = p_case.current_run_id;
-  IF v_run.phase <> 'planning' THEN
-    PERFORM aftercare_control.illegal_phase('create_branch', v_run.phase);
-  END IF;
-  SELECT s.* INTO v_snapshot
-    FROM aftercare_control.snapshots AS s
-   WHERE s.case_id = p_case.case_id AND s.snapshot_id = v_snapshot_id AND s.status = 'published'
-     FOR SHARE;
-  IF NOT FOUND THEN
-    RAISE EXCEPTION 'snapshot % is not a published snapshot of case %', v_snapshot_id, p_case.case_id
-      USING ERRCODE = 'AC202';
-  END IF;
-  v_branch := aftercare_control.materialise_branch(
-    p_case, p_revision, p_principal, v_snapshot, v_snapshot.schema_name,
-    (SELECT jsonb_agg(jsonb_build_object('table', t ->> 'table', 'digest', t ->> 'digest', 'rowCount', t ->> 'rowCount'))
-       FROM jsonb_array_elements(v_snapshot.scope) AS t WHERE t ->> 'table' IN ('products', 'orders')),
-    NULL);
-  RETURN jsonb_build_object(
-    'result', jsonb_build_object('branch', aftercare_control.branch_json(v_branch)),
-    'detail', jsonb_build_object('branchId', v_branch.branch_id, 'snapshotId', v_snapshot_id,
-                                 'contentDigest', v_branch.content_digest),
-    'dependencyChanged', false);
-END;
-$fn$;
+-- The price-era overload that passed the two table digests explicitly existed
+-- only for the materialiser above. Every branch now has one digest per
+-- registered table, so the fixed two-table signature is gone.
+DROP FUNCTION IF EXISTS aftercare_control.branch_content_digest(uuid, text, text);
 
 -- A successor branch: a copy of a SEALED branch of the case whose current
 -- report is published. It keeps the repaired versions, records the lineage
@@ -779,7 +849,9 @@ DECLARE
   v_report      aftercare_control.verification_reports;
   v_run         aftercare_control.case_runs;
   v_branch      aftercare_control.execution_branches;
-  v_versions    jsonb;
+  v_versions    jsonb := '{}'::jsonb;
+  v_part        jsonb;
+  v_spec        record;
 BEGIN
   PERFORM aftercare_control.require_capability(p_principal, 'manage_case');
   SELECT r.* INTO STRICT v_run FROM aftercare_control.case_runs AS r WHERE r.run_id = p_case.current_run_id;
@@ -818,8 +890,18 @@ BEGIN
     p_case, p_revision, p_principal, v_snapshot, v_predecessor.schema_name, v_predecessor.manifest,
     v_predecessor.branch_id);
 
-  EXECUTE format('SELECT COALESCE(jsonb_object_agg(p.product_id, p.version::text), %L::jsonb) FROM %I.products AS p',
-                 '{}', v_branch.schema_name) INTO STRICT v_versions;
+  -- The version map covers every registered object table, keyed by object id,
+  -- so a successor's lineage describes the whole copy and names no table.
+  FOR v_spec IN
+    SELECT t.object_type, t.table_name, t.pk_column, t.version_column
+      FROM aftercare.object_types AS t
+     ORDER BY t.object_type
+  LOOP
+    EXECUTE format('SELECT COALESCE(jsonb_object_agg(t.%I::text, t.%I::text), %L::jsonb) FROM %I.%I AS t',
+                   v_spec.pk_column, v_spec.version_column, '{}', v_branch.schema_name, v_spec.table_name)
+      INTO STRICT v_part;
+    v_versions := v_versions || v_part;
+  END LOOP;
   INSERT INTO aftercare_control.branch_lineage
     (branch_id, case_id, predecessor_branch_id, kind, predecessor_report_id, version_map, created_revision)
   VALUES
@@ -862,17 +944,27 @@ DECLARE
   v_policy      aftercare_control.policy_versions;
   v_plan        aftercare_control.compiled_plans;
   v_entry       record;
-  v_version     bigint;
-  v_cents       bigint;
-  v_expected    jsonb;
+  v_field       record;
+  v_reader      record;
+  v_version     text;
+  v_value       text;
+  v_field_version bigint;
+  v_baseline_version bigint;
+  v_reader_table text;
+  v_reader_pk    text;
+  v_reader_columns text[];
+  v_reader_link  text;
   v_readers     jsonb;
+  v_patch       jsonb := '[]'::jsonb;
+  v_footprint   jsonb := '[]'::jsonb;
+  v_inputs      jsonb := '[]'::jsonb;
   v_conflict    jsonb;
   v_contract    aftercare_control.execution_contracts;
 BEGIN
   PERFORM aftercare_control.require_capability(p_principal, 'manage_case');
   PERFORM aftercare_control.assert_document('undo contract', v_body, v_digest);
-  IF v_body ->> 'contractFormat' <> '1' OR v_body ->> 'kind' <> 'undo' OR v_body ->> 'caseId' <> p_case.case_id::text THEN
-    RAISE EXCEPTION 'the undo contract must be a format-1 undo contract of this case' USING ERRCODE = 'AC201';
+  IF v_body ->> 'contractFormat' <> '2' OR v_body ->> 'kind' <> 'undo' OR v_body ->> 'caseId' <> p_case.case_id::text THEN
+    RAISE EXCEPTION 'the undo contract must be a format-2 undo contract of this case' USING ERRCODE = 'AC201';
   END IF;
   SELECT r.* INTO STRICT v_run FROM aftercare_control.case_runs AS r WHERE r.run_id = p_case.current_run_id;
   IF v_run.phase <> 'planning' THEN
@@ -939,64 +1031,164 @@ BEGIN
               WHERE c.branch_id = v_target.branch_id AND c.status IN ('bound', 'applied')) THEN
     RAISE EXCEPTION 'branch % already has a bound or applied contract', v_target.branch_id USING ERRCODE = 'AC506';
   END IF;
+
+  -- The scope guard names every registered object table, with the digest and
+  -- row count the branch holds now. Names come from the registry only.
   IF v_body ->> 'snapshotId' <> v_target.snapshot_id::text
      OR v_body -> 'scopeGuard' ->> 'branchContentDigest' <> v_target.content_digest
      OR v_body -> 'scopeGuard' ->> 'branchContentDigest' <> aftercare_control.current_branch_digest(v_target)
-     OR v_body -> 'scopeGuard' -> 'products' ->> 'digest' <> aftercare_control.relation_digest(v_target.schema_name, 'products')
-     OR v_body -> 'scopeGuard' -> 'orders' ->> 'digest' <> aftercare_control.relation_digest(v_target.schema_name, 'orders')
-     OR v_body -> 'scopeGuard' -> 'products' ->> 'rowCount' <> (SELECT m ->> 'rowCount' FROM jsonb_array_elements(v_target.manifest) AS m WHERE m ->> 'table' = 'products')
-     OR v_body -> 'scopeGuard' -> 'orders' ->> 'rowCount' <> (SELECT m ->> 'rowCount' FROM jsonb_array_elements(v_target.manifest) AS m WHERE m ->> 'table' = 'orders') THEN
+     OR EXISTS (SELECT 1 FROM aftercare.object_types AS t
+                 WHERE v_body -> 'scopeGuard' -> 'tables' -> t.table_name IS NULL)
+     OR EXISTS (
+       SELECT 1 FROM aftercare.object_types AS t
+        WHERE v_body -> 'scopeGuard' -> 'tables' -> t.table_name ->> 'digest'
+                IS DISTINCT FROM aftercare_control.relation_digest(v_target.schema_name, t.table_name)
+           OR v_body -> 'scopeGuard' -> 'tables' -> t.table_name ->> 'rowCount'
+                IS DISTINCT FROM (SELECT m ->> 'rowCount' FROM jsonb_array_elements(v_target.manifest) AS m
+                                   WHERE m ->> 'table' = t.table_name))
+     OR EXISTS (SELECT 1 FROM jsonb_object_keys(v_body -> 'scopeGuard' -> 'tables') AS k
+                 WHERE NOT EXISTS (SELECT 1 FROM aftercare.object_types AS t WHERE t.table_name = k)) THEN
     RAISE EXCEPTION 'the scope guard of the contract does not describe the current content of branch %', v_target.branch_id
       USING ERRCODE = 'AC507';
   END IF;
 
-  -- Conflict checks, from the ledger and the target, field by field.
+  -- Conflict checks, from the ledger and the target, field by field. The
+  -- field lineage on the branch is the field's last write version: a write
+  -- after the repair (even one that restored the same value) is a conflict.
   FOR v_entry IN
-    SELECT f ->> 'objectId' AS object_id, (f ->> 'versionAfter')::bigint AS version_after,
-           (f ->> 'centsAfter')::bigint AS cents_after, (f ->> 'centsBefore')::bigint AS cents_before
-      FROM jsonb_array_elements(v_application.written_footprint) AS f ORDER BY f ->> 'objectId'
+    SELECT f ->> 'objectType' AS object_type, f ->> 'objectId' AS object_id, f ->> 'fieldId' AS field_id,
+           (f ->> 'versionAfter')::bigint AS version_after,
+           f ->> 'valueBefore' AS value_before, f ->> 'valueAfter' AS value_after
+      FROM jsonb_array_elements(v_application.written_footprint) AS f
+     ORDER BY 1, 2, 3
   LOOP
-    EXECUTE format('SELECT p.version, p.price_cents FROM %I.products AS p WHERE p.product_id = $1', v_target.schema_name)
-      INTO v_version, v_cents USING v_entry.object_id;
-    -- Same value at a newer version is a conflict too: something wrote the field after the repair.
-    IF v_version IS DISTINCT FROM v_entry.version_after OR v_cents IS DISTINCT FROM v_entry.cents_after THEN
-      v_conflict := jsonb_build_object('reason', 'version_advanced', 'objectId', v_entry.object_id,
-        'expected', jsonb_build_object('version', v_entry.version_after::text, 'cents', v_entry.cents_after::text),
-        'observed', jsonb_build_object('version', v_version::text, 'cents', v_cents::text),
-        'detail', format('product %s was written after the repair (now %s/%s, repaired %s/%s)', v_entry.object_id, v_version, v_cents, v_entry.version_after, v_entry.cents_after));
+    SELECT f.field_id, f.object_type, f.column_name, f.copy_readers,
+           t.table_name, t.pk_column, t.version_column
+      INTO v_field
+      FROM aftercare.repairable_fields AS f
+      JOIN aftercare.object_types AS t ON t.object_type = f.object_type
+     WHERE f.field_id = v_entry.field_id AND f.object_type = v_entry.object_type;
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'the ledger of application % names % of %, which is not a registered repairable field',
+        v_application.application_id, v_entry.field_id, v_entry.object_type USING ERRCODE = 'AC513';
+    END IF;
+
+    EXECUTE format('SELECT t.%1$I::text, t.%2$I::text FROM %3$I.%4$I AS t WHERE t.%5$I = $1',
+                   v_field.version_column, v_field.column_name, v_target.schema_name,
+                   v_field.table_name, v_field.pk_column)
+      INTO v_version, v_value USING v_entry.object_id;
+    IF NOT FOUND THEN
+      v_conflict := jsonb_build_object('reason', 'version_advanced',
+        'objectType', v_entry.object_type, 'objectId', v_entry.object_id, 'fieldId', v_entry.field_id,
+        'expected', jsonb_build_object('fieldVersion', v_entry.version_after::text, 'value', v_entry.value_after),
+        'observed', NULL,
+        'detail', format('%s/%s.%s no longer exists on the successor branch', v_entry.object_type, v_entry.object_id, v_entry.field_id));
       RAISE EXCEPTION 'UNDO_CONFLICT %', v_conflict::text USING ERRCODE = 'AC520', DETAIL = v_conflict::text;
     END IF;
-    -- A later operation that READ the repaired version (an order struck at it) makes the reversal a business conflict.
-    EXECUTE format('SELECT COALESCE(jsonb_agg(jsonb_build_object(%L, o.order_id, %L, o.price_version::text) ORDER BY o.order_id), %L::jsonb)
-                      FROM %I.orders AS o WHERE o.product_id = $1 AND o.price_version >= $2',
-                   'orderId', 'priceVersion', '[]', v_target.schema_name)
-      INTO STRICT v_readers USING v_entry.object_id, v_entry.version_after;
-    IF jsonb_array_length(v_readers) > 0 THEN
-      v_conflict := jsonb_build_object('reason', 'read_dependency_on_repaired_value', 'objectId', v_entry.object_id,
-        'observed', jsonb_build_object('orders', v_readers),
-        'detail', format('orders of product %s were struck at the repaired version %s; reversing it is a new business decision', v_entry.object_id, v_entry.version_after));
+
+    -- The field's last write version on this branch: repair-made versions of
+    -- the target or of the sealed predecessor it was copied from; for a field
+    -- copied without a repair, the source lineage at the copied object version.
+    SELECT max(v.version_after) INTO v_field_version
+      FROM aftercare_control.repair_field_versions AS v
+     WHERE v.object_type = v_entry.object_type AND v.object_id = v_entry.object_id
+       AND v.field_id = v_entry.field_id
+       AND v.branch_id IN (v_target.branch_id, v_target.predecessor_branch_id);
+    IF v_field_version IS NULL THEN
+      EXECUTE format('SELECT t.%1$I FROM %2$I.%3$I AS t WHERE t.%4$I = $1',
+                     v_field.version_column, v_target.baseline_schema, v_field.table_name, v_field.pk_column)
+        INTO v_baseline_version USING v_entry.object_id;
+      SELECT max(w.version_after) INTO v_field_version
+        FROM aftercare.operation_writes AS w
+       WHERE w.object_type = v_entry.object_type AND w.object_id = v_entry.object_id
+         AND w.field = v_field.column_name
+         AND w.version_after <= COALESCE(v_baseline_version, 0);
+    END IF;
+    v_field_version := COALESCE(v_field_version, 0);
+
+    IF v_field_version > v_entry.version_after OR v_value IS DISTINCT FROM v_entry.value_after THEN
+      v_conflict := jsonb_build_object('reason', 'version_advanced',
+        'objectType', v_entry.object_type, 'objectId', v_entry.object_id, 'fieldId', v_entry.field_id,
+        'expected', jsonb_build_object('fieldVersion', v_entry.version_after::text, 'value', v_entry.value_after),
+        'observed', jsonb_build_object('fieldVersion', v_field_version::text, 'value', v_value),
+        'detail', format('%s/%s.%s was written after the repair (now field version %s / value %s; repaired %s / %s)',
+          v_entry.object_type, v_entry.object_id, v_entry.field_id, v_field_version, v_value,
+          v_entry.version_after, v_entry.value_after));
       RAISE EXCEPTION 'UNDO_CONFLICT %', v_conflict::text USING ERRCODE = 'AC520', DETAIL = v_conflict::text;
     END IF;
+
+    -- A later reader that copied the repaired value makes the reversal a
+    -- business decision. The readers and their version columns come from the
+    -- field registry; only the repaired field is checked.
+    FOR v_reader IN
+      SELECT r FROM jsonb_array_elements(COALESCE(v_field.copy_readers, '[]'::jsonb)) AS r
+    LOOP
+      SELECT t.table_name, t.pk_column, t.columns
+        INTO v_reader_table, v_reader_pk, v_reader_columns
+        FROM aftercare.object_types AS t
+       WHERE t.object_type = v_reader.r ->> 'objectType';
+      IF NOT FOUND THEN
+        RAISE EXCEPTION 'field % declares reader object type %, which is not registered',
+          v_field.field_id, v_reader.r ->> 'objectType' USING ERRCODE = 'AC513';
+      END IF;
+      v_reader_link := COALESCE(v_reader.r ->> 'objectColumn', v_field.object_type || '_id');
+      IF NOT (v_reader_link = ANY (v_reader_columns))
+         OR NOT (COALESCE(v_reader.r ->> 'versionColumn', '') = ANY (v_reader_columns)) THEN
+        RAISE EXCEPTION 'reader % of field % does not hold the declared link or version column',
+          v_reader.r ->> 'objectType', v_field.field_id USING ERRCODE = 'AC513';
+      END IF;
+      EXECUTE format(
+        'SELECT COALESCE(jsonb_agg(jsonb_build_object(%L, r.%I::text, %L, r.%I::text) ORDER BY r.%I), %L::jsonb)
+           FROM %I.%I AS r
+          WHERE r.%I = $1 AND r.%I >= $2',
+        'objectId', v_reader_pk, 'readVersion', v_reader.r ->> 'versionColumn', v_reader_pk, '[]',
+        v_target.schema_name, v_reader_table, v_reader_link, v_reader.r ->> 'versionColumn')
+        INTO v_readers USING v_entry.object_id, v_entry.version_after;
+      IF jsonb_array_length(v_readers) > 0 THEN
+        v_conflict := jsonb_build_object('reason', 'read_dependency_on_repaired_value',
+          'objectType', v_entry.object_type, 'objectId', v_entry.object_id, 'fieldId', v_entry.field_id,
+          'observed', jsonb_build_object('readers', v_readers),
+          'detail', format('%s objects read %s/%s.%s at or after the repaired field version %s; reversing it is a new business decision',
+            v_reader.r ->> 'objectType', v_entry.object_type, v_entry.object_id, v_entry.field_id, v_entry.version_after));
+        RAISE EXCEPTION 'UNDO_CONFLICT %', v_conflict::text USING ERRCODE = 'AC520', DETAIL = v_conflict::text;
+      END IF;
+    END LOOP;
+
+    v_footprint := v_footprint || jsonb_build_array(jsonb_build_object(
+      'objectType', v_entry.object_type, 'objectId', v_entry.object_id, 'fieldId', v_entry.field_id));
+    v_inputs := v_inputs || jsonb_build_array(jsonb_build_object(
+      'objectType', v_entry.object_type, 'objectId', v_entry.object_id, 'fieldId', v_entry.field_id,
+      'objectVersion', v_version, 'fieldVersion', v_field_version::text, 'value', v_value));
+    v_patch := v_patch || jsonb_build_array(jsonb_build_object(
+      'objectType', v_entry.object_type, 'objectId', v_entry.object_id, 'fieldId', v_entry.field_id,
+      'expectedObjectVersion', v_version, 'fromValue', v_value, 'toValue', v_entry.value_before));
   END LOOP;
 
-  -- The patch must be exactly the reversal of the ledger: current version, repaired value -> recorded prior value.
-  SELECT COALESCE(jsonb_agg(jsonb_build_object(
-           'objectType', 'product', 'objectId', f ->> 'objectId', 'field', 'price_cents',
-           'expectedVersion', f ->> 'versionAfter', 'fromCents', f ->> 'centsAfter', 'toCents', f ->> 'centsBefore')
-           ORDER BY f ->> 'objectId'), '[]'::jsonb)
-    INTO STRICT v_expected FROM jsonb_array_elements(v_application.written_footprint) AS f;
-  IF v_body -> 'patch' IS DISTINCT FROM v_expected OR jsonb_array_length(v_expected) = 0 THEN
+  SELECT COALESCE(jsonb_agg(e ORDER BY e ->> 'objectType', e ->> 'objectId', e ->> 'fieldId'), '[]'::jsonb)
+    INTO v_patch
+    FROM jsonb_array_elements(v_patch) AS e;
+  SELECT COALESCE(jsonb_agg(e ORDER BY e ->> 'objectType', e ->> 'objectId', e ->> 'fieldId'), '[]'::jsonb)
+    INTO v_footprint
+    FROM jsonb_array_elements(v_footprint) AS e;
+  SELECT COALESCE(jsonb_agg(e ORDER BY e ->> 'objectType', e ->> 'objectId', e ->> 'fieldId'), '[]'::jsonb)
+    INTO v_inputs
+    FROM jsonb_array_elements(v_inputs) AS e;
+  IF jsonb_array_length(v_patch) = 0 THEN
+    RAISE EXCEPTION 'the application wrote nothing: there is nothing to reverse' USING ERRCODE = 'AC520';
+  END IF;
+
+  -- The patch must be exactly the reversal of the ledger: each object's
+  -- current version is the expected version, and its repaired fields go back
+  -- to the recorded prior values in one UPDATE per object.
+  IF v_body -> 'patch' IS DISTINCT FROM v_patch THEN
     RAISE EXCEPTION 'the undo patch must be exactly the reversal of the recorded footprint' USING ERRCODE = 'AC508';
   END IF;
-  IF v_body -> 'allowedFootprint' IS DISTINCT FROM
-     (SELECT jsonb_agg(jsonb_build_object('objectType', 'product', 'objectId', f ->> 'objectId', 'field', 'price_cents') ORDER BY f ->> 'objectId')
-        FROM jsonb_array_elements(v_application.written_footprint) AS f) THEN
+  IF v_body -> 'allowedFootprint' IS DISTINCT FROM v_footprint THEN
     RAISE EXCEPTION 'the undo footprint must be exactly the recorded footprint' USING ERRCODE = 'AC508';
   END IF;
-  IF v_body -> 'inputVersions' IS DISTINCT FROM
-     (SELECT jsonb_agg(jsonb_build_object('objectType', 'product', 'objectId', f ->> 'objectId', 'version', f ->> 'versionAfter', 'cents', f ->> 'centsAfter') ORDER BY f ->> 'objectId')
-        FROM jsonb_array_elements(v_application.written_footprint) AS f) THEN
-    RAISE EXCEPTION 'the undo contract must pin the repaired version of every reversed field' USING ERRCODE = 'AC507';
+  IF v_body -> 'inputVersions' IS DISTINCT FROM v_inputs THEN
+    RAISE EXCEPTION 'the undo contract must pin the object version, field version and value of every reversed field'
+      USING ERRCODE = 'AC507';
   END IF;
   IF jsonb_array_length(COALESCE(v_body -> 'unresolvedDomains', '[]'::jsonb)) <> 0
      OR jsonb_array_length(COALESCE(v_body -> 'terminalConstraints', '[]'::jsonb)) <> 0
@@ -1093,7 +1285,7 @@ BEGIN
   END IF;
 
   v_body := jsonb_build_object(
-    'approvalFormat', 1,
+    'approvalFormat', 2,
     'contractId', v_contract.contract_id,
     'executionDigest', v_contract.execution_digest,
     'contractKind', v_contract.kind,
@@ -1709,10 +1901,15 @@ DECLARE
   v_existing aftercare_control.repair_applications;
   v_lifecycle text;
   v_input    record;
-  v_version  bigint;
-  v_cents    bigint;
+  v_patch    jsonb;
+  v_field    record;
+  v_object   record;
+  v_input_version bigint;
+  v_input_value text;
   v_digest   text;
   v_cited    record;
+  v_registry jsonb;
+  v_origin_digest text;
 BEGIN
   PERFORM aftercare_control.assert_executor(p_executor);
   IF current_setting('transaction_isolation') <> 'read committed' THEN
@@ -1784,20 +1981,22 @@ BEGIN
       RAISE EXCEPTION 'plan % is %, not approved', v_contract.plan_id, v_lifecycle USING ERRCODE = 'AC504';
     END IF;
   ELSE
-    -- An undo reverses a verified application: the predecessor must still be sealed with its report.
+    -- An undo reverses a verified application: the predecessor must still be
+    -- sealed with that application and the target must still be its successor.
     IF NOT EXISTS (
       SELECT 1 FROM aftercare_control.execution_branches AS pb
        WHERE pb.branch_id = v_branch.predecessor_branch_id AND pb.status = 'sealed')
        OR NOT EXISTS (
       SELECT 1 FROM aftercare_control.repair_applications AS ra
-       WHERE ra.application_id = (v_contract.body ->> 'applicationId')::uuid AND ra.branch_id = v_branch.predecessor_branch_id) THEN
+       WHERE ra.application_id = (v_contract.body ->> 'applicationId')::uuid
+         AND ra.branch_id = v_branch.predecessor_branch_id) THEN
       RAISE EXCEPTION 'the undo of contract % no longer reverses a sealed application', v_contract.contract_id USING ERRCODE = 'AC504';
     END IF;
   END IF;
 
   -- 3. Execution digest, dependency revision and input bindings.
   IF v_attempt.execution_digest <> v_contract.execution_digest THEN
-    RAISE EXCEPTION 'attempt % was recorded for another execution digest' , p_attempt_id USING ERRCODE = 'AC507';
+    RAISE EXCEPTION 'attempt % was recorded for another execution digest', p_attempt_id USING ERRCODE = 'AC507';
   END IF;
   IF v_contract.dependency_revision <> v_case.dependency_revision THEN
     RAISE EXCEPTION 'the inputs of case % changed (dependency revision % -> %)', p_case_id,
@@ -1847,7 +2046,7 @@ BEGIN
       v_contract.contract_id USING ERRCODE = 'AC505';
   END IF;
 
-  -- 5./6. Every pinned input version, and the branch content against the registered snapshot copy.
+  -- 5./6. Every pinned input version, and the branch content against the registered baseline.
   SELECT s.* INTO STRICT v_snapshot FROM aftercare_control.snapshots AS s WHERE s.snapshot_id = v_contract.snapshot_id;
   IF v_snapshot.status <> 'published' OR v_snapshot.content_digest <> v_branch.snapshot_content_digest
      OR (v_contract.kind = 'repair'
@@ -1856,40 +2055,125 @@ BEGIN
       v_snapshot.snapshot_id USING ERRCODE = 'AC507';
   END IF;
   v_digest := aftercare_control.current_branch_digest(v_branch);
-  IF v_digest <> v_branch.content_digest OR v_digest <> v_contract.body -> 'scopeGuard' ->> 'branchContentDigest' THEN
+  IF v_digest IS DISTINCT FROM v_branch.content_digest
+     OR v_digest IS DISTINCT FROM v_contract.body -> 'scopeGuard' ->> 'branchContentDigest' THEN
     RAISE EXCEPTION 'the content of branch % is not what the contract was bound to', v_branch.branch_id
       USING ERRCODE = 'AC507';
   END IF;
-  -- A repair branch must still be the untouched copy of its baseline. An undo target may carry later,
-  -- independent rehearsal activity; it is pinned by the scope guard checked above instead.
-  IF v_contract.kind = 'repair' AND (aftercare_control.relation_digest(v_branch.schema_name, 'products')
-       <> (SELECT t ->> 'digest' FROM jsonb_array_elements(v_branch.origin_manifest) AS t WHERE t ->> 'table' = 'products')
-     OR aftercare_control.relation_digest(v_branch.schema_name, 'orders')
-       <> (SELECT t ->> 'digest' FROM jsonb_array_elements(v_branch.origin_manifest) AS t WHERE t ->> 'table' = 'orders')) THEN
-    RAISE EXCEPTION 'branch % no longer matches the baseline it was copied from', v_branch.branch_id
-      USING ERRCODE = 'AC507';
+  -- The scope guard names every registered object table, with the digest and
+  -- row count the branch registry recorded for it. No table is named here.
+  IF EXISTS (SELECT 1 FROM aftercare.object_types AS t
+              WHERE v_contract.body -> 'scopeGuard' -> 'tables' -> t.table_name IS NULL)
+     OR EXISTS (
+       SELECT 1 FROM aftercare.object_types AS t
+        WHERE v_contract.body -> 'scopeGuard' -> 'tables' -> t.table_name ->> 'digest'
+                IS DISTINCT FROM aftercare_control.relation_digest(v_branch.schema_name, t.table_name)
+           OR v_contract.body -> 'scopeGuard' -> 'tables' -> t.table_name ->> 'rowCount'
+                IS DISTINCT FROM (SELECT m ->> 'rowCount' FROM jsonb_array_elements(v_branch.manifest) AS m
+                                   WHERE m ->> 'table' = t.table_name))
+     OR EXISTS (SELECT 1 FROM jsonb_object_keys(v_contract.body -> 'scopeGuard' -> 'tables') AS k
+                 WHERE NOT EXISTS (SELECT 1 FROM aftercare.object_types AS t WHERE t.table_name = k)) THEN
+    RAISE EXCEPTION 'the scope guard of the contract does not describe the current content of branch %',
+      v_branch.branch_id USING ERRCODE = 'AC507';
+  END IF;
+  -- A repair branch must still be the untouched copy of its baseline. An undo
+  -- target may carry the sealed predecessor's repaired content; it is pinned
+  -- by the scope guard checked above instead.
+  IF v_contract.kind = 'repair' THEN
+    FOR v_object IN SELECT t.object_type, t.table_name FROM aftercare.object_types AS t ORDER BY t.object_type
+    LOOP
+      SELECT t ->> 'digest' INTO v_origin_digest
+        FROM jsonb_array_elements(v_branch.origin_manifest) AS t
+       WHERE t ->> 'table' = v_object.table_name;
+      IF aftercare_control.relation_digest(v_branch.schema_name, v_object.table_name) IS DISTINCT FROM v_origin_digest THEN
+        RAISE EXCEPTION 'branch % no longer matches the baseline it was copied from', v_branch.branch_id
+          USING ERRCODE = 'AC507';
+      END IF;
+    END LOOP;
   END IF;
   FOR v_input IN
-    SELECT i ->> 'objectId' AS object_id, (i ->> 'version')::bigint AS version, (i ->> 'cents')::bigint AS cents
+    SELECT i ->> 'objectType' AS object_type, i ->> 'objectId' AS object_id, i ->> 'fieldId' AS field_id,
+           (i ->> 'objectVersion')::bigint AS object_version, i ->> 'value' AS value_text
       FROM jsonb_array_elements(v_contract.body -> 'inputVersions') AS i
   LOOP
-    EXECUTE format('SELECT p.version, p.price_cents FROM %I.products AS p WHERE p.product_id = $1', v_branch.schema_name)
-      INTO v_version, v_cents USING v_input.object_id;
-    IF v_version IS DISTINCT FROM v_input.version OR v_cents IS DISTINCT FROM v_input.cents THEN
-      RAISE EXCEPTION 'input product % is at %/% in branch %, the contract pins %/%', v_input.object_id, v_version,
-        v_cents, v_branch.branch_id, v_input.version, v_input.cents USING ERRCODE = 'AC507';
+    SELECT f.column_name, f.value_kind, t.table_name, t.pk_column, t.version_column
+      INTO v_field
+      FROM aftercare.repairable_fields AS f
+      JOIN aftercare.object_types AS t ON t.object_type = f.object_type
+     WHERE f.field_id = v_input.field_id
+       AND f.object_type = v_input.object_type;
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'input pin names % of %, which is not a registered repairable field',
+        v_input.field_id, v_input.object_type USING ERRCODE = 'AC507';
+    END IF;
+    IF v_field.value_kind <> 'int64' THEN
+      RAISE EXCEPTION 'input pin names field % of unsupported value kind %',
+        v_input.field_id, v_field.value_kind USING ERRCODE = 'AC507';
+    END IF;
+    EXECUTE format('SELECT t.%1$I, t.%2$I::text FROM %3$I.%4$I AS t WHERE t.%5$I = $1',
+                   v_field.version_column, v_field.column_name, v_branch.schema_name,
+                   v_field.table_name, v_field.pk_column)
+      INTO v_input_version, v_input_value USING v_input.object_id;
+    IF v_input_version IS DISTINCT FROM v_input.object_version
+       OR v_input_value IS DISTINCT FROM v_input.value_text THEN
+      RAISE EXCEPTION 'input % of % is at version %/% in branch %, the contract pins %/%',
+        v_input.field_id, v_input.object_id, v_input_version, v_input_value, v_branch.branch_id,
+        v_input.object_version, v_input.value_text USING ERRCODE = 'AC507';
     END IF;
   END LOOP;
 
-  -- The pre-image of the products table, taken in this transaction before any write. The
-  -- recording half compares against it; the sandbox function cannot reach it (owner-only temp table).
+  -- The whole-row pre-image of every registered table, taken in this
+  -- transaction before any write. The recording half compares against it; the
+  -- sandbox function cannot reach it (owner-only temp tables). The tables and
+  -- keys come from aftercare.object_types.
   DROP TABLE IF EXISTS pg_temp.aftercare_pre_image;
-  EXECUTE format('CREATE TEMP TABLE aftercare_pre_image ON COMMIT DROP AS
-                    SELECT product_id, name, price_cents, version FROM %I.products', v_branch.schema_name);
+  CREATE TEMP TABLE aftercare_pre_image (
+    object_type text NOT NULL,
+    object_id   text NOT NULL,
+    row_data    jsonb NOT NULL,
+    PRIMARY KEY (object_type, object_id)) ON COMMIT DROP;
+  DROP TABLE IF EXISTS pg_temp.aftercare_pre_digest;
+  CREATE TEMP TABLE aftercare_pre_digest (
+    table_name text PRIMARY KEY,
+    digest     text NOT NULL) ON COMMIT DROP;
+  FOR v_object IN
+    SELECT t.object_type, t.table_name, t.pk_column, t.repairable
+      FROM aftercare.object_types AS t
+     ORDER BY t.object_type
+  LOOP
+    EXECUTE format('INSERT INTO pg_temp.aftercare_pre_image (object_type, object_id, row_data)
+                    SELECT %L, t.%I::text, to_jsonb(t) FROM %I.%I AS t',
+                   v_object.object_type, v_object.pk_column, v_branch.schema_name, v_object.table_name);
+    IF NOT v_object.repairable THEN
+      EXECUTE format('INSERT INTO pg_temp.aftercare_pre_digest (table_name, digest)
+                      VALUES (%L, aftercare_control.relation_digest(%L, %L))',
+                     v_object.table_name, v_branch.schema_name, v_object.table_name);
+    END IF;
+  END LOOP;
+
   UPDATE aftercare_control.execution_attempts
      SET status = 'running', running_at = clock_timestamp(), apply_xid = pg_current_xact_id()
    WHERE attempt_id = p_attempt_id;
   UPDATE aftercare_control.execution_branches SET status = 'applying' WHERE branch_id = v_branch.branch_id;
+
+  -- The authoritative registry metadata of this admission. The sandbox layer
+  -- is owned by aftercare_sandbox_owner, which holds no privilege on
+  -- aftercare.*, so the control layer hands it every table and field identity
+  -- it may use. Every name below is registry text, never caller input.
+  SELECT jsonb_build_object(
+    'tables', (SELECT COALESCE(jsonb_agg(jsonb_build_object(
+                  'objectType', t.object_type, 'tableName', t.table_name,
+                  'pkColumn', t.pk_column, 'versionColumn', t.version_column,
+                  'columns', to_jsonb(t.columns), 'repairable', t.repairable)
+                ORDER BY t.object_type), '[]'::jsonb)
+                FROM aftercare.object_types AS t),
+    'fields', (SELECT COALESCE(jsonb_agg(jsonb_build_object(
+                  'fieldId', f.field_id, 'objectType', f.object_type,
+                  'columnName', f.column_name, 'valueKind', f.value_kind,
+                  'bounds', f.bounds, 'unit', f.unit)
+                ORDER BY f.field_id), '[]'::jsonb)
+                FROM aftercare.repairable_fields AS f))
+    INTO v_registry;
 
   RETURN jsonb_build_object(
     'outcome', 'admitted',
@@ -1898,16 +2182,23 @@ BEGIN
     'contractId', v_contract.contract_id,
     'approvalId', v_approval.approval_id,
     'executionDigest', v_contract.execution_digest,
+    'kind', v_contract.kind,
     'branchDigestBefore', v_digest,
     'patch', v_contract.body -> 'patch',
     'allowedFootprint', v_contract.body -> 'allowedFootprint',
     'inputVersions', v_contract.body -> 'inputVersions',
     'unresolvedDomains', COALESCE(v_contract.body -> 'unresolvedDomains', '[]'::jsonb),
     'terminalConstraints', COALESCE(v_contract.body -> 'terminalConstraints', '[]'::jsonb),
-    'limits', v_contract.body -> 'limits');
+    'limits', v_contract.body -> 'limits',
+    'registry', v_registry);
 END;
 $$;
 
+-- The second half of the execution transaction. Refuses unless called in the
+-- transaction that admitted the attempt. Compares every registered table of
+-- the branch against the whole-row pre-image taken at admission, independently
+-- of the sandbox function, then records everything atomically with the branch
+-- writes already made in this transaction.
 CREATE OR REPLACE FUNCTION aftercare_control.exec_record_application(
   p_case_id uuid, p_attempt_id uuid, p_executor text, p_token bigint, p_written jsonb, p_checks jsonb
 ) RETURNS jsonb
@@ -1921,15 +2212,25 @@ DECLARE
   v_attempt     aftercare_control.execution_attempts;
   v_contract    aftercare_control.execution_contracts;
   v_branch      aftercare_control.execution_branches;
-  v_snapshot    aftercare_control.snapshots;
   v_approval_id uuid;
-  v_diff        jsonb;
+  v_object      record;
+  v_entry       jsonb;
+  v_patch       jsonb;
+  v_column      text;
+  v_field_id    text;
+  v_changed_expression text;
+  v_column_diff jsonb;
+  v_diff        jsonb := '[]'::jsonb;
   v_expected    jsonb;
+  v_digest      text;
+  v_digest_before text;
   v_digest_after text;
   v_diff_digest text;
   v_application aftercare_control.repair_applications;
   v_revision    bigint;
-  v_products_snapshot_digest text;
+  v_missing     bigint;
+  v_bad         bigint;
+  v_rows        bigint;
 BEGIN
   v_case := aftercare_control.lock_case(p_case_id);
   PERFORM aftercare_control.require_lease(p_case_id, p_executor, p_token);
@@ -1941,7 +2242,6 @@ BEGIN
   END IF;
   SELECT c.* INTO STRICT v_contract FROM aftercare_control.execution_contracts AS c WHERE c.contract_id = v_attempt.contract_id;
   SELECT b.* INTO STRICT v_branch FROM aftercare_control.execution_branches AS b WHERE b.branch_id = v_attempt.branch_id;
-  SELECT s.* INTO STRICT v_snapshot FROM aftercare_control.snapshots AS s WHERE s.snapshot_id = v_contract.snapshot_id;
   IF v_branch.status <> 'applying' OR v_contract.status <> 'bound' THEN
     RAISE EXCEPTION 'branch % / contract % are not in the applying state of this transaction', v_branch.branch_id,
       v_contract.contract_id USING ERRCODE = 'AC513';
@@ -1954,26 +2254,133 @@ BEGIN
     RAISE EXCEPTION 'contract % lost its approval during the transaction', v_contract.contract_id USING ERRCODE = 'AC505';
   END IF;
 
-  -- Independent comparison: branch products vs the immutable snapshot copy.
-  -- The set of differing rows must be exactly the patch (version + 1, the
-  -- candidate value, the same name), and nothing else may differ.
-  EXECUTE format(
-    $q$SELECT COALESCE(jsonb_agg(jsonb_build_object(
-               'objectType', 'product', 'objectId', b.product_id, 'field', 'price_cents',
-               'versionBefore', s.version::text, 'versionAfter', b.version::text,
-               'centsBefore', s.price_cents::text, 'centsAfter', b.price_cents::text)
-               ORDER BY b.product_id), '[]'::jsonb)
-         FROM %1$I.products AS b
-         FULL OUTER JOIN pg_temp.aftercare_pre_image AS s ON s.product_id = b.product_id
-        WHERE b.product_id IS NULL OR s.product_id IS NULL
-           OR b.name <> s.name OR b.version <> s.version OR b.price_cents <> s.price_cents$q$,
-    v_branch.schema_name)
-    INTO STRICT v_diff;
+  -- Independent comparison, per registered object table. A branch copy holds
+  -- exactly the registered columns of its object type, so the whole-row jsonb
+  -- comparison below sees every column there is.
+  --
+  --   * a table the registry marks non-repairable must still have the
+  --     whole-table digest the pre-image was taken with;
+  --   * a repairable table may not gain or lose a row: either side of the FULL
+  --     OUTER JOIN being NULL is refused before any column is expanded;
+  --   * every differing registered repairable column of a changed row becomes
+  --     one diff entry; every non-repairable column must be unchanged;
+  --   * a changed row's object version must be exactly +1, and a version may
+  --     not move without at least one repairable field changing.
+  FOR v_object IN
+    SELECT t.object_type, t.table_name, t.pk_column, t.version_column, t.columns, t.repairable
+      FROM aftercare.object_types AS t
+     ORDER BY t.object_type
+  LOOP
+    IF v_object.repairable THEN
+      -- Either side of the join being absent is a gained or lost row. The
+      -- pre-image holds every registered table, so the pre-image side is
+      -- narrowed to THIS object type first: an order row would otherwise look
+      -- like a products row that was lost.
+      EXECUTE format(
+        'SELECT count(*) FROM %1$I.%2$I AS b
+           FULL OUTER JOIN (SELECT * FROM pg_temp.aftercare_pre_image WHERE object_type = %3$L) AS p
+             ON p.object_id = b.%4$I::text
+          WHERE b.%4$I IS NULL OR p.object_id IS NULL',
+        v_branch.schema_name, v_object.table_name, v_object.object_type, v_object.pk_column)
+        INTO v_missing;
+      IF v_missing > 0 THEN
+        RAISE EXCEPTION 'implementation defect: table % of branch % gained or lost a row', v_object.table_name,
+          v_branch.branch_id USING ERRCODE = 'AC513';
+      END IF;
+
+      FOR v_column IN SELECT c FROM unnest(v_object.columns) AS c
+      LOOP
+        CONTINUE WHEN v_column = v_object.pk_column OR v_column = v_object.version_column;
+        SELECT f.field_id INTO v_field_id
+          FROM aftercare.repairable_fields AS f
+         WHERE f.object_type = v_object.object_type AND f.column_name = v_column;
+        IF v_field_id IS NULL THEN
+          EXECUTE format(
+            'SELECT count(*) FROM %1$I.%2$I AS b JOIN pg_temp.aftercare_pre_image AS p
+               ON p.object_type = %3$L AND p.object_id = b.%4$I::text
+              WHERE (p.row_data ->> %5$L) IS DISTINCT FROM (b.%5$I)::text',
+            v_branch.schema_name, v_object.table_name, v_object.object_type, v_object.pk_column, v_column)
+            INTO v_rows;
+          IF v_rows > 0 THEN
+            RAISE EXCEPTION 'implementation defect: non-repairable column % of table % changed',
+              v_column, v_object.table_name USING ERRCODE = 'AC513';
+          END IF;
+        ELSE
+          -- One entry per written (object, field). The fields one object
+          -- changed share the object-version step below; the values are the
+          -- canonical text of the branch and pre-image rows.
+          EXECUTE format(
+            $q$SELECT COALESCE(jsonb_agg(jsonb_build_object(
+                     'objectType', %1$L, 'objectId', b.%2$I::text, 'fieldId', %3$L,
+                     'versionBefore', p.row_data ->> %4$L, 'versionAfter', b.%4$I::text,
+                     'valueBefore', p.row_data ->> %5$L, 'valueAfter', b.%5$I::text)
+                    ORDER BY b.%2$I), '[]'::jsonb)
+                 FROM %6$I.%7$I AS b JOIN pg_temp.aftercare_pre_image AS p
+                   ON p.object_type = %1$L AND p.object_id = b.%2$I::text
+                WHERE (p.row_data ->> %5$L) IS DISTINCT FROM (b.%5$I)::text$q$,
+            v_object.object_type, v_object.pk_column, v_field_id, v_object.version_column,
+            v_column, v_branch.schema_name, v_object.table_name)
+            INTO STRICT v_column_diff;
+          v_diff := v_diff || v_column_diff;
+        END IF;
+        v_field_id := NULL;
+      END LOOP;
+
+      SELECT string_agg(format('(b.%I)::text IS DISTINCT FROM (p.row_data ->> %L)', f.column_name, f.column_name), ' OR ')
+        INTO v_changed_expression
+        FROM aftercare.repairable_fields AS f
+       WHERE f.object_type = v_object.object_type;
+      EXECUTE format(
+        'SELECT count(*) FROM %1$I.%2$I AS b JOIN pg_temp.aftercare_pre_image AS p
+           ON p.object_type = %3$L AND p.object_id = b.%4$I::text
+          WHERE (to_jsonb(b) <> p.row_data AND b.%5$I <> (p.row_data ->> %6$L)::bigint + 1)
+             OR (b.%5$I <> (p.row_data ->> %6$L)::bigint AND NOT (%7$s))',
+        v_branch.schema_name, v_object.table_name, v_object.object_type, v_object.pk_column,
+        v_object.version_column, v_object.version_column, COALESCE(v_changed_expression, 'false'))
+        INTO v_bad;
+      IF v_bad > 0 THEN
+        RAISE EXCEPTION 'implementation defect: a changed row of table % did not advance exactly one object version, or its version moved without a repairable field change',
+          v_object.table_name USING ERRCODE = 'AC513';
+      END IF;
+    ELSE
+      -- A non-repairable table has no field to expand: its whole-table digest
+      -- must be the digest the pre-image was taken with. Comparing against the
+      -- admission-time digest keeps the check independent of the stored contract.
+      v_digest := aftercare_control.relation_digest(v_branch.schema_name, v_object.table_name);
+      SELECT d.digest INTO v_digest_before FROM pg_temp.aftercare_pre_digest AS d WHERE d.table_name = v_object.table_name;
+      IF v_digest_before IS NULL OR v_digest IS DISTINCT FROM v_digest_before THEN
+        RAISE EXCEPTION 'implementation defect: non-repairable table % of branch % was modified',
+          v_object.table_name, v_branch.branch_id USING ERRCODE = 'AC513';
+      END IF;
+    END IF;
+  END LOOP;
+
+  -- The patch targets must have been at the pre-image version, and the diff
+  -- must be exactly the patch, field by field. One deterministic order:
+  -- (objectType, objectId, fieldId).
+  FOR v_patch IN SELECT p FROM jsonb_array_elements(v_contract.body -> 'patch') AS p
+  LOOP
+    SELECT t.version_column INTO v_column
+      FROM aftercare.object_types AS t
+     WHERE t.object_type = v_patch ->> 'objectType';
+    SELECT p.row_data ->> v_column INTO v_digest_before
+      FROM pg_temp.aftercare_pre_image AS p
+     WHERE p.object_type = v_patch ->> 'objectType' AND p.object_id = v_patch ->> 'objectId';
+    IF v_column IS NULL OR v_digest_before IS NULL
+       OR v_digest_before IS DISTINCT FROM (v_patch ->> 'expectedObjectVersion') THEN
+      RAISE EXCEPTION 'implementation defect: patch target % of % was not at the expected version in the pre-image',
+        v_patch ->> 'fieldId', v_patch ->> 'objectId' USING ERRCODE = 'AC513';
+    END IF;
+  END LOOP;
+  SELECT COALESCE(jsonb_agg(d ORDER BY d ->> 'objectType', d ->> 'objectId', d ->> 'fieldId'), '[]'::jsonb)
+    INTO v_diff
+    FROM jsonb_array_elements(v_diff) AS d;
   SELECT COALESCE(jsonb_agg(jsonb_build_object(
-           'objectType', 'product', 'objectId', p ->> 'objectId', 'field', 'price_cents',
-           'versionBefore', p ->> 'expectedVersion', 'versionAfter', ((p ->> 'expectedVersion')::bigint + 1)::text,
-           'centsBefore', p ->> 'fromCents', 'centsAfter', p ->> 'toCents')
-           ORDER BY p ->> 'objectId'), '[]'::jsonb)
+           'objectType', p ->> 'objectType', 'objectId', p ->> 'objectId', 'fieldId', p ->> 'fieldId',
+           'versionBefore', p ->> 'expectedObjectVersion',
+           'versionAfter', ((p ->> 'expectedObjectVersion')::bigint + 1)::text,
+           'valueBefore', p ->> 'fromValue', 'valueAfter', p ->> 'toValue')
+           ORDER BY p ->> 'objectType', p ->> 'objectId', p ->> 'fieldId'), '[]'::jsonb)
     INTO STRICT v_expected
     FROM jsonb_array_elements(v_contract.body -> 'patch') AS p;
   IF v_diff <> v_expected THEN
@@ -1983,32 +2390,45 @@ BEGIN
   IF p_written IS DISTINCT FROM v_expected THEN
     RAISE EXCEPTION 'implementation defect: the sandbox reports a footprint that is not the patch' USING ERRCODE = 'AC513';
   END IF;
-  IF aftercare_control.relation_digest(v_branch.schema_name, 'orders') <> v_contract.body -> 'scopeGuard' -> 'orders' ->> 'digest' THEN
-    RAISE EXCEPTION 'implementation defect: orders of branch % were modified', v_branch.branch_id USING ERRCODE = 'AC513';
-  END IF;
   IF EXISTS (
     SELECT 1 FROM jsonb_array_elements(v_diff) AS d
      WHERE NOT EXISTS (SELECT 1 FROM jsonb_array_elements(v_contract.body -> 'allowedFootprint') AS f
                         WHERE f ->> 'objectType' = d ->> 'objectType' AND f ->> 'objectId' = d ->> 'objectId'
-                          AND f ->> 'field' = d ->> 'field')) THEN
+                          AND f ->> 'fieldId' = d ->> 'fieldId')) THEN
     RAISE EXCEPTION 'implementation defect: a write outside the allowed footprint' USING ERRCODE = 'AC513';
   END IF;
+  -- Unresolved domains name either a whole object ("type/id") or one field.
+  -- The field form is compared under both the fieldId spelling and the
+  -- column spelling the registry also knows.
   IF EXISTS (
     SELECT 1 FROM jsonb_array_elements(v_diff) AS d
-     WHERE ('product/' || (d ->> 'objectId') || '.price_cents') IN
-           (SELECT u FROM jsonb_array_elements_text(COALESCE(v_contract.body -> 'unresolvedDomains', '[]'::jsonb)) AS u)
-        OR ('product/' || (d ->> 'objectId')) IN
-           (SELECT u FROM jsonb_array_elements_text(COALESCE(v_contract.body -> 'unresolvedDomains', '[]'::jsonb)) AS u)) THEN
+     WHERE (d ->> 'objectType') || '/' || (d ->> 'objectId') || '.' || (d ->> 'fieldId')
+             IN (SELECT u FROM jsonb_array_elements_text(COALESCE(v_contract.body -> 'unresolvedDomains', '[]'::jsonb)) AS u)
+        OR (d ->> 'objectType') || '/' || (d ->> 'objectId') || '.' || split_part(d ->> 'fieldId', '.', 2)
+             IN (SELECT u FROM jsonb_array_elements_text(COALESCE(v_contract.body -> 'unresolvedDomains', '[]'::jsonb)) AS u)
+        OR (d ->> 'objectType') || '/' || (d ->> 'objectId')
+             IN (SELECT u FROM jsonb_array_elements_text(COALESCE(v_contract.body -> 'unresolvedDomains', '[]'::jsonb)) AS u)) THEN
     RAISE EXCEPTION 'implementation defect: an unresolved domain was written' USING ERRCODE = 'AC513';
   END IF;
 
   v_digest_after := aftercare_control.current_branch_digest(v_branch);
-  SELECT encode(sha256(convert_to(COALESCE(string_agg(
-           format('%s/%s.%s:%s->%s:%s->%s', d ->> 'objectType', d ->> 'objectId', d ->> 'field',
-                  d ->> 'versionBefore', d ->> 'versionAfter', d ->> 'centsBefore', d ->> 'centsAfter'),
-           E'\n' ORDER BY d ->> 'objectId'), '') || E'\n', 'UTF8')), 'hex')
-    INTO STRICT v_diff_digest
-    FROM jsonb_array_elements(v_diff) AS d;
+  -- Diff digest format v2: a header and one line per written field, in
+  -- (objectType, objectId, fieldId) order:
+  --   <objectType>/<objectId>.<fieldId>:<before>-><after>:<valueBefore>-><valueAfter>
+  -- The values are canonical int64 text, so they carry neither ':' nor a
+  -- newline; v1 digested a price-only line under a different key.
+  SELECT encode(sha256(convert_to(
+           'aftercare-application-diff/v2' || E'
+'
+           || COALESCE((SELECT string_agg(
+                  format('%s/%s.%s:%s->%s:%s->%s', d ->> 'objectType', d ->> 'objectId', d ->> 'fieldId',
+                         d ->> 'versionBefore', d ->> 'versionAfter', d ->> 'valueBefore', d ->> 'valueAfter'),
+                  E'
+' ORDER BY d ->> 'objectType', d ->> 'objectId', d ->> 'fieldId')
+                FROM jsonb_array_elements(v_diff) AS d), '')
+           || E'
+', 'UTF8')), 'hex')
+    INTO STRICT v_diff_digest;
 
   v_revision := v_case.revision + 1;
   INSERT INTO aftercare_control.repair_applications
@@ -2021,19 +2441,34 @@ BEGIN
      clock_timestamp(), v_branch.content_digest, v_digest_after, v_diff,
      COALESCE(p_checks, '[]'::jsonb) || jsonb_build_array(
        jsonb_build_object('check', 'branch_differs_from_snapshot_exactly_by_patch', 'holds', true,
-                          'basis', 'in_transaction_independent_comparison'),
-       jsonb_build_object('check', 'orders_unchanged', 'holds', true, 'basis', 'in_transaction_orders_digest'),
+                          'basis', 'in_transaction_independent_whole_row_comparison'),
+       jsonb_build_object('check', 'orders_unchanged', 'holds', true,
+                          'basis', 'in_transaction_non_repairable_table_digest'),
        jsonb_build_object('check', 'footprint_exact', 'holds', true, 'basis', 'in_transaction_independent_comparison'),
        jsonb_build_object('check', 'unresolved_untouched', 'holds', true, 'basis', 'in_transaction_independent_comparison')),
      v_diff_digest, v_contract.kind,
      CASE WHEN v_contract.kind = 'undo' THEN (v_contract.body ->> 'applicationId')::uuid END)
   RETURNING * INTO STRICT v_application;
+  -- Every recorded value passes the one value parser of the registry before
+  -- the ledger row exists, so a value outside the registered bounds can never
+  -- be recorded as a repair-made version.
+  FOR v_entry IN SELECT d FROM jsonb_array_elements(v_diff) AS d
+  LOOP
+    BEGIN
+      PERFORM aftercare.assert_field_value(v_entry ->> 'fieldId', v_entry ->> 'valueBefore');
+      PERFORM aftercare.assert_field_value(v_entry ->> 'fieldId', v_entry ->> 'valueAfter');
+    EXCEPTION WHEN OTHERS THEN
+      RAISE EXCEPTION 'implementation defect: a diff value of % is outside the registered field bounds: %',
+        v_entry ->> 'fieldId', SQLERRM USING ERRCODE = 'AC513';
+    END;
+  END LOOP;
   INSERT INTO aftercare_control.repair_field_versions
-    (application_id, branch_id, repair_id, object_type, object_id, field, version_before, version_after,
-     cents_before, cents_after)
-  SELECT v_application.application_id, v_branch.branch_id, v_attempt.repair_id, d ->> 'objectType', d ->> 'objectId',
-         d ->> 'field', (d ->> 'versionBefore')::bigint, (d ->> 'versionAfter')::bigint,
-         (d ->> 'centsBefore')::bigint, (d ->> 'centsAfter')::bigint
+    (application_id, branch_id, repair_id, object_type, object_id, field_id, version_before, version_after,
+     value_before, value_after)
+  SELECT v_application.application_id, v_branch.branch_id, v_attempt.repair_id,
+         d ->> 'objectType', d ->> 'objectId', d ->> 'fieldId',
+         (d ->> 'versionBefore')::bigint, (d ->> 'versionAfter')::bigint,
+         d ->> 'valueBefore', d ->> 'valueAfter'
     FROM jsonb_array_elements(v_diff) AS d;
 
   UPDATE aftercare_control.execution_attempts
@@ -2270,6 +2705,7 @@ DECLARE
   v_revision     bigint;
   v_outcome      text;
   v_phase        text;
+  v_object       record;
 BEGIN
   PERFORM aftercare_control.assert_executor(p_verifier);
   PERFORM aftercare_control.assert_document('verification report', p_body, p_digest);
@@ -2358,10 +2794,11 @@ BEGIN
   END IF;
   SELECT s.* INTO STRICT v_snapshot FROM aftercare_control.snapshots AS s WHERE s.snapshot_id = v_contract.snapshot_id;
   IF v_snapshot.status <> 'published' OR v_snapshot.content_digest <> p_body -> 'snapshot' ->> 'contentDigest'
-     OR aftercare_control.relation_digest(v_snapshot.schema_name, 'products')
-          <> (SELECT t ->> 'digest' FROM jsonb_array_elements(v_snapshot.scope) AS t WHERE t ->> 'table' = 'products')
-     OR aftercare_control.relation_digest(v_snapshot.schema_name, 'orders')
-          <> (SELECT t ->> 'digest' FROM jsonb_array_elements(v_snapshot.scope) AS t WHERE t ->> 'table' = 'orders') THEN
+     OR EXISTS (
+       SELECT 1 FROM aftercare.object_types AS t
+        WHERE aftercare_control.relation_digest(v_snapshot.schema_name, t.table_name)
+                IS DISTINCT FROM (SELECT s ->> 'digest' FROM jsonb_array_elements(v_snapshot.scope) AS s
+                                   WHERE s ->> 'table' = t.table_name)) THEN
     RAISE EXCEPTION 'snapshot % is not intact or not the one the report names', v_snapshot.snapshot_id USING ERRCODE = 'AC523';
   END IF;
 
@@ -2405,17 +2842,25 @@ BEGIN
       UPDATE aftercare_control.plan_lifecycle SET lifecycle = 'verified' WHERE plan_id = v_contract.plan_id;
       PERFORM aftercare_control.open_gate('');
     END IF;
-    -- Immutable at the database: no write privilege remains, and a trigger refuses whoever still could.
-    EXECUTE format('REVOKE UPDATE ON %I.products FROM aftercare_sandbox_owner', v_branch.schema_name);
-    EXECUTE format(
-      'CREATE TRIGGER sealed_products BEFORE INSERT OR UPDATE OR DELETE ON %I.products
-         FOR EACH ROW EXECUTE FUNCTION aftercare_control.reject_sealed_branch_write()', v_branch.schema_name);
-    EXECUTE format(
-      'CREATE TRIGGER sealed_products_truncate BEFORE TRUNCATE ON %I.products
-         FOR EACH STATEMENT EXECUTE FUNCTION aftercare_control.reject_sealed_branch_write()', v_branch.schema_name);
-    EXECUTE format(
-      'CREATE TRIGGER sealed_orders BEFORE INSERT OR UPDATE OR DELETE ON %I.orders
-         FOR EACH ROW EXECUTE FUNCTION aftercare_control.reject_sealed_branch_write()', v_branch.schema_name);
+    -- Immutable at the database: no write privilege remains, and a trigger
+    -- refuses whoever still could. Every registered table is sealed; no table
+    -- is named here.
+    FOR v_object IN
+      SELECT t.table_name, t.repairable FROM aftercare.object_types AS t ORDER BY t.object_type
+    LOOP
+      IF v_object.repairable THEN
+        EXECUTE format('REVOKE UPDATE ON %I.%I FROM aftercare_sandbox_owner',
+          v_branch.schema_name, v_object.table_name);
+      END IF;
+      EXECUTE format(
+        'CREATE TRIGGER %I BEFORE INSERT OR UPDATE OR DELETE ON %I.%I
+           FOR EACH ROW EXECUTE FUNCTION aftercare_control.reject_sealed_branch_write()',
+        'sealed_' || v_object.table_name, v_branch.schema_name, v_object.table_name);
+      EXECUTE format(
+        'CREATE TRIGGER %I BEFORE TRUNCATE ON %I.%I
+           FOR EACH STATEMENT EXECUTE FUNCTION aftercare_control.reject_sealed_branch_write()',
+        'sealed_' || v_object.table_name || '_truncate', v_branch.schema_name, v_object.table_name);
+    END LOOP;
     UPDATE aftercare_control.execution_branches
        SET status = 'sealed', status_revision = v_revision, status_reason = 'sealed:' || v_report.report_id::text
      WHERE branch_id = v_branch.branch_id;
@@ -2450,25 +2895,9 @@ BEGIN
 END;
 $fn$;
 
--- The order rows of one registered branch, for the Runtime (mirror of branch_products).
-CREATE FUNCTION aftercare_control.branch_orders(p_branch aftercare_control.execution_branches)
-RETURNS TABLE (order_id text, product_id text, quantity integer, unit_price_cents bigint, price_version bigint, version bigint)
-LANGUAGE plpgsql
-STABLE
-SECURITY DEFINER
-SET search_path = pg_catalog, pg_temp
-AS $$
-BEGIN
-  IF p_branch.schema_name !~ '^aftercare_branch_[0-9a-f]{32}$' OR NOT EXISTS (
-    SELECT 1 FROM aftercare_control.execution_branches AS b WHERE b.branch_id = p_branch.branch_id
-       AND b.schema_name = p_branch.schema_name) THEN
-    RAISE EXCEPTION 'not a registered branch' USING ERRCODE = 'AC202';
-  END IF;
-  RETURN QUERY EXECUTE format(
-    'SELECT o.order_id, o.product_id, o.quantity, o.unit_price_cents, o.price_version, o.version FROM %I.orders AS o ORDER BY o.order_id',
-    p_branch.schema_name);
-END;
-$$;
+-- The typed order reader of the price era is gone: branch_rows(branch,
+-- object_type) returns the whole registered row of every object type, and the
+-- Runtime reads the order table through the registry.
 
 -- Read-only description of the verification state of a case.
 CREATE FUNCTION aftercare_control.describe_verification(p_case_id uuid) RETURNS jsonb
@@ -2520,6 +2949,12 @@ BEGIN
 END;
 $$;
 
+-- exec_admit is defined in this migration (it carries the undo and successor
+-- rules), so its privileges are granted here rather than where the other
+-- executor entries are granted.
+REVOKE ALL ON FUNCTION aftercare_control.exec_admit(uuid, uuid, text, bigint) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION aftercare_control.exec_admit(uuid, uuid, text, bigint) TO aftercare_sandbox_owner;
+
 REVOKE ALL ON FUNCTION aftercare_control.exec_release_lease(uuid, text, bigint) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION aftercare_control.exec_release_lease(uuid, text, bigint) TO aftercare_sandbox_owner;
 
@@ -2553,7 +2988,6 @@ GRANT SELECT ON
   aftercare_control.artefact_grants
 TO aftercare_runtime;
 GRANT EXECUTE ON FUNCTION aftercare_control.describe_verification(uuid) TO aftercare_runtime;
-GRANT EXECUTE ON FUNCTION aftercare_control.branch_orders(aftercare_control.execution_branches) TO aftercare_runtime;
 GRANT EXECUTE ON FUNCTION aftercare_control.verification_run_json(aftercare_control.verification_runs) TO aftercare_runtime;
 GRANT EXECUTE ON FUNCTION aftercare_control.report_json(aftercare_control.verification_reports) TO aftercare_runtime;
 GRANT EXECUTE ON FUNCTION aftercare_control.lineage_json(aftercare_control.branch_lineage) TO aftercare_runtime;

@@ -84,12 +84,16 @@ export const OPERATION_TEMPLATES: Readonly<Record<OperationType, OperationTempla
     templateVersion: 1,
     params: ['order_id', 'product_id', 'quantity'],
     // The struck unit price is copied from the product price version that was read.
-    reads: [{ objectType: 'product', field: 'price_cents', dependencyClass: 'business_value' }],
+    reads: [
+      { objectType: 'product', field: 'price_cents', dependencyClass: 'business_value' },
+      // Reading the object version records the version the copy was taken at.
+      { objectType: 'product', field: 'version', dependencyClass: 'concurrency_guard' },
+    ],
     writes: [
       { objectType: 'order', field: 'product_id' },
       { objectType: 'order', field: 'quantity' },
       { objectType: 'order', field: 'unit_price_cents' },
-      { objectType: 'order', field: 'price_version' },
+      { objectType: 'order', field: 'product_version' },
     ],
   },
 };

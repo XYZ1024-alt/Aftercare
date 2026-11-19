@@ -174,7 +174,7 @@ export function createEvidenceService(options: EvidenceServiceOptions): Evidence
         rangeConclusion: tool.rangeConclusion,
       };
       const body: EvidenceBody = {
-        evidenceFormat: 1,
+        evidenceFormat: 2,
         caseId,
         snapshotId,
         ...result,

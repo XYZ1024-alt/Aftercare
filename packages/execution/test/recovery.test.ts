@@ -262,7 +262,9 @@ describe('pause, cancel and restart', () => {
       hypothesis: {
         snapshotId: h.frozen.ref.snapshotId,
         statement: 'x',
-        scope: { domains: [{ objectType: 'product', objectId: 'e', field: 'price_cents' }] },
+        scope: {
+          domains: [{ objectType: 'product', objectId: 'e', field: 'product.price_cents' }],
+        },
         basis: [],
         negativeClaims: [],
       },
@@ -359,27 +361,27 @@ describe('what the sandbox refuses', () => {
     const target = (objectId: string, extra: Record<string, unknown> = {}) => ({
       objectType: 'product',
       objectId,
-      field: 'price_cents',
-      expectedVersion: '2',
-      fromCents: '8000',
-      toCents: '10000',
+      fieldId: 'product.price_cents',
+      expectedObjectVersion: '2',
+      fromValue: '8000',
+      toValue: '10000',
       ...extra,
     });
     const cases: [string, unknown[], unknown[] | undefined, string][] = [
-      ['illegal field', [target('d', { field: 'name' })], undefined, 'patch_rejected'],
+      ['illegal field', [target('d', { fieldId: 'product.name' })], undefined, 'patch_rejected'],
       [
         'amount out of bounds',
-        [target('d', { toCents: '99999999999999999999' })],
+        [target('d', { toValue: '99999999999999999999' })],
         undefined,
         'patch_rejected',
       ],
-      ['negative amount', [target('d', { toCents: '-1' })], undefined, 'patch_rejected'],
+      ['negative amount', [target('d', { toValue: '-1' })], undefined, 'patch_rejected'],
       [
         'wrong footprint',
         [
           target('d'),
           target('e'),
-          { ...target('b', { expectedVersion: '3', fromCents: '9500', toCents: '9600' }) },
+          { ...target('b', { expectedObjectVersion: '3', fromValue: '9500', toValue: '9600' }) },
         ],
         undefined,
         'patch_rejected',
@@ -387,14 +389,14 @@ describe('what the sandbox refuses', () => {
       // A changed footprint no longer matches the approval's scope: the approval gate comes first.
       [
         'footprint names an unresolved domain',
-        [target('c', { expectedVersion: '3', fromCents: '9000' })],
-        [{ objectType: 'product', objectId: 'c', field: 'price_cents' }],
+        [target('c', { expectedObjectVersion: '3', fromValue: '9000' })],
+        [{ objectType: 'product', objectId: 'c', fieldId: 'product.price_cents' }],
         'approval_not_valid',
       ],
       [
         'unknown object',
         [target('zzz')],
-        [{ objectType: 'product', objectId: 'zzz', field: 'price_cents' }],
+        [{ objectType: 'product', objectId: 'zzz', fieldId: 'product.price_cents' }],
         'approval_not_valid',
       ],
       // Same footprint, patch outside it: the sandbox refuses the entry itself.
@@ -403,8 +405,8 @@ describe('what the sandbox refuses', () => {
         [
           target('d'),
           target('e'),
-          target('a', { expectedVersion: '3', fromCents: '9000', toCents: '11000' }),
-          target('b', { expectedVersion: '3', fromCents: '9500', toCents: '9600' }),
+          target('a', { expectedObjectVersion: '3', fromValue: '9000', toValue: '11000' }),
+          target('b', { expectedObjectVersion: '3', fromValue: '9500', toValue: '9600' }),
         ],
         undefined,
         'patch_rejected',

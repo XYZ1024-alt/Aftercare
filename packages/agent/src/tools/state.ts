@@ -124,7 +124,9 @@ export async function caseStateDocument(
         : {
             charter: autonomy.charter.body.name,
             note: 'an autopilot answers your questions and approval requests for the business owner, by exactly these rules; anything they do not decide waits for a person',
-            incidentRule: autonomy.charter.body.incidentRule,
+            /** The fields the owner has rules for; an operation on any other field is left to a person. */
+            fieldRules: Object.keys(autonomy.charter.body.fields).sort(),
+            onNoMatch: autonomy.charter.body.onNoMatch,
             baselineRule: autonomy.charter.body.baselineRule,
             replayPolicyVersionId: autonomy.charter.body.replayPolicy.policyVersionId,
             approvalEnvelope: autonomy.charter.body.approval,

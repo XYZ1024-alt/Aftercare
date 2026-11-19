@@ -4,10 +4,10 @@ import {
   auditBatchSchema,
   auditOperationSchema,
   commitWatermarkSchema,
+  type ObjectSnapshot,
   type OrderSnapshot,
+  objectSnapshotSchema,
   orderSnapshotSchema,
-  type ProductSnapshot,
-  productSnapshotSchema,
 } from '@aftercare/contracts';
 import { formatInt64 } from '@aftercare/domain';
 import type { Pool, QueryResultRow } from 'pg';
@@ -22,12 +22,15 @@ import type { z } from 'zod';
 // boundary as a decimal string and is parsed in exactly one place: the contracts.
 const READ_STATEMENTS = {
   product: `
-    SELECT product_id AS "productId", name, price_cents::text AS "priceCents", version::text AS version
+    SELECT 'product' AS "objectType", product_id AS "objectId", version::text AS version,
+           jsonb_build_object('product.price_cents', price_cents::text) AS fields
       FROM aftercare.products
      WHERE product_id = $1`,
   order: `
     SELECT order_id AS "orderId", product_id AS "productId", quantity,
-           unit_price_cents::text AS "unitPriceCents", price_version::text AS "priceVersion",
+           'product.price_cents' AS "fieldId",
+           product_version::text AS "readObjectVersion",
+           unit_price_cents::text AS "recordedValue",
            version::text AS version
       FROM aftercare.orders
      WHERE order_id = $1`,
@@ -94,7 +97,7 @@ async function readRows<Schema extends z.ZodType>(
 }
 
 export interface AuditReader {
-  readonly readProduct: (productId: string) => Promise<ProductSnapshot | null>;
+  readonly readProduct: (productId: string) => Promise<ObjectSnapshot | null>;
   readonly readOrder: (orderId: string) => Promise<OrderSnapshot | null>;
   /** The number of controlled write invocations committed so far. */
   readonly readCommitWatermark: () => Promise<bigint>;
@@ -110,7 +113,7 @@ export interface AuditReader {
 export function createAuditReader(pool: Pool): AuditReader {
   return {
     readProduct: async (productId) =>
-      (await readRows(pool, 'product', [productId], productSnapshotSchema))[0] ?? null,
+      (await readRows(pool, 'product', [productId], objectSnapshotSchema))[0] ?? null,
     readOrder: async (orderId) =>
       (await readRows(pool, 'order', [orderId], orderSnapshotSchema))[0] ?? null,
     readCommitWatermark: async () => {

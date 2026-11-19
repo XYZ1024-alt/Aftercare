@@ -13,14 +13,14 @@ import type {
   RepairFieldRef,
   SnapshotRecord,
 } from '@aftercare/contracts';
-import { digestJson, INT64_MAX } from '@aftercare/domain';
+import { DEFAULT_REGISTRY, digestJson, fieldIdOf, findField, INT64_MAX } from '@aftercare/domain';
 import type { ConstraintCheck } from './constraints.ts';
 import { compilerInvariantViolation } from './counterexample.ts';
 import {
   domainKey,
-  type FieldOutcome,
   fieldKey,
   objectKey,
+  type FieldOutcome as ReplayFieldOutcome,
   type ReplayResult,
   type ReplayStep,
 } from './engine.ts';
@@ -63,7 +63,7 @@ const TABLES_READ = [
 
 export interface UnresolvedDomain {
   readonly domain: DomainRef;
-  readonly recorded: { readonly version: bigint; readonly priceCents: bigint } | null;
+  readonly recorded: { readonly version: bigint; readonly value: string } | null;
   readonly cause: Counterexample;
 }
 
@@ -93,12 +93,57 @@ export interface PlanInputs {
   readonly unresolved: readonly UnresolvedDomain[];
 }
 
-type ResolvedField = FieldOutcome & {
-  readonly resolution: { readonly kind: 'resolved'; readonly cents: bigint };
+type ResolvedField = ReplayFieldOutcome & {
+  readonly resolution: { readonly kind: 'resolved'; readonly value: string };
 };
 
-function fieldRef(productId: string): RepairFieldRef {
-  return { objectType: 'product', objectId: productId, field: 'price_cents' };
+function fieldOf(domain: DomainRef): string {
+  if (domain.field === null) {
+    throw compilerInvariantViolation(
+      `${domain.objectType}/${domain.objectId} is not a field domain`,
+    );
+  }
+  return domain.field;
+}
+
+/** The physical column of a registered field id, e.g. price_cents. */
+function columnOf(fieldId: string): string {
+  const dot = fieldId.indexOf('.');
+  if (dot <= 0 || dot === fieldId.length - 1) {
+    throw compilerInvariantViolation(`invalid field id "${fieldId}"`);
+  }
+  return fieldId.slice(dot + 1);
+}
+
+/** Is this domain a field the registry lets a repair write? */
+export function isRepairedFieldDomain(
+  domain: DomainRef,
+): domain is DomainRef & { readonly field: string } {
+  return domain.field !== null && findField(DEFAULT_REGISTRY, domain.field) !== undefined;
+}
+
+function repairField(domain: DomainRef): RepairFieldRef {
+  return {
+    objectType: domain.objectType,
+    objectId: domain.objectId,
+    fieldId: fieldOf(domain),
+  };
+}
+
+function objectRowVersion(history: History, objectType: string, objectId: string): bigint | null {
+  return history.objects.get(objectKey(objectType, objectId))?.objectVersion ?? null;
+}
+
+/** The snapshot value of one field, or null when the snapshot holds no such field. */
+function objectRowValue(history: History, domain: DomainRef): string | null {
+  if (domain.field === null) {
+    return null;
+  }
+  return (
+    history.objects
+      .get(objectKey(domain.objectType, domain.objectId))
+      ?.fields.get(columnOf(domain.field)) ?? null
+  );
 }
 
 function position(operation: HistoryOperation) {
@@ -117,8 +162,8 @@ function derivationStep(step: ReplayStep): DerivationStep {
     versionAfter: step.versionAfter.toString(),
     action: step.action,
     ruleIds: [...step.ruleIds],
-    recordedCents: step.recordedCents.toString(),
-    replayedCents: step.replayedCents?.toString() ?? null,
+    recordedValue: step.recordedValue,
+    replayedValue: step.replayedValue,
   };
 }
 
@@ -138,7 +183,8 @@ export function assemblePlan(inputs: PlanInputs): PlanContent {
   );
 
   const resolved = replay.fields.filter(
-    (field): field is ResolvedField => field.resolution.kind === 'resolved',
+    (field): field is ResolvedField =>
+      isRepairedFieldDomain(field.domain) && field.resolution.kind === 'resolved',
   );
   const candidates = resolved.map((field) => {
     if (field.baseline === null || field.recorded === null) {
@@ -150,42 +196,57 @@ export function assemblePlan(inputs: PlanInputs): PlanContent {
     // must be the field itself. Anything else would be a dependency the
     // registered semantics do not model, and no isolation could be claimed.
     for (const { operation } of field.steps) {
+      const domain = field.domain;
+      const domainField = fieldOf(domain);
       const foreign = operation.reads.find(
         (read) =>
           read.dependencyClass !== 'concurrency_guard' &&
-          fieldKey(read.objectType, read.objectId, read.field) !== domainKey(field.domain),
+          (read.objectType !== domain.objectType ||
+            read.objectId !== domain.objectId ||
+            fieldIdOf(read.objectType, read.field) !== domainField),
       );
       if (foreign !== undefined) {
         throw compilerInvariantViolation(
-          `${domainKey(field.domain)} was resolved although operation ${operation.operationId} read ${fieldKey(foreign.objectType, foreign.objectId, foreign.field)} as a business value`,
+          `${domainKey(domain)} was resolved although operation ${operation.operationId} read ${fieldKey(foreign.objectType, foreign.objectId, foreign.field)} as a business value`,
         );
       }
     }
+    const objectVersion = objectRowVersion(history, field.domain.objectType, field.domain.objectId);
+    if (objectVersion === null) {
+      throw compilerInvariantViolation(
+        `${domainKey(field.domain)} was resolved although the snapshot holds no such object`,
+      );
+    }
     return {
-      ...fieldRef(field.domain.objectId),
-      baselineVersion: field.baseline.version.toString(),
-      baselineCents: field.baseline.priceCents.toString(),
-      snapshotVersion: field.recorded.version.toString(),
-      snapshotCents: field.recorded.priceCents.toString(),
-      candidateCents: field.resolution.cents.toString(),
+      ...repairField(field.domain),
+      baselineFieldVersion: field.baseline.version.toString(),
+      baselineValue: field.baseline.value,
+      snapshotObjectVersion: objectVersion.toString(),
+      snapshotValue: field.recorded.value,
+      candidateValue: field.resolution.value,
       derivation: field.steps.map(derivationStep),
     };
   });
   const patch = candidates
-    .filter((candidate) => candidate.candidateCents !== candidate.snapshotCents)
+    .filter((candidate) => candidate.candidateValue !== candidate.snapshotValue)
     .map((candidate) => ({
-      ...fieldRef(candidate.objectId),
-      expectedVersion: candidate.snapshotVersion,
-      fromCents: candidate.snapshotCents,
-      toCents: candidate.candidateCents,
+      objectType: candidate.objectType,
+      objectId: candidate.objectId,
+      fieldId: candidate.fieldId,
+      expectedObjectVersion: candidate.snapshotObjectVersion,
+      fromValue: candidate.snapshotValue,
+      toValue: candidate.candidateValue,
     }));
 
   const unresolved = [...inputs.unresolved]
     .sort((left, right) => (domainKey(left.domain) < domainKey(right.domain) ? -1 : 1))
     .map((entry) => ({
       domain: entry.domain,
-      snapshotVersion: entry.recorded?.version.toString() ?? null,
-      snapshotCents: entry.recorded?.priceCents.toString() ?? null,
+      snapshotObjectVersion:
+        objectRowVersion(history, entry.domain.objectType, entry.domain.objectId)?.toString() ??
+        entry.recorded?.version.toString() ??
+        null,
+      snapshotValue: objectRowValue(history, entry.domain) ?? entry.recorded?.value ?? null,
       counterexample: entry.cause,
     }));
 
@@ -219,8 +280,16 @@ export function assemblePlan(inputs: PlanInputs): PlanContent {
     ]),
   );
 
+  const readerImpacts = [...replay.readerImpacts];
+  const repairedFields = candidates.map((candidate) => ({
+    objectType: candidate.objectType,
+    objectId: candidate.objectId,
+    fieldId: candidate.fieldId,
+  }));
+  const amountFields = [...new Set(candidates.map((candidate) => candidate.fieldId))].sort();
+
   return {
-    planFormat: 1,
+    planFormat: 2,
     proposalKind: 'omit_operations_replay_supported',
     caseId: snapshot.caseId,
     snapshotId: snapshot.snapshotId,
@@ -315,26 +384,42 @@ export function assemblePlan(inputs: PlanInputs): PlanContent {
           coverage: 'entire_range',
         },
       ],
-      fieldHistories: replay.fields.flatMap((field) =>
-        field.baseline === null || field.recorded === null || field.resolution.kind === 'untouched'
-          ? []
-          : [
-              {
-                ...fieldRef(field.domain.objectId),
-                baselineVersion: field.baseline.version.toString(),
-                snapshotVersion: field.recorded.version.toString(),
-                operationIds: field.operations.map((operation) => operation.operationId),
-              },
-            ],
-      ),
+      fieldHistories: replay.fields.flatMap((field) => {
+        if (
+          !isRepairedFieldDomain(field.domain) ||
+          field.baseline === null ||
+          field.recorded === null ||
+          field.resolution.kind === 'untouched'
+        ) {
+          return [];
+        }
+        const objectVersion = objectRowVersion(
+          history,
+          field.domain.objectType,
+          field.domain.objectId,
+        );
+        if (objectVersion === null) {
+          throw compilerInvariantViolation(
+            `${domainKey(field.domain)} has a field history but no snapshot object`,
+          );
+        }
+        return [
+          {
+            ...repairField(field.domain),
+            baselineFieldVersion: field.baseline.version.toString(),
+            snapshotObjectVersion: objectVersion.toString(),
+            operationIds: field.operations.map((operation) => operation.operationId),
+          },
+        ];
+      }),
       negativeQueries: resolved.flatMap((field) =>
         field.recorded === null
           ? []
           : [
               {
-                ...fieldRef(field.domain.objectId),
+                ...repairField(field.domain),
                 statement: 'no_write_after_version' as const,
-                afterVersion: field.recorded.version.toString(),
+                afterObjectVersion: field.recorded.version.toString(),
                 watermark: {
                   afterExclusive: (
                     field.operations.at(-1)?.commitSeq ?? BigInt(baseline.body.trustedWatermark)
@@ -342,7 +427,9 @@ export function assemblePlan(inputs: PlanInputs): PlanContent {
                   toInclusive: watermark,
                 },
                 matched: 0 as const,
-                auditCompleteness: degraded.has(objectKey('product', field.domain.objectId))
+                auditCompleteness: degraded.has(
+                  objectKey(field.domain.objectType, field.domain.objectId),
+                )
                   ? ('not_established' as const)
                   : ('established' as const),
                 basis: HISTORY_CHECKS,
@@ -353,40 +440,34 @@ export function assemblePlan(inputs: PlanInputs): PlanContent {
 
     candidates,
     patch,
-    allowedFootprint: patch.map((entry) => fieldRef(entry.objectId)),
-    preserved: resolved.flatMap((field) =>
-      field.steps.flatMap((step) =>
-        step.action === 'omitted_incident' || step.action === 'left_unresolved'
-          ? []
-          : [
-              {
-                ...position(step.operation),
-                ...fieldRef(field.domain.objectId),
-                treatment: step.action,
-                ruleIds: [...step.ruleIds],
-                recordedCents: step.recordedCents.toString(),
-              },
-            ],
-      ),
-    ),
-    orderImpacts: replay.orderImpacts.map((impact) => ({
-      orderId: impact.orderId,
-      productId: impact.productId,
-      operationId: impact.operation.operationId,
-      commitSeq: impact.operation.commitSeq.toString(),
-      quantity: impact.quantity,
-      priceVersionRead: impact.priceVersionRead.toString(),
-      struckUnitPriceCents: impact.struckUnitPriceCents.toString(),
-      priceSource: impact.priceSource,
-      replayedUnitPriceCents: impact.replayedUnitPriceCents?.toString() ?? null,
-      disposition: 'order_unchanged' as const,
+    allowedFootprint: patch.map((entry) => ({
+      objectType: entry.objectType,
+      objectId: entry.objectId,
+      fieldId: entry.fieldId,
     })),
+    preserved: resolved.flatMap((field) =>
+      field.steps.flatMap((step) => {
+        if (step.action === 'omitted_incident' || step.action === 'left_unresolved') {
+          return [];
+        }
+        return [
+          {
+            ...position(step.operation),
+            ...repairField(field.domain),
+            treatment: step.action,
+            ruleIds: [...step.ruleIds],
+            recordedValue: step.recordedValue,
+          },
+        ];
+      }),
+    ),
+    readerImpacts,
     unresolved,
     isolation:
       unresolved.length === 0
         ? null
         : {
-            repairedFields: candidates.map((candidate) => fieldRef(candidate.objectId)),
+            repairedFields,
             unresolvedDomains: unresolved.map((entry) => entry.domain),
             checks: [
               {
@@ -433,21 +514,21 @@ export function assemblePlan(inputs: PlanInputs): PlanContent {
         },
       },
       ...patch.flatMap((entry) => {
-        const key = fieldKey(entry.objectType, entry.objectId, entry.field);
+        const key = fieldKey(entry.objectType, entry.objectId, entry.fieldId);
         return [
           {
             obligationId: `target_at_expected_version:${key}`,
             kind: 'target_at_expected_version' as const,
             parameters: {
               field: key,
-              expectedVersion: entry.expectedVersion,
-              expectedCents: entry.fromCents,
+              expectedObjectVersion: entry.expectedObjectVersion,
+              expectedValue: entry.fromValue,
             },
           },
           {
             obligationId: `result_equals_candidate:${key}`,
             kind: 'result_equals_candidate' as const,
-            parameters: { field: key, candidateCents: entry.toCents },
+            parameters: { field: key, candidateValue: entry.toValue },
           },
         ];
       }),
@@ -455,20 +536,20 @@ export function assemblePlan(inputs: PlanInputs): PlanContent {
         obligationId: 'footprint_exact',
         kind: 'footprint_exact',
         parameters: {
-          fields: patch.map((entry) => fieldKey(entry.objectType, entry.objectId, entry.field)),
+          fields: patch.map((entry) => fieldKey(entry.objectType, entry.objectId, entry.fieldId)),
         },
       },
       ...candidates
-        .filter((candidate) => candidate.candidateCents === candidate.snapshotCents)
+        .filter((candidate) => candidate.candidateValue === candidate.snapshotValue)
         .map((candidate) => {
-          const key = fieldKey(candidate.objectType, candidate.objectId, candidate.field);
+          const key = fieldKey(candidate.objectType, candidate.objectId, candidate.fieldId);
           return {
             obligationId: `preserved_value_intact:${key}`,
             kind: 'preserved_value_intact' as const,
             parameters: {
               field: key,
-              version: candidate.snapshotVersion,
-              cents: candidate.snapshotCents,
+              snapshotObjectVersion: candidate.snapshotObjectVersion,
+              snapshotValue: candidate.snapshotValue,
             },
           };
         }),
@@ -477,7 +558,10 @@ export function assemblePlan(inputs: PlanInputs): PlanContent {
         kind: 'orders_unchanged',
         parameters: {
           scope: 'every order of the snapshot',
-          impactedOrderIds: replay.orderImpacts.map((impact) => impact.orderId).sort(),
+          impactedOrderIds: readerImpacts
+            .filter((impact) => impact.readerObjectType === 'order')
+            .map((impact) => impact.readerObjectId)
+            .sort(),
         },
       },
       ...(unresolved.length === 0
@@ -495,13 +579,27 @@ export function assemblePlan(inputs: PlanInputs): PlanContent {
         parameters: {
           ruleId: constraint.ruleId,
           constraint: constraint.kind,
-          productIds: [...constraint.productIds],
+          domains: [...constraint.domains],
         },
       })),
       {
         obligationId: 'amounts_within_bounds',
         kind: 'amounts_within_bounds',
-        parameters: { minCents: '0', maxCents: INT64_MAX.toString() },
+        parameters: {
+          fields: amountFields.map((fieldId) => {
+            const field = findField(DEFAULT_REGISTRY, fieldId);
+            if (field === undefined) {
+              throw compilerInvariantViolation(
+                `the plan repairs field "${fieldId}" the registry does not declare`,
+              );
+            }
+            return {
+              fieldId,
+              min: field.bounds.min,
+              max: field.bounds.max ?? INT64_MAX.toString(),
+            };
+          }),
+        },
       },
     ],
     approvalPrerequisites: [
@@ -548,15 +646,18 @@ function fail(message: string): never {
  * counterexample or a "corrected" plan.
  */
 export function assertPlanInvariants(content: PlanContent): void {
-  const keyOf = (ref: RepairFieldRef) => fieldKey(ref.objectType, ref.objectId, ref.field);
+  const keyOf = (ref: RepairFieldRef) => fieldKey(ref.objectType, ref.objectId, ref.fieldId);
   const candidates = new Map(content.candidates.map((candidate) => [keyOf(candidate), candidate]));
   const patched = content.patch.map(keyOf);
   const footprint = content.allowedFootprint.map(keyOf);
-  const unresolvedProducts = new Set(
-    content.unresolved
-      .filter((entry) => entry.domain.objectType === 'product')
-      .map((entry) => entry.domain.objectId),
-  );
+  const unresolvedFields = content.unresolved.map((entry) => entry.domain);
+  const overlapsUnresolved = (entry: RepairFieldRef) =>
+    unresolvedFields.some(
+      (domain) =>
+        domain.objectType === entry.objectType &&
+        domain.objectId === entry.objectId &&
+        (domain.field === null || domain.field === entry.fieldId),
+    );
 
   if (patched.join('|') !== footprint.join('|')) {
     fail('the allowed footprint is not exactly the set of patched fields');
@@ -565,27 +666,33 @@ export function assertPlanInvariants(content: PlanContent): void {
     const candidate = candidates.get(keyOf(entry));
     if (
       candidate === undefined ||
-      entry.toCents !== candidate.candidateCents ||
-      entry.fromCents !== candidate.snapshotCents ||
-      entry.expectedVersion !== candidate.snapshotVersion ||
-      entry.fromCents === entry.toCents
+      entry.toValue !== candidate.candidateValue ||
+      entry.fromValue !== candidate.snapshotValue ||
+      entry.expectedObjectVersion !== candidate.snapshotObjectVersion ||
+      entry.fromValue === entry.toValue
     ) {
       fail(`patch of ${keyOf(entry)} does not follow from its candidate`);
     }
-    if (unresolvedProducts.has(entry.objectId)) {
+    if (overlapsUnresolved(entry)) {
       fail(`patch of ${keyOf(entry)} writes into an unresolved domain`);
     }
   }
   for (const [key, candidate] of candidates) {
-    const cents = BigInt(candidate.candidateCents);
-    if (cents < 0n || cents > INT64_MAX) {
-      fail(`candidate of ${key} is not a valid amount`);
+    const field = findField(DEFAULT_REGISTRY, candidate.fieldId);
+    if (field === undefined) {
+      fail(`candidate of ${key} names a field the registry does not declare`);
+    }
+    const value = BigInt(candidate.candidateValue);
+    const min = BigInt(field.bounds.min);
+    const max = field.bounds.max === null ? INT64_MAX : BigInt(field.bounds.max);
+    if (value < min || value > max) {
+      fail(`candidate of ${key} is not a valid value for its field`);
     }
     const last = candidate.derivation.at(-1);
     if (last === undefined || last.action === 'left_unresolved') {
       fail(`candidate of ${key} has no resolved derivation`);
     }
-    if (last.replayedCents !== candidate.candidateCents) {
+    if (last.replayedValue !== candidate.candidateValue) {
       fail(`candidate of ${key} is not the result of its derivation`);
     }
     const retained =
@@ -593,8 +700,8 @@ export function assertPlanInvariants(content: PlanContent): void {
       last.action === 'retained_outside_affected_domain';
     if (
       retained &&
-      (candidate.candidateCents !== last.recordedCents ||
-        candidate.candidateCents !== candidate.snapshotCents)
+      (candidate.candidateValue !== last.recordedValue ||
+        candidate.candidateValue !== candidate.snapshotValue)
     ) {
       // A legitimate later write is the last word on the field: the plan must leave it alone.
       fail(`the retained write of ${key} would be overwritten by its candidate`);

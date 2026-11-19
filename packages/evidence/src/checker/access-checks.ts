@@ -38,6 +38,15 @@ export function checkTablePrivileges(
   const businessWriters = new Set(
     manifest.body.roles.filter((role) => role.kind === 'business_writer').map((role) => role.role),
   );
+  // The registries and template definitions are reference data every component
+  // has to be able to read to interpret a write; they are append-only and hold
+  // no business row. A SELECT on a covered interpretation table is therefore
+  // part of the declared role model, while any write privilege on it is not.
+  const interpretationTables = new Set(
+    manifest.body.coveredTables
+      .filter((table) => table.purpose === 'interpretation')
+      .map((table) => table.table),
+  );
   const entryBypass: CheckFinding[] = [];
   const auditIntegrity: CheckFinding[] = [];
 
@@ -65,7 +74,10 @@ export function checkTablePrivileges(
           ),
         );
       }
-    } else if (!(isBusinessTable && businessWriters.has(grant.grantee))) {
+    } else if (
+      !(isBusinessTable && businessWriters.has(grant.grantee)) &&
+      !interpretationTables.has(grant.table_name)
+    ) {
       entryBypass.push(
         finding(
           'unexpected_read_privilege',

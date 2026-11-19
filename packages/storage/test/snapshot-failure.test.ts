@@ -93,7 +93,7 @@ describe('snapshot creation failure paths', () => {
     const counts = rows[0];
     expect(counts?.commits).toBeGreaterThan(1);
 
-    // Enough for products and orders, one row short at the third table.
+    // Enough for orders and products, one row short at the object_types mirror.
     const outcome = await db.snapshots.createSnapshot({
       caseId,
       limits: { maxTotalRows: (counts?.leading ?? 0) + 1 },
@@ -102,7 +102,7 @@ describe('snapshot creation failure paths', () => {
       code: 'quota_exceeded',
       stage: 'transaction',
     });
-    expect(snapshotFailureOf(outcome).message).toMatch(/reached at table commits/);
+    expect(snapshotFailureOf(outcome).message).toMatch(/reached at table object_types/);
     await expectNothingLeftBehind(before);
   });
 

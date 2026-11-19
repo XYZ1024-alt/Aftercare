@@ -1,12 +1,13 @@
 import {
   DEFAULT_EVIDENCE_PAGE_SIZE,
   type Evidence,
+  fieldIdSchema,
   int64TextSchema,
   jsonObjectSchema,
-  orderIdSchema,
-  productIdSchema,
+  objectIdSchema,
+  objectTypeSchema,
 } from '@aftercare/contracts';
-import type { JsonObject } from '@aftercare/domain';
+import { DEFAULT_REGISTRY, findField, type JsonObject } from '@aftercare/domain';
 import { z } from 'zod';
 import { EVIDENCE_CATEGORIES } from '../feedback.ts';
 import { evidenceRefs, presentEvidence } from '../present.ts';
@@ -112,7 +113,7 @@ export function evidenceTools(): RegisteredTool[] {
   return [
     defineTool({
       name: 'list_batches',
-      description: `Lists batch operations (imports, bulk price changes) recorded in a commit-sequence interval, oldest first: batch id, type, declared target count, recorded operation count, committer pseudonym. ${READS} A page with hasMore=true says nothing about what follows it.`,
+      description: `Lists batch operations (imports, bulk field changes) recorded in a commit-sequence interval, oldest first: batch id, type, declared target count, recorded operation count, committer pseudonym. ${READS} A page with hasMore=true says nothing about what follows it.`,
       access: 'read',
       inputVersion: 'snapshot',
       compactable: true,
@@ -162,30 +163,56 @@ export function evidenceTools(): RegisteredTool[] {
         collect(context, { tool: 'operation.detail', operationId: args.operationId }),
     }),
     defineTool({
-      name: 'get_product_history',
-      description: `Reads the product row as the snapshot holds it and every recorded version of the product, oldest first: which operation wrote each version and the after image it recorded. ${READS}`,
+      name: 'get_field_history',
+      description: `Reads the row as the snapshot holds it and every recorded write of one field of it, oldest first: which operation wrote each version and the after image it recorded. The field is named by its registered field id. ${READS}`,
       access: 'read',
       inputVersion: 'snapshot',
       compactable: true,
-      parameters: z.strictObject({ productId: productIdSchema, ...pageParameters }),
+      parameters: z.strictObject({
+        objectType: objectTypeSchema,
+        objectId: objectIdSchema,
+        fieldId: fieldIdSchema,
+        ...pageParameters,
+      }),
       output: evidenceOutputSchema,
       run: (context, args) =>
         collect(context, {
-          tool: 'product.version_history',
-          productId: args.productId,
+          tool: 'field.history',
+          objectType: args.objectType,
+          objectId: args.objectId,
+          fieldId: args.fieldId,
           limit: args.limit,
           ...(args.cursor === undefined ? {} : { cursor: args.cursor }),
         }),
     }),
     defineTool({
-      name: 'get_order_pricing',
-      description: `Reads one order: quantity, the unit price it was struck at, the product price version it read and the operation that wrote that version. Orders are facts: no tool changes an order, a payment or a notification. ${READS}`,
+      name: 'get_reader_impacts',
+      description: `Reads every downstream object that recorded a value of one field, with the value it recorded and the audited write it read. Readers are facts: no tool changes a reader, a payment or a notification. ${READS}`,
       access: 'read',
       inputVersion: 'snapshot',
       compactable: true,
-      parameters: z.strictObject({ orderId: orderIdSchema }),
+      parameters: z.strictObject({
+        objectId: objectIdSchema.describe('The object the field belongs to.'),
+        fieldId: fieldIdSchema,
+      }),
       output: evidenceOutputSchema,
-      run: (context, args) => collect(context, { tool: 'order.pricing', orderId: args.orderId }),
+      run: async (context, args) => {
+        const field = findField(DEFAULT_REGISTRY, args.fieldId);
+        if (field === undefined) {
+          return rejected(
+            'evidence',
+            'invalid_request',
+            'invalid_request',
+            `${args.fieldId} is not a registered repairable field`,
+          );
+        }
+        return collect(context, {
+          tool: 'reader.impacts',
+          objectType: field.objectType,
+          objectId: args.objectId,
+          fieldId: args.fieldId,
+        });
+      },
     }),
   ];
 }

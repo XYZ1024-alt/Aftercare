@@ -47,14 +47,14 @@ describe('the standard five-product run (scripted model, scripted operator)', ()
       kind: 'sealed_report',
       status: 'partially_resolved',
       reportCurrent: true,
-      unresolvedDomains: ['product/c.price_cents'],
+      unresolvedDomains: ['product/c.product.price_cents'],
     });
     // Hand-written expectations: a 110, b 95 kept, c 90 untouched, d and e back at 100.
     expect(await branchPricesOf(h, run.caseId)).toEqual([
       { a: '11000@4', b: '9500@3', c: '9000@3', d: '10000@3', e: '10000@3' },
     ]);
     // The source was never written by the repair channel.
-    expect((await h.db.reader.readProduct('a'))?.priceCents).toBe(9_000n);
+    expect((await h.db.reader.readProduct('a'))?.fields['product.price_cents']).toBe(9_000n);
 
     // Who did what: the confirmations and the approval are the humans', never the agent's.
     const state = await h.db.caseStore.describeExecution(run.caseId);

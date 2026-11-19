@@ -1,7 +1,8 @@
+import { OPERATION_TYPES } from '@aftercare/domain';
 import { z } from 'zod';
 import { agentLimitsSchema } from './agent.ts';
 import type { CaseCapability, ConfirmationCapability } from './confirmation.ts';
-import { principalSchema } from './primitives.ts';
+import { fieldIdSchema, principalSchema } from './primitives.ts';
 import { instantSchema, int64TextSchema, jsonObjectSchema, sha256HexSchema } from './wire.ts';
 
 // Stage nine: autonomy charters. A charter is a business owner's standing,
@@ -59,14 +60,61 @@ export const RESUMABLE_PAUSE_REASONS = [
   'budget_exhausted',
 ] as const;
 
-/** A relative change in basis points: 10 000 = 100 %. */
-const basisPointsSchema = z.number().int().min(0).max(1_000_000);
+/** A relative change in basis points: 10 000 = 100 %. A threshold of 0 says nothing. */
+const relativeChangeBpsSchema = z.number().int().min(1).max(1_000_000);
 
 const sortedUnique = <T extends string>(values: readonly T[]): T[] => [...new Set(values)].sort();
 
+/**
+ * When a candidate operation of an incident_scope question is confirmed as an
+ * incident for one field. The operation type and the direction are ANDed; the
+ * two thresholds are ORed: the change is an incident when it reaches the
+ * relative threshold OR the absolute one. A relative-only rule can never match
+ * "0 -> N", an absolute-only rule misses a small slip on a large base value, so
+ * both are expressible and either one is enough.
+ */
+const incidentRuleSchema = z
+  .strictObject({
+    operationTypes: z.array(z.enum(OPERATION_TYPES)).min(1),
+    /** Absent: a change counts in either direction. */
+    direction: z.enum(['decrease', 'increase']).optional(),
+    /** The relative change of the field value, in basis points of the value before. */
+    minRelativeChangeBps: relativeChangeBpsSchema.optional(),
+    /** The absolute change of the field value, in the field's own unit (canonical text). */
+    minAbsoluteChange: int64TextSchema.optional(),
+  })
+  .superRefine((rule, issues) => {
+    if (rule.minRelativeChangeBps === undefined && rule.minAbsoluteChange === undefined) {
+      issues.addIssue({
+        code: 'custom',
+        message: 'an incident rule needs minRelativeChangeBps, minAbsoluteChange, or both',
+      });
+    }
+  });
+
+/**
+ * One field's envelope: the largest change of that one field an autopilot may
+ * approve or promote on its own. The absolute bound is required; the relative
+ * one is optional, because a quantity legitimately moves from 0 to N.
+ */
+const envelopeSchema = z.strictObject({
+  maxAbsoluteChange: int64TextSchema,
+  maxRelativeChangeBps: relativeChangeBpsSchema.optional(),
+});
+
+/**
+ * The rules of one field. A field that is not listed in a charter is never
+ * decided by the autopilot: such an operation is escalated to a person.
+ */
+const fieldRulesSchema = z.strictObject({
+  incident: incidentRuleSchema,
+  approval: envelopeSchema,
+  promotion: envelopeSchema,
+});
+
 export const autonomyCharterSchema = z
   .strictObject({
-    charterFormat: z.literal(1),
+    charterFormat: z.literal(2),
     name: z.string().trim().min(1).max(200),
     sourceEnvironment: z.string().min(1).max(500),
     autopilotPrincipal: principalSchema.refine(
@@ -79,19 +127,20 @@ export const autonomyCharterSchema = z
       acknowledgeDataEgress: z.literal(true),
       limits: agentLimitsSchema.prefault({}),
     }),
-    /** Which candidate operations of an incident_scope question are confirmed as erroneous. */
-    incidentRule: z.strictObject({
-      operationTypes: z
-        .array(z.enum(['set_price', 'batch_set_price']))
-        .min(1)
-        .transform(sortedUnique),
-      direction: z.enum(['decrease', 'increase', 'any']),
-      /** The price must move at least this much (relative to its value before), in basis points. */
-      minRelativeChangeBps: basisPointsSchema,
-      /** When no candidate matches: decline the proposition, or leave it to a person. */
-      onNoMatch: z.enum(['decline', 'escalate']),
-    }),
-    /** The trusted starting point: the version each product had before its first confirmed incident operation. */
+    /**
+     * The per-field rules: which change of the field is an incident, what may
+     * be approved, what may be promoted. A field absent here has no envelope.
+     */
+    fields: z
+      .record(fieldIdSchema, fieldRulesSchema)
+      .refine((fields) => Object.keys(fields).length > 0, 'a charter rules at least one field'),
+    /**
+     * When no candidate satisfies the incident rule of its field: decline the
+     * proposition, or leave it to a person. A field that is not listed in
+     * `fields` is always left to a person, never declined.
+     */
+    onNoMatch: z.enum(['decline', 'escalate']),
+    /** The trusted starting point: the version each object field had before its first confirmed incident operation. */
     baselineRule: z.strictObject({ kind: z.literal('version_before_first_incident') }),
     /** The registered replay policy version the owner stands behind. */
     replayPolicy: z.strictObject({ policyVersionId: z.uuid() }),
@@ -100,11 +149,13 @@ export const autonomyCharterSchema = z
       kind: z.literal('record_unknown_intent'),
       statement: z.string().trim().min(1).max(2000),
     }),
-    /** The envelope of an execution approval in the sandbox. */
+    /**
+     * The envelope of one execution approval across fields. The per-field
+     * change bound lives under `fields`; what is counted here is the whole.
+     */
     approval: z.strictObject({
+      /** Counted per (object type, object id), not per patch entry. */
       maxChangedObjects: z.number().int().min(1).max(500),
-      maxAbsoluteChangeCents: int64TextSchema,
-      maxRelativeChangeBps: basisPointsSchema,
       maxUnresolvedDomains: z.number().int().min(0).max(500),
       validForSeconds: z.number().int().min(60).max(86_400),
     }),
@@ -118,13 +169,15 @@ export const autonomyCharterSchema = z
         maxTotalToolCalls: z.number().int().min(1).max(2000),
       }),
     }),
-    /** Writing a sealed repair back to the source business data. */
+    /**
+     * Writing a sealed repair back to the source business data. The per-field
+     * change bound lives under `fields`; what is counted here is the whole.
+     */
     promotion: z.strictObject({
       enabled: z.boolean(),
       allowPartial: z.boolean(),
+      /** Counted per (object type, object id), not per patch entry. */
       maxChangedObjects: z.number().int().min(1).max(500),
-      maxAbsoluteChangeCents: int64TextSchema,
-      maxRelativeChangeBps: basisPointsSchema,
       /** How often a promotion refused for drift may reopen the investigation on a new snapshot. */
       maxDriftReopens: z.number().int().min(0).max(5),
     }),
@@ -237,7 +290,7 @@ export const autonomyDecisionSchema = z.strictObject({
   /** "question:<id>", "pause:<seq>", "report:<id>", "promotion:<id>", "reopen:<id>". */
   subject: z.string(),
   action: z.enum(AUTONOMY_DECISION_ACTIONS),
-  /** The charter rule the decision rests on, e.g. "incidentRule", "approval", "recovery". */
+  /** The charter rule the decision rests on, e.g. "fields.product.price_cents.incident", "approval", "recovery". */
   rule: z.string(),
   /** What was evaluated: values, evidence ids, the verdict of the rule. */
   input: jsonObjectSchema,
@@ -262,7 +315,9 @@ export const autonomyCharterSummarySchema = z.strictObject({
   registeredBy: principalSchema,
   registeredAt: instantSchema,
   delegated: z.array(z.enum(DELEGABLE_CAPABILITIES)),
-  incidentRule: autonomyCharterSchema.shape.incidentRule,
+  /** The per-field rules the autopilot decides within, field by field. */
+  fields: autonomyCharterSchema.shape.fields,
+  /** The cross-field limits of one approval. */
   approval: autonomyCharterSchema.shape.approval,
   promotion: z.strictObject({ enabled: z.boolean(), allowPartial: z.boolean() }),
   deliveryWebhook: z.boolean(),
@@ -300,7 +355,7 @@ export function charterSummary(record: AutonomyCharterRecord): AutonomyCharterSu
     registeredBy: record.registeredBy,
     registeredAt: record.registeredAt,
     delegated: body.delegated,
-    incidentRule: body.incidentRule,
+    fields: body.fields,
     approval: body.approval,
     promotion: { enabled: body.promotion.enabled, allowPartial: body.promotion.allowPartial },
     deliveryWebhook: body.delivery.webhookUrl !== null,

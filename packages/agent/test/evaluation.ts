@@ -133,7 +133,12 @@ export async function runEvaluationCase(
       await collect(
         h,
         { caseId: run.caseId, snapshotId: approval.body.bound.snapshotId },
-        { tool: 'product.version_history', productId },
+        {
+          tool: 'field.history',
+          objectType: 'product',
+          objectId: productId,
+          fieldId: 'product.price_cents',
+        },
       );
     }
     await driver.respond(ended);

@@ -356,7 +356,13 @@ export function createAgentService(options: AgentServiceOptions): AgentService {
               statement: answer.statement,
               evidenceRefs: [...body.evidenceRefs],
               source: answer.source,
-              scope: { domains: body.scope },
+              scope: {
+                domains: body.scope.map((entry) => ({
+                  objectType: entry.objectType,
+                  objectId: entry.objectId,
+                  field: entry.fieldId,
+                })),
+              },
               answers: body.inputRequestId,
             },
           });

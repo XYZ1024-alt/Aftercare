@@ -5,13 +5,20 @@ import {
   caseCommandSchema,
   type IdentityContext,
   identityContextSchema,
+  type RepairApplication,
 } from '@aftercare/contracts';
-import { digestJson, type JsonObject, type JsonValue } from '@aftercare/domain';
+import {
+  DEFAULT_REGISTRY,
+  digestJson,
+  findField,
+  type JsonObject,
+  type JsonValue,
+} from '@aftercare/domain';
 import { evidenceDependencyManifest } from '@aftercare/evidence';
 import type { CaseStore, CommandEnvelope, ControlStore, RepairStore } from '@aftercare/storage';
 import { z } from 'zod';
 import { buildExecutionContract } from './execution-contract.ts';
-import { deriveUndoContract } from './undo-contract.ts';
+import { type BranchRow, deriveUndoContract } from './undo-contract.ts';
 
 export interface CaseCommandServiceOptions {
   /** Runtime-side control store (role `aftercare_runtime`). */
@@ -76,6 +83,70 @@ interface Prepared {
 }
 
 /**
+ * Reads the rows of the target branch for the object types the undo
+ * derivation checks: every object the application wrote and every object type
+ * the field registry declares as a reader. Each row is shaped as the branch's
+ * own column image (what aftercare_control.branch_rows returns), so the
+ * derivation compares columns by the registry, not by the price-era typed
+ * readers. Until the case store exposes branch_rows() directly, the two typed
+ * readers are mapped into that image here.
+ */
+async function readTargetRows(
+  caseStore: CaseStore,
+  caseId: string,
+  branchId: string,
+  objectTypes: ReadonlySet<string>,
+): Promise<BranchRow[]> {
+  const rows: BranchRow[] = [];
+  for (const objectType of [...objectTypes].sort()) {
+    switch (objectType) {
+      case 'product':
+        for (const row of await caseStore.readBranchProducts(caseId, branchId)) {
+          rows.push({
+            objectType,
+            objectId: row.objectId,
+            columns: { product_id: row.objectId, price_cents: row.cents, version: row.version },
+          });
+        }
+        break;
+      case 'order':
+        for (const row of await caseStore.readBranchOrders(caseId, branchId)) {
+          rows.push({
+            objectType,
+            objectId: row.orderId,
+            columns: {
+              order_id: row.orderId,
+              product_id: row.productId,
+              product_version: row.priceVersion,
+              unit_price_cents: row.unitPriceCents,
+            },
+          });
+        }
+        break;
+      default:
+        throw new Error(`the case store exposes no branch rows for object type "${objectType}"`);
+    }
+  }
+  return rows;
+}
+
+/** Every object type the undo derivation reads for one application. */
+function undoObjectTypes(application: RepairApplication): Set<string> {
+  const objectTypes = new Set<string>();
+  for (const field of application.writtenFootprint) {
+    objectTypes.add(field.objectType);
+    const spec = findField(DEFAULT_REGISTRY, field.fieldId);
+    if (spec === undefined) {
+      continue;
+    }
+    for (const reader of spec.copyReaders) {
+      objectTypes.add(reader.objectType);
+    }
+  }
+  return objectTypes;
+}
+
+/**
  * The deterministic command handler in front of the database entry. It
  * validates the request, loads the records the command names and derives from
  * THEM what the database needs (a stored document and its digest, a
@@ -107,7 +178,7 @@ export function createCaseCommandService(options: CaseCommandServiceOptions): Ca
           );
         }
         const body = {
-          confirmationFormat: 1,
+          confirmationFormat: 2,
           sourceEnvironment: snapshot.sourceEnvironment,
           ...confirmation,
         };
@@ -219,11 +290,10 @@ export function createCaseCommandService(options: CaseCommandServiceOptions): Ca
             { reason: 'application_not_verified', objects: [], expected: null, observed: null },
           );
         }
-        const [plan, policy, products, orders] = await Promise.all([
+        const [plan, policy, targetRows] = await Promise.all([
           repairStore.findCompiledPlan({ caseId, planId: application.planId }),
           repairStore.findPolicyVersion(state.activePolicyVersionId),
-          caseStore.readBranchProducts(caseId, target.branchId),
-          caseStore.readBranchOrders(caseId, target.branchId),
+          readTargetRows(caseStore, caseId, target.branchId, undoObjectTypes(application)),
         ]);
         if (plan === null || policy === null) {
           return rejected(
@@ -239,8 +309,7 @@ export function createCaseCommandService(options: CaseCommandServiceOptions): Ca
           plan,
           target,
           lineage,
-          targetProducts: products,
-          targetOrders: orders,
+          targetRows,
           policy,
         });
         if (!derived.ok) {

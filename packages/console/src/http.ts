@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { charterSummary, type OperatorSession } from '@aftercare/contracts';
+import type { OperatorSession } from '@aftercare/contracts';
 import type { JsonObject, JsonValue } from '@aftercare/domain';
 import { z } from 'zod';
 import { type ConsoleActions, createActions, refuse } from './actions.ts';
@@ -12,6 +12,7 @@ import {
   readAssistantConversation,
   startAssistantTurn,
 } from './assistant/index.ts';
+import { charterSummaryJson } from './autonomy/charter.ts';
 import { SIGNATURE_HEADER, signatureMatches } from './autonomy/signature.ts';
 import { startAutonomousRun } from './autonomy/start.ts';
 import { type ConsoleContext, identityOf } from './context.ts';
@@ -820,7 +821,10 @@ export function createHttpApi(
         context.autonomy.readSwitch(),
         context.autonomy.chartersInForce(),
       ]);
-      return json(200, { switch: autonomySwitch, charters: charters.map(charterSummary) });
+      return json(200, {
+        switch: autonomySwitch,
+        charters: charters.map(charterSummaryJson),
+      });
     }
     if (area === 'environment' && method === 'GET') {
       return json(200, (await environmentView(context, env)) as unknown as JsonValue);

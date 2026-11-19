@@ -60,8 +60,8 @@ describe('consistent snapshot protocol', () => {
       baseWatermark: watermark.toString(),
       sourceEnvironment: await db.store.readSourceEnvironment(),
       versions: {
-        audit: 1,
-        adapter: { id: 'aftercare-product-pricing', version: 1 },
+        audit: 2,
+        adapter: { id: 'aftercare-generalized', version: 2 },
         digestFormat: 1,
       },
       integrity: {
@@ -76,8 +76,10 @@ describe('consistent snapshot protocol', () => {
     expect(snapshot.schemaName).toBe(`aftercare_snap_${snapshot.snapshotId.replaceAll('-', '')}`);
     expect(snapshot.versions.schema).toBe(await reviewedSchemaVersion());
     expect(snapshot.scope.map((table) => table.table)).toEqual([
-      'products',
       'orders',
+      'products',
+      'object_types',
+      'repairable_fields',
       'commits',
       'batches',
       'operations',
@@ -100,9 +102,10 @@ describe('consistent snapshot protocol', () => {
     expect(await readSnapshotFacts(db, snapshot)).toEqual(consistentAt(watermark));
     await withSnapshotSession(db.investigatorPool, snapshot, async (session) => {
       expect(await session.readProductRow(productId)).toEqual({
-        productId,
-        priceCents: '1000',
+        objectType: 'product',
+        objectId: productId,
         version: '1',
+        fields: { 'product.price_cents': '1000' },
       });
     });
     // The lock was released with the matching session-level unlock and the connection is gone.
@@ -145,21 +148,25 @@ describe('consistent snapshot protocol', () => {
     copied.release();
 
     const snapshot = published(await creating);
-    const [absolute, delta, order, batch] = await Promise.all(writes);
-    written(absolute);
-    written(delta);
-    written(order);
-    written(batch);
+    const [absoluteOutcome, deltaOutcome, orderOutcome, batchOutcome] = await Promise.all(writes);
+    written(absoluteOutcome);
+    written(deltaOutcome);
+    // The results are unwrapped, not the outcomes: the impact expectations below
+    // read the committed operation's sequence number and copied values.
+    const order = written(orderOutcome);
+    written(batchOutcome);
 
     // The snapshot is the commit prefix that ended before any of the four writers.
     expect(snapshot.baseWatermark).toBe(watermarkBefore.toString());
     expect(await readSnapshotFacts(db, snapshot)).toEqual(consistentAt(watermarkBefore));
     await withSnapshotSession(db.investigatorPool, snapshot, async (session) => {
       expect(await session.readProductRow(productId)).toMatchObject({
-        priceCents: '1000',
+        fields: { 'product.price_cents': '1000' },
         version: '1',
       });
-      expect(await session.readOrderPricing(orderId)).toBeNull();
+      expect(await session.listReaderImpacts('product', productId, 'product.price_cents')).toEqual(
+        [],
+      );
     });
 
     // The source moved on by exactly four whole commits; a later snapshot holds all of them.
@@ -169,7 +176,32 @@ describe('consistent snapshot protocol', () => {
     expect(await readSnapshotFacts(db, later)).toEqual(consistentAt(watermarkBefore + 4n));
     await withSnapshotSession(db.investigatorPool, later, async (session) => {
       expect(await session.readProductRow(productId)).toMatchObject({ version: '4' });
-      expect((await session.readOrderPricing(orderId))?.creation).not.toBeNull();
+      expect(await session.listReaderImpacts('product', productId, 'product.price_cents')).toEqual([
+        {
+          readerObjectType: 'order',
+          readerObjectId: orderId,
+          readObjectType: 'product',
+          readObjectId: productId,
+          fieldId: 'product.price_cents',
+          operationId: expect.any(String),
+          commitSeq: order.commitSeq.toString(),
+          readObjectVersion: order.productVersion.toString(),
+          recordedValue: order.unitPriceCents.toString(),
+          writtenBy: {
+            operationId: expect.any(String),
+            operationType: expect.stringMatching(/^(set_price|add_price_delta|batch_set_price)$/),
+            templateVersion: 1,
+            commitSeq: expect.any(String),
+            // The last write of the field at or before the version the order read.
+            recordedAfterState: {
+              product_id: productId,
+              name: productId,
+              price_cents: order.unitPriceCents.toString(),
+              version: order.productVersion.toString(),
+            },
+          },
+        },
+      ]);
     });
   });
 
@@ -212,9 +244,10 @@ describe('consistent snapshot protocol', () => {
         expect(await readSnapshotFacts(db, snapshot)).toEqual(consistentAt(watermark));
         await withSnapshotSession(db.investigatorPool, snapshot, async (session) => {
           expect(await session.readProductRow(productId)).toEqual({
-            productId,
-            priceCents,
+            objectType: 'product',
+            objectId: productId,
             version,
+            fields: { 'product.price_cents': priceCents },
           });
           const operations = await session.listOperations(
             { afterExclusive: watermarkBefore.toString(), toInclusive: snapshot.baseWatermark },

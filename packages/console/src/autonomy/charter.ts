@@ -1,7 +1,12 @@
 import { readFile } from 'node:fs/promises';
 import { extname } from 'node:path';
-import { type AutonomyCharter, autonomyCharterSchema } from '@aftercare/contracts';
-import { digestJson, type JsonValue } from '@aftercare/domain';
+import {
+  type AutonomyCharter,
+  type AutonomyCharterRecord,
+  autonomyCharterSchema,
+  charterSummary,
+} from '@aftercare/contracts';
+import { digestJson, type JsonObject, type JsonValue } from '@aftercare/domain';
 import { parse } from 'yaml';
 import { z } from 'zod';
 
@@ -46,6 +51,51 @@ export async function readCharterFile(
   return parseCharter({ ...document, sourceEnvironment: overrides.sourceEnvironment });
 }
 
+/** The field rules as plain JSON: optional keys are written only when set, as the database stores them. */
+function fieldsJson(fields: AutonomyCharter['fields']): Record<string, JsonValue> {
+  return Object.fromEntries(
+    Object.entries(fields).map(([fieldId, rules]) => [
+      fieldId,
+      {
+        incident: {
+          operationTypes: [...rules.incident.operationTypes],
+          ...(rules.incident.direction === undefined
+            ? {}
+            : { direction: rules.incident.direction }),
+          ...(rules.incident.minRelativeChangeBps === undefined
+            ? {}
+            : { minRelativeChangeBps: rules.incident.minRelativeChangeBps }),
+          ...(rules.incident.minAbsoluteChange === undefined
+            ? {}
+            : { minAbsoluteChange: rules.incident.minAbsoluteChange }),
+        },
+        approval: {
+          maxAbsoluteChange: rules.approval.maxAbsoluteChange,
+          ...(rules.approval.maxRelativeChangeBps === undefined
+            ? {}
+            : { maxRelativeChangeBps: rules.approval.maxRelativeChangeBps }),
+        },
+        promotion: {
+          maxAbsoluteChange: rules.promotion.maxAbsoluteChange,
+          ...(rules.promotion.maxRelativeChangeBps === undefined
+            ? {}
+            : { maxRelativeChangeBps: rules.promotion.maxRelativeChangeBps }),
+        },
+      } satisfies JsonObject,
+    ]),
+  );
+}
+
+/** The charter as JSON, with every optional field rule key made explicit. */
+export function charterJson(charter: AutonomyCharter): JsonObject {
+  return { ...charter, fields: fieldsJson(charter.fields) };
+}
+
+/** The summary the console shows, as JSON (the field rules stay, but typed for JSON). */
+export function charterSummaryJson(record: AutonomyCharterRecord): JsonObject {
+  return { ...charterSummary(record), fields: fieldsJson(record.body.fields) };
+}
+
 export function charterDigest(charter: AutonomyCharter): string {
-  return digestJson(charter);
+  return digestJson(charterJson(charter));
 }

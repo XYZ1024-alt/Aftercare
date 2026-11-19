@@ -1,7 +1,6 @@
 import { z } from 'zod';
 import { baselineEntrySchema, MAX_CONFIRMED_ITEMS, provenanceSchema } from './confirmation.ts';
-import { productIdSchema } from './primitives.ts';
-import { domainRefSchema } from './repair.ts';
+import { planContentSchema, repairFieldRefSchema } from './repair.ts';
 import { instantSchema, int64TextSchema, jsonObjectSchema, sha256HexSchema } from './wire.ts';
 
 // Stage seven: the persisted records of one Agent run. A model chooses the
@@ -222,7 +221,7 @@ export const QUESTION_CAPABILITIES = {
 } as const satisfies Record<QuestionKind, string>;
 
 const questionCommon = {
-  questionFormat: z.literal(1),
+  questionFormat: z.literal(2),
   caseId: z.uuid(),
   agentRunId: z.uuid(),
   /** The one business proposition the human is asked about. */
@@ -261,7 +260,11 @@ export const questionBodySchema = z.discriminatedUnion('kind', [
     ...questionCommon,
     kind: z.literal('baseline'),
     trustedWatermark: int64TextSchema,
-    /** Values copied from evidence records by the tool; the model names objects and versions only. */
+    /**
+     * Values copied from evidence records by the tool; the model names objects,
+     * fields and versions only. A baseline entry is the confirmation entry
+     * (object, field, field version, value) plus the evidence it was read from.
+     */
     entries: z.array(baselineEntrySchema.extend({ evidenceId: z.uuid() })).min(1),
   }),
   z.strictObject({
@@ -283,7 +286,8 @@ export const questionBodySchema = z.discriminatedUnion('kind', [
   z.strictObject({
     ...questionCommon,
     kind: z.literal('clarification'),
-    scope: z.array(domainRefSchema).min(1).max(200),
+    /** The object fields the clarification is about. */
+    scope: z.array(repairFieldRefSchema).min(1).max(200),
     /** The stage-four input request the case run waits on. */
     inputRequestId: z.uuid(),
   }),
@@ -296,14 +300,7 @@ export const questionBodySchema = z.discriminatedUnion('kind', [
     planId: z.uuid(),
     unresolvedDomains: z.array(z.string()),
     /** The exact field changes of the contract, for the reader. The digest is what binds. */
-    changes: z.array(
-      z.strictObject({
-        field: z.string(),
-        fromCents: int64TextSchema,
-        toCents: int64TextSchema,
-        expectedVersion: int64TextSchema,
-      }),
-    ),
+    changes: z.array(planContentSchema.shape.patch.element),
   }),
 ]);
 export type QuestionBody = z.output<typeof questionBodySchema>;
@@ -395,7 +392,8 @@ export const agentStartRequestSchema = z.strictObject({
 });
 export type AgentStartRequest = z.input<typeof agentStartRequestSchema>;
 
-export const productScopeSchema = z.array(productIdSchema).min(1).max(200);
+/** The object fields a statement is about: an object type, an object id and a field id. */
+export const fieldScopeSchema = z.array(repairFieldRefSchema).min(1).max(200);
 
 export const AGENT_REJECTION_CODES = [
   'invalid_request',

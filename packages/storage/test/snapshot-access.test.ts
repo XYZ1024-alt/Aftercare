@@ -247,6 +247,7 @@ describe('published snapshot: who can do what', () => {
       // The assistant entries (0025): a conversation is the principal's, stored
       // message by message under a turn lease. The two json renderers are plain
       // helpers granted to nobody.
+      ['assert_branch_object_update', []],
       ['assistant_append', ['aftercare_runtime']],
       ['assistant_begin_turn', ['aftercare_runtime']],
       ['assistant_delete_conversation', ['aftercare_runtime']],
@@ -258,8 +259,10 @@ describe('published snapshot: who can do what', () => {
       ['autonomy_record_decision', ['aftercare_runtime']],
       ['autonomy_set_switch', ['aftercare_runtime']],
       ['autonomy_settle_decision', ['aftercare_runtime']],
-      ['branch_orders', ['aftercare_runtime']],
+
       ['branch_products', ['aftercare_runtime']],
+
+      ['branch_rows', ['aftercare_runtime']],
       ['claim_operator_request', ['aftercare_runtime']],
       ['complete_operator_request', ['aftercare_runtime']],
       ['create_case', ['aftercare_runtime']],
@@ -286,6 +289,8 @@ describe('published snapshot: who can do what', () => {
       ['exec_renew_lease', ['aftercare_sandbox_owner']],
       ['execute_case_command', ['aftercare_runtime']],
       ['grant_confirmation_authority', ['aftercare_authority_admin']],
+      ['guard_branch_object_update', []],
+      ['guard_branch_product_update', []],
       ['has_capability', ['aftercare_runtime']],
       [
         'is_demo_environment',

@@ -1,10 +1,16 @@
 import { z } from 'zod';
-import { counterSchema, priceCentsSchema, quantitySchema } from './primitives.ts';
+import {
+  counterSchema,
+  objectIdSchema,
+  orderIdSchema,
+  priceCentsSchema,
+  quantitySchema,
+} from './primitives.ts';
 
 /** One applied price write: the operation instance and the resulting product state. */
 export const priceWriteSchema = z.object({
   operationId: z.uuid(),
-  productId: z.string(),
+  productId: objectIdSchema,
   priceCents: priceCentsSchema,
   version: counterSchema,
 });
@@ -22,11 +28,12 @@ export const batchSetPriceResultSchema = z.object({
 export const createOrderResultSchema = z.object({
   operationId: z.uuid(),
   commitSeq: counterSchema,
-  orderId: z.string(),
-  productId: z.string(),
+  orderId: orderIdSchema,
+  productId: objectIdSchema,
   quantity: quantitySchema,
   unitPriceCents: priceCentsSchema,
-  priceVersion: counterSchema,
+  /** The product object version the order copied its unit price from. */
+  productVersion: counterSchema,
 });
 
 export type ProductWriteResult = z.output<typeof productWriteResultSchema>;
@@ -36,8 +43,7 @@ export type CreateOrderResult = z.output<typeof createOrderResultSchema>;
 /** Business-rule rejections of a controlled write. Nothing was written when one is returned. */
 export const WRITE_REJECTION_CODES = [
   'invalid_argument',
-  'amount_out_of_range',
-  'negative_price',
+  'value_out_of_bounds',
   'product_not_found',
   'already_exists',
   'unsupported_isolation',

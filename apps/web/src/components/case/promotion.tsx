@@ -3,7 +3,9 @@
 import type { Promotion, PromotionCheck, PromotionView } from '@aftercare/console/client';
 import { DatabaseZap } from 'lucide-react';
 import {
-  cents,
+  fieldKey,
+  fieldTitle,
+  fieldValue,
   PROMOTION_CHECK_LABEL,
   PROMOTION_STATUS_LABEL,
   type Tone,
@@ -31,8 +33,19 @@ function PromotionEntry({
   readonly promotion: Promotion;
   readonly checks: readonly PromotionCheck[];
 }) {
-  const versionOf = (productId: string): string =>
-    promotion.writes.find((write) => write.productId === productId)?.version ?? '—';
+  const { view } = useCase();
+  const registry = view.registry;
+  const versionOf = (target: {
+    readonly objectType: string;
+    readonly objectId: string;
+    readonly fieldId: string;
+  }): string =>
+    promotion.writes.find(
+      (write) =>
+        write.objectType === target.objectType &&
+        write.objectId === target.objectId &&
+        write.fieldId === target.fieldId,
+    )?.versionAfter ?? '—';
   return (
     <li data-testid="promotion-write" data-status={promotion.status} className="space-y-3">
       <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
@@ -47,7 +60,8 @@ function PromotionEntry({
       <Table>
         <thead>
           <tr>
-            <th>商品</th>
+            <th>对象</th>
+            <th>字段</th>
             <th className="num">写回前</th>
             <th className="num">写回后</th>
             <th className="num">源库版本</th>
@@ -55,11 +69,18 @@ function PromotionEntry({
         </thead>
         <tbody>
           {promotion.targets.map((target) => (
-            <tr key={target.productId}>
-              <td>{target.productId}</td>
-              <td className="num text-muted">{cents(target.fromCents)}</td>
-              <td className="num font-semibold">{cents(target.toCents)}</td>
-              <td className="num">{versionOf(target.productId)}</td>
+            <tr key={fieldKey(target)}>
+              <td>
+                {target.objectType}/{target.objectId}
+              </td>
+              <td>{fieldTitle(registry, target.fieldId)}</td>
+              <td className="num text-muted">
+                {fieldValue(registry, target.fieldId, target.fromValue)}
+              </td>
+              <td className="num font-semibold">
+                {fieldValue(registry, target.fieldId, target.toValue)}
+              </td>
+              <td className="num">{versionOf(target)}</td>
             </tr>
           ))}
         </tbody>
@@ -70,7 +91,7 @@ function PromotionEntry({
           {promotion.drift
             .map(
               (drift) =>
-                `${drift.productId} 期望版本 ${drift.expectedVersion}，实际 ${drift.sourceVersion ?? '已不存在'}`,
+                `${drift.objectType}/${drift.objectId}.${drift.fieldId} 期望版本 ${drift.expectedFieldVersion}，实际 ${drift.sourceFieldVersion ?? '已不存在'}`,
             )
             .join('；')}
           。将按章程在新快照上重新调查。

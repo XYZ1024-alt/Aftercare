@@ -23,8 +23,8 @@ const HOST_TOOLS = {
   listBatches: 'list_batches',
   listOperations: 'list_operations',
   getOperationDetail: 'get_operation_detail',
-  getProductHistory: 'get_product_history',
-  getOrderPricing: 'get_order_pricing',
+  getFieldHistory: 'get_field_history',
+  getReaderImpacts: 'get_reader_impacts',
   readEvidence: 'read_evidence',
 } as const;
 

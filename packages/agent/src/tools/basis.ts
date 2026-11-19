@@ -9,7 +9,7 @@ import { commandRejected, rejected, type ToolContext, type ToolRejection } from 
 type Refused = { readonly status: 'rejected'; readonly rejection: ToolRejection };
 
 export function priceDomain(productId: string): DomainRef {
-  return { objectType: 'product', objectId: productId, field: 'price_cents' };
+  return { objectType: 'product', objectId: productId, field: 'product.price_cents' };
 }
 
 export async function currentState(

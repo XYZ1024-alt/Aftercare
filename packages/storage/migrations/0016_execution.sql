@@ -12,7 +12,9 @@
 --     claim/renew a lease, begin/mark/apply/fail/reconcile an attempt. The
 --     sandbox owner has no privilege on the source business schema, on
 --     snapshot schemas, on approvals, evidence, confirmations or validity, so a
---     SECURITY DEFINER function it owns can never reach them.
+--     SECURITY DEFINER function it owns can never reach them. It may update the
+--     registered repairable columns of the products table of a branch, and
+--     nothing else: the column list comes from aftercare.repairable_fields.
 --
 -- LOCK ORDER (unchanged): Case -> Branch -> BranchControl -> data rows. Every
 -- entry here takes aftercare_control.case_control FOR UPDATE first.
@@ -48,7 +50,7 @@ CREATE TABLE aftercare_control.execution_branches (
   snapshot_id              uuid        NOT NULL,
   schema_name              text        NOT NULL UNIQUE,
   status                   text        NOT NULL,
-  -- [{table, columns, rowCount, digest}] for products and orders, as copied.
+  -- [{table, rowCount, digest}] for every registered object table, as copied.
   manifest                 jsonb       NOT NULL,
   -- sha256 over the branch content header + per-table digests; recomputed by
   -- the executor inside the apply transaction.
@@ -242,7 +244,7 @@ CREATE TABLE aftercare_control.repair_applications (
   applied_at           timestamptz NOT NULL,
   branch_digest_before text        NOT NULL,
   branch_digest_after  text        NOT NULL,
-  -- [{objectType, objectId, field, versionBefore, versionAfter, centsBefore, centsAfter}]
+  -- [{objectType, objectId, fieldId, versionBefore, versionAfter, valueBefore, valueAfter}]
   written_footprint    jsonb       NOT NULL,
   checks               jsonb       NOT NULL,
   diff_digest          text        NOT NULL,
@@ -261,21 +263,26 @@ CREATE TABLE aftercare_control.repair_applications (
 -- The versions a repair produced in a branch: explicitly repair-made, linked
 -- to the version they replaced and to the application. They are not, and are
 -- never copied into, business audit history.
+--
+-- One row per written (object, field). The fields one application wrote to the
+-- same object share the one object-version step V -> V+1, so every row of that
+-- object satisfies repair_versions_step. The value domain is checked where the
+-- row is written, by aftercare.assert_field_value(field_id, value); a CHECK
+-- cannot query the registry, and the composite (object_type, field_id) match is
+-- enforced by the writer from the same registry row (0018).
 CREATE TABLE aftercare_control.repair_field_versions (
   application_id uuid   NOT NULL REFERENCES aftercare_control.repair_applications (application_id),
   branch_id      uuid   NOT NULL,
   repair_id      uuid   NOT NULL,
   object_type    text   NOT NULL,
   object_id      text   NOT NULL,
-  field          text   NOT NULL,
+  field_id       text   NOT NULL REFERENCES aftercare.repairable_fields (field_id),
   version_before bigint NOT NULL,
   version_after  bigint NOT NULL,
-  cents_before   bigint NOT NULL,
-  cents_after    bigint NOT NULL,
-  PRIMARY KEY (application_id, object_type, object_id, field),
-  CONSTRAINT repair_versions_step CHECK (version_after = version_before + 1),
-  CONSTRAINT repair_versions_domain CHECK (object_type = 'product' AND field = 'price_cents'),
-  CONSTRAINT repair_versions_amount CHECK (cents_after >= 0)
+  value_before   text   NOT NULL,
+  value_after    text   NOT NULL,
+  PRIMARY KEY (application_id, object_type, object_id, field_id),
+  CONSTRAINT repair_versions_step CHECK (version_after = version_before + 1)
 );
 
 -- ── Run phases and plan lifecycle of this stage ─────────────────────────────
@@ -497,24 +504,113 @@ $$;
 CREATE TRIGGER execution_leases_monotonic BEFORE UPDATE ON aftercare_control.execution_leases
   FOR EACH ROW EXECUTE FUNCTION aftercare_control.guard_lease_update();
 
--- Branch table guards: products advance by exactly one version per write and
--- keep their identity; orders are immutable; nothing is inserted, deleted or
--- truncated. These are the only functions a branch schema references.
-CREATE FUNCTION aftercare_control.guard_branch_product_update() RETURNS trigger
+-- Branch table guards: a registered repairable table advances by exactly one
+-- object version per write, changes registered repairable columns only and
+-- keeps every other registered column; a non-repairable table is immutable;
+-- nothing is inserted, deleted or truncated. These are the only functions a
+-- branch schema references.
+--
+-- The column list, the primary key, the version column and the repairable
+-- columns all come from aftercare.object_types / aftercare.repairable_fields.
+-- The object type is passed by the trigger as TG_ARGV[0], a literal written by
+-- 0017, never an argument of a callable function. SECURITY DEFINER because the
+-- branch writer (aftercare_sandbox_owner) holds no privilege on aftercare.* and
+-- must still be checked against the one value parser of the registry.
+CREATE FUNCTION aftercare_control.assert_branch_object_update(
+  p_object_type text, p_old jsonb, p_new jsonb
+) RETURNS void
 LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $$
+DECLARE
+  v_object   record;
+  v_column   text;
+  v_field_id text;
+BEGIN
+  SELECT t.object_type, t.table_name, t.pk_column, t.version_column, t.columns, t.repairable
+    INTO v_object
+    FROM aftercare.object_types AS t
+   WHERE t.object_type = p_object_type;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'object type "%" is not registered', p_object_type USING ERRCODE = 'AC508';
+  END IF;
+  IF NOT v_object.repairable THEN
+    RAISE EXCEPTION 'object type "%" is not repairable: its branch table is immutable', p_object_type
+      USING ERRCODE = 'AC508';
+  END IF;
+
+  -- The branch table is a copy of exactly the registered columns; a row that
+  -- carries anything else is not the table this guard was installed on.
+  IF EXISTS (SELECT 1 FROM jsonb_object_keys(p_new) AS k WHERE k <> ALL (v_object.columns))
+     OR EXISTS (SELECT 1 FROM unnest(v_object.columns) AS c WHERE NOT (p_new ? c)) THEN
+    RAISE EXCEPTION 'a branch % row does not hold exactly the registered columns', p_object_type
+      USING ERRCODE = 'AC508';
+  END IF;
+
+  IF (p_new -> v_object.pk_column) IS DISTINCT FROM (p_old -> v_object.pk_column) THEN
+    RAISE EXCEPTION 'a branch % keeps its %', p_object_type, v_object.pk_column USING ERRCODE = 'AC508';
+  END IF;
+  IF (p_new ->> v_object.version_column)::bigint <> (p_old ->> v_object.version_column)::bigint + 1 THEN
+    RAISE EXCEPTION 'a branch % version must advance by exactly one (% -> %)',
+      p_object_type, p_old ->> v_object.version_column, p_new ->> v_object.version_column
+      USING ERRCODE = 'AC508';
+  END IF;
+
+  FOREACH v_column IN ARRAY v_object.columns
+  LOOP
+    CONTINUE WHEN v_column = v_object.pk_column OR v_column = v_object.version_column;
+    SELECT f.field_id INTO v_field_id
+      FROM aftercare.repairable_fields AS f
+     WHERE f.object_type = p_object_type AND f.column_name = v_column;
+    IF v_field_id IS NULL THEN
+      IF (p_new -> v_column) IS DISTINCT FROM (p_old -> v_column) THEN
+        RAISE EXCEPTION 'a branch % keeps its non-repairable column "%"', p_object_type, v_column
+          USING ERRCODE = 'AC508';
+      END IF;
+    ELSE
+      -- Every registered repairable column, changed or not, must hold a value
+      -- the registry accepts; the bounds are the platform bound of the field.
+      -- A rejected value is a patch rejection of the branch layer, so the
+      -- parser's more specific SQLSTATE is reported as AC508 here.
+      BEGIN
+        PERFORM aftercare.assert_field_value(v_field_id, p_new ->> v_column);
+      EXCEPTION WHEN OTHERS THEN
+        RAISE EXCEPTION 'branch % column "%" holds a value outside the registered bounds: %',
+          p_object_type, v_column, SQLERRM USING ERRCODE = 'AC508';
+      END;
+    END IF;
+    v_field_id := NULL;
+  END LOOP;
+END;
+$$;
+
+-- The trigger of a repairable branch table: one argument, the object type.
+CREATE FUNCTION aftercare_control.guard_branch_object_update() RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp
 AS $$
 BEGIN
-  IF NEW.product_id <> OLD.product_id OR NEW.name <> OLD.name THEN
-    RAISE EXCEPTION 'a branch product keeps its identity and name' USING ERRCODE = 'AC508';
-  END IF;
-  IF NEW.version <> OLD.version + 1 THEN
-    RAISE EXCEPTION 'a branch product version must advance by exactly one (% -> %)', OLD.version, NEW.version
+  IF TG_NARGS <> 1 THEN
+    RAISE EXCEPTION 'the branch object guard needs exactly one object type argument'
       USING ERRCODE = 'AC508';
   END IF;
-  IF NEW.price_cents < 0 THEN
-    RAISE EXCEPTION 'a branch price cannot be negative' USING ERRCODE = 'AC508';
-  END IF;
+  PERFORM aftercare_control.assert_branch_object_update(TG_ARGV[0], to_jsonb(OLD), to_jsonb(NEW));
+  RETURN NEW;
+END;
+$$;
+
+-- Kept as a thin caller of the generic guard: 0020 materialises branches with
+-- this trigger function. The next batch switches that materialiser to
+-- guard_branch_object_update('product') and drops this shim.
+CREATE FUNCTION aftercare_control.guard_branch_product_update() RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $$
+BEGIN
+  PERFORM aftercare_control.assert_branch_object_update('product', to_jsonb(OLD), to_jsonb(NEW));
   RETURN NEW;
 END;
 $$;
@@ -524,16 +620,19 @@ LANGUAGE plpgsql
 SET search_path = pg_catalog, pg_temp
 AS $$
 BEGIN
-  RAISE EXCEPTION '% on branch table % is not permitted: only product prices may be repaired',
+  RAISE EXCEPTION '% on branch table % is not permitted: a branch accepts one versioned update of its registered repairable fields only',
     TG_OP, TG_TABLE_NAME USING ERRCODE = 'AC508';
 END;
 $$;
 
 -- ── Digests ─────────────────────────────────────────────────────────────────
 
--- Digest format 1 of one business table of a snapshot or branch schema
+-- Digest of one registered object table of a snapshot or branch schema
 -- (mirrors create_snapshot() and packages/domain/src/snapshot-digest.ts):
 -- a branch copy of an untouched table has the digest the snapshot registered.
+-- The column list is the physical column list of the schema table, which
+-- create_snapshot() and the branch materialiser both derive, in order, from
+-- aftercare.object_types. Only a table name the registry knows is digested.
 CREATE FUNCTION aftercare_control.relation_digest(p_schema text, p_table text) RETURNS text
 LANGUAGE plpgsql
 STABLE
@@ -544,8 +643,9 @@ DECLARE
   v_row_expression text;
   v_digest         text;
 BEGIN
-  IF p_schema !~ '^aftercare_(snap|branch)_[0-9a-f]{32}$' OR p_table NOT IN ('products', 'orders') THEN
-    RAISE EXCEPTION 'relation_digest only digests the business tables of a snapshot or branch schema'
+  IF p_schema !~ '^aftercare_(snap|branch)_[0-9a-f]{32}$'
+     OR NOT EXISTS (SELECT 1 FROM aftercare.object_types AS t WHERE t.table_name = p_table) THEN
+    RAISE EXCEPTION 'relation_digest only digests the registered object tables of a snapshot or branch schema'
       USING ERRCODE = 'AC201';
   END IF;
   SELECT array_agg(a.attname::text ORDER BY a.attnum)
@@ -566,7 +666,29 @@ BEGIN
 END;
 $$;
 
--- The content digest of a branch: header + the digest of each business table.
+-- The content digest of a branch: format v2, a header plus one line per
+-- registered object table, in table-name order. v2 exists because the column
+-- list of a table now comes from aftercare.object_types (the table set and the
+-- per-table column lists can grow), while v1 digested the fixed price-era
+-- lists of products and orders. The table digests are passed in as an object
+-- keyed by registered table name, so the function itself names no table.
+CREATE FUNCTION aftercare_control.branch_content_digest(
+  p_snapshot_id uuid, p_table_digests jsonb
+) RETURNS text
+LANGUAGE sql
+IMMUTABLE
+SET search_path = pg_catalog, pg_temp
+AS $$
+  SELECT encode(sha256(convert_to(
+    format(E'aftercare-branch-content/v2\nsnapshot=%s\n', p_snapshot_id)
+    || COALESCE((SELECT string_agg(format('%s=%s', d.key, d.value), E'\n' ORDER BY d.key)
+                   FROM jsonb_each_text(p_table_digests) AS d), '')
+    || E'\n', 'UTF8')), 'hex');
+$$;
+
+-- Kept for 0020's materialise_branch(), which still passes products and orders
+-- explicitly; the next batch drops it together with that materialiser. It is a
+-- thin caller of the registry-shaped function above and names no column list.
 CREATE FUNCTION aftercare_control.branch_content_digest(
   p_snapshot_id uuid, p_products_digest text, p_orders_digest text
 ) RETURNS text
@@ -574,12 +696,13 @@ LANGUAGE sql
 IMMUTABLE
 SET search_path = pg_catalog, pg_temp
 AS $$
-  SELECT encode(sha256(convert_to(
-    format(E'aftercare-branch-content/v1\nsnapshot=%s\nproducts=%s\norders=%s\n',
-           p_snapshot_id, p_products_digest, p_orders_digest), 'UTF8')), 'hex');
+  SELECT aftercare_control.branch_content_digest(
+    p_snapshot_id,
+    jsonb_build_object('products', p_products_digest, 'orders', p_orders_digest));
 $$;
 
--- The digest of the current state of a branch, read from its tables.
+-- The digest of the current state of a branch, read from its tables. Every
+-- registered object table takes part; none is named here.
 CREATE FUNCTION aftercare_control.current_branch_digest(p_branch aftercare_control.execution_branches)
 RETURNS text
 LANGUAGE sql
@@ -588,8 +711,9 @@ SET search_path = pg_catalog, pg_temp
 AS $$
   SELECT aftercare_control.branch_content_digest(
     p_branch.snapshot_id,
-    aftercare_control.relation_digest(p_branch.schema_name, 'products'),
-    aftercare_control.relation_digest(p_branch.schema_name, 'orders'));
+    (SELECT jsonb_object_agg(t.table_name,
+                             aftercare_control.relation_digest(p_branch.schema_name, t.table_name))
+       FROM aftercare.object_types AS t));
 $$;
 
 -- ── Renderers ───────────────────────────────────────────────────────────────

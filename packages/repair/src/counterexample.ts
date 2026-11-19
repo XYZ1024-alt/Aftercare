@@ -1,5 +1,5 @@
 import type { Counterexample, DomainRef } from '@aftercare/contracts';
-import type { JsonObject } from '@aftercare/domain';
+import { type JsonObject, OBJECT_TYPES, type ObjectType } from '@aftercare/domain';
 
 /**
  * What a compilation has to establish. Every counterexample names the one it
@@ -66,8 +66,16 @@ export function counterexample(parts: CounterexampleParts): Counterexample {
   };
 }
 
-export function priceField(productId: string): DomainRef {
-  return { objectType: 'product', objectId: productId, field: 'price_cents' };
+function isObjectType(value: string): value is ObjectType {
+  return (OBJECT_TYPES as readonly string[]).includes(value);
+}
+
+/** The affected domain of one field write: one field of one object. */
+export function fieldRef(objectType: string, objectId: string, fieldId: string): DomainRef {
+  if (!isObjectType(objectType)) {
+    throw compilerInvariantViolation(`unknown object type "${objectType}"`);
+  }
+  return { objectType, objectId, field: fieldId };
 }
 
 /** An error of the compiler itself. It is thrown, never reported as a counterexample. */

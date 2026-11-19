@@ -1,7 +1,10 @@
 import {
+  baselineEntryKey,
+  fieldIdSchema,
+  fieldScopeSchema,
   int64TextSchema,
-  productIdSchema,
-  productScopeSchema,
+  objectIdSchema,
+  objectTypeSchema,
   type QuestionBody,
   type QuestionKind,
   questionBodySchema,
@@ -9,8 +12,8 @@ import {
 import { reviewContract } from '@aftercare/execution';
 import { z } from 'zod';
 import { derivedUuid } from '../ids.ts';
-import { observedOperations, recordedPriceAt } from '../present.ts';
-import { citeEvidence, currentState, priceDomain } from './basis.ts';
+import { observedOperations, recordedFieldValueAt } from '../present.ts';
+import { citeEvidence, currentState } from './basis.ts';
 import {
   commandRejected,
   defineTool,
@@ -90,7 +93,7 @@ async function open(
   }
   const body = questionBodySchema.parse({
     ...draft,
-    questionFormat: 1,
+    questionFormat: 2,
     caseId: context.caseId,
     agentRunId: context.agentRunId,
     bound: {
@@ -172,7 +175,7 @@ export function questionTools(): RegisteredTool[] {
 
     defineTool({
       name: 'ask_baseline',
-      description: `Asks the human who may confirm baselines whether the named product versions held the right price before the incident. You name the product and the version only: the price is copied from the product history evidence you cite, never from you. trustedWatermark is the last commit sequence whose history is trusted; the incident must be later. ${WAITS}`,
+      description: `Asks the human who may confirm baselines whether the named object fields held the right value before the incident. You name the object type, object id, field id and the field version only: the value is copied from the field history evidence you cite, never from you. trustedWatermark is the last commit sequence whose history is trusted; the incident must be later. ${WAITS}`,
       access: 'write',
       inputVersion: 'case_revision',
       parameters: z.strictObject({
@@ -181,9 +184,11 @@ export function questionTools(): RegisteredTool[] {
         entries: z
           .array(
             z.strictObject({
-              productId: productIdSchema,
-              version: int64TextSchema.describe(
-                'The product version to start from, as a decimal string.',
+              objectType: objectTypeSchema,
+              objectId: objectIdSchema,
+              fieldId: fieldIdSchema,
+              fieldVersion: int64TextSchema.describe(
+                'The object version of the last write of this field at or before the baseline, as a decimal string.',
               ),
             }),
           )
@@ -202,32 +207,38 @@ export function questionTools(): RegisteredTool[] {
           const source = cited.records
             .map((record) => ({
               evidenceId: record.evidenceId,
-              priceCents: recordedPriceAt(record, entry.productId, entry.version),
+              value: recordedFieldValueAt(
+                record,
+                entry.objectType,
+                entry.objectId,
+                entry.fieldId,
+                entry.fieldVersion,
+              ),
             }))
-            .find((candidate) => candidate.priceCents !== null);
-          if (source === undefined || source.priceCents === null) {
+            .find((candidate) => candidate.value !== null);
+          if (source === undefined || source.value === null) {
             return rejected(
               'runtime',
               'evidence_insufficient',
               'missing_evidence',
-              `none of the cited records is a product history that shows version ${entry.version} of product ${entry.productId} with its recorded price`,
+              `none of the cited records is a field history that shows version ${entry.fieldVersion} of ${entry.objectType}/${entry.objectId} field ${entry.fieldId} with its recorded value`,
             );
           }
           entries.push({
-            objectType: 'product' as const,
-            objectId: entry.productId,
-            field: 'price_cents' as const,
-            version: entry.version,
-            priceCents: source.priceCents,
+            objectType: entry.objectType,
+            objectId: entry.objectId,
+            fieldId: entry.fieldId,
+            fieldVersion: entry.fieldVersion,
+            value: source.value,
             evidenceId: source.evidenceId,
           });
         }
-        if (new Set(entries.map((entry) => entry.objectId)).size !== entries.length) {
+        if (new Set(entries.map((entry) => baselineEntryKey(entry))).size !== entries.length) {
           return rejected(
             'runtime',
             'invalid_request',
             'invalid_request',
-            'a baseline names each product once',
+            'a baseline names each object field once',
           );
         }
         return open(context, 'baseline', {
@@ -236,14 +247,18 @@ export function questionTools(): RegisteredTool[] {
           relevance: args.relevance,
           evidenceRefs: cited.records.map((record) => record.evidenceId).sort(),
           trustedWatermark: args.trustedWatermark,
-          entries: entries.sort((left, right) => (left.objectId < right.objectId ? -1 : 1)),
+          entries: entries.sort((left, right) => {
+            const leftKey = baselineEntryKey(left);
+            const rightKey = baselineEntryKey(right);
+            return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+          }),
         });
       },
     }),
 
     defineTool({
       name: 'ask_replay_policy',
-      description: `Asks the human who may confirm replay policies which registered policy version applies to this incident (how later price deltas and later absolute prices are treated). Offer only versions returned by list_policy_versions. ${WAITS}`,
+      description: `Asks the human who may confirm replay policies which registered policy version applies to this incident (how later deltas and later absolute values are treated). Offer only versions returned by list_policy_versions. ${WAITS}`,
       access: 'write',
       inputVersion: 'case_revision',
       parameters: z.strictObject({
@@ -289,12 +304,12 @@ export function questionTools(): RegisteredTool[] {
 
     defineTool({
       name: 'ask_clarification',
-      description: `Asks a human who may declare business facts what was intended for the price of the named products, when the records do not say (an operation of unknown meaning, a gap). The answer is recorded as their statement; this system has no rule that turns free text into an amount, so the domain may stay unresolved. Never propose a value derived from a before/after difference. ${WAITS}`,
+      description: `Asks a human who may declare business facts what was intended for the named object fields, when the records do not say (an operation of unknown meaning, a gap). The answer is recorded as their statement; this system has no rule that turns free text into a value, so the domain may stay unresolved. Never propose a value derived from a before/after difference. ${WAITS}`,
       access: 'write',
       inputVersion: 'case_revision',
       parameters: z.strictObject({
         ...framing,
-        productIds: productScopeSchema,
+        fieldScope: fieldScopeSchema,
         evidenceIds: evidenceIdsSchema,
       }),
       output: questionOutputSchema,
@@ -303,11 +318,32 @@ export function questionTools(): RegisteredTool[] {
         if ('status' in current) return current;
         const cited = await citeEvidence(context, current.snapshotId, args.evidenceIds);
         if ('status' in cited) return cited;
-        const scope = [...new Set(args.productIds)].sort().map(priceDomain);
+        const scope = [
+          ...new Map(
+            args.fieldScope.map((entry) => [
+              `${entry.objectType}/${entry.objectId}.${entry.fieldId}`,
+              {
+                objectType: entry.objectType,
+                objectId: entry.objectId,
+                fieldId: entry.fieldId,
+              },
+            ]),
+          ).values(),
+        ].sort((left, right) =>
+          `${left.objectType}/${left.objectId}.${left.fieldId}` <
+          `${right.objectType}/${right.objectId}.${right.fieldId}`
+            ? -1
+            : 1,
+        );
+        const domains = scope.map((entry) => ({
+          objectType: entry.objectType,
+          objectId: entry.objectId,
+          field: entry.fieldId,
+        }));
         const requested = await context.command({
           type: 'request_input',
           question: args.proposition,
-          scope: { domains: scope },
+          scope: { domains },
         });
         if (!requested.ok) return commandRejected(requested);
         return open(context, 'clarification', {
