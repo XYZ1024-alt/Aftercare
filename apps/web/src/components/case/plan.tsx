@@ -1,19 +1,21 @@
 'use client';
 
 import type { ContractView, PlanSummaryView } from '@aftercare/console/client';
-import { ClipboardList, History, ShieldCheck } from 'lucide-react';
+import { Check, ClipboardList, History, ShieldCheck } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
 import {
+  DECLINE_APPROVAL_REASONS,
   fieldKey,
   fieldTitle,
   fieldValue,
+  REVOKE_APPROVAL_REASONS,
   reasonLabel,
+  reasonOptions,
   shortId,
   type Tone,
   when,
 } from '../../lib/labels.ts';
 import { useCan } from '../../lib/session.tsx';
-import { ConfirmDialog } from '../overlay.tsx';
 import {
   Button,
   Card,
@@ -27,8 +29,8 @@ import {
   Pill,
   RefusalNote,
   ROWS_CLASS,
+  Select,
   Table,
-  TEXTAREA_CLASS,
   Technical,
 } from '../ui.tsx';
 import { useCase, useCaseAction } from './case-context.tsx';
@@ -244,11 +246,21 @@ function Approval({ contract }: { readonly contract: ContractView }) {
   const approve = useCaseAction('approve');
   const decline = useCaseAction('decline-approval');
   const revoke = useCaseAction('revoke-approval');
-  const [acknowledged, setAcknowledged] = useState<readonly string[]>([]);
-  const [statement, setStatement] = useState('');
+  // The approved set is the whole unresolved set, and the database requires it to
+  // be equal: one acknowledgement of the list, shown in full above it.
+  const [confirmedDigest, setConfirmedDigest] = useState<string | null>(null);
   const [asking, setAsking] = useState<'decline' | 'revoke' | null>(null);
+  const [declineReason, setDeclineReason] = useState<string | null>(null);
+  const [revokeReason, setRevokeReason] = useState<string | null>(null);
   const active = contract.approvals.find((approval) => approval.state === 'active');
-  const allAcknowledged = contract.untouched.every((domain) => acknowledged.includes(domain));
+  const approvalQuestionId = contract.approvalQuestionId;
+  const acknowledged = confirmedDigest === contract.executionDigest;
+  const statement = `批准执行契约 ${shortId(contract.executionDigest)}，已知悉 ${contract.untouched.length} 项未决域`;
+  const stopAsking = () => {
+    setAsking(null);
+    setDeclineReason(null);
+    setRevokeReason(null);
+  };
 
   return (
     <div className="space-y-4 text-sm" data-testid="approval" data-contract={contract.contractId}>
@@ -302,9 +314,49 @@ function Approval({ contract }: { readonly contract: ContractView }) {
             已由 {active.principal} 批准，有效至 {when(active.expiresAt)}。执行前仍会重新检查。
           </Notice>
           {mayApprove && (
-            <Button tone="danger" pending={revoke.pending} onClick={() => setAsking('revoke')}>
+            <Button
+              tone="danger"
+              pending={revoke.pending}
+              onClick={() => {
+                setAsking('revoke');
+                setRevokeReason(null);
+              }}
+            >
               撤销批准
             </Button>
+          )}
+          {asking === 'revoke' && active !== undefined && (
+            <section className="space-y-3 rounded-field bg-canvas p-4">
+              <p className="text-meta text-apricot-ink">
+                尚未执行的补丁将无法继续应用；已写入沙箱的内容不会自动回滚。
+              </p>
+              <Field label="撤销理由（必填）">
+                <Select
+                  value={revokeReason}
+                  options={reasonOptions(REVOKE_APPROVAL_REASONS)}
+                  onChange={setRevokeReason}
+                  placeholder="选择理由"
+                />
+              </Field>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  size="sm"
+                  tone="danger"
+                  pending={revoke.pending}
+                  disabled={revokeReason === null}
+                  onClick={() => {
+                    if (revokeReason === null) return;
+                    void revoke.run({ id: active.approvalId, reason: revokeReason });
+                    stopAsking();
+                  }}
+                >
+                  确认撤销
+                </Button>
+                <Button size="sm" onClick={stopAsking}>
+                  取消
+                </Button>
+              </div>
+            </section>
           )}
           <RefusalNote refusal={revoke.refusal} />
         </div>
@@ -316,66 +368,95 @@ function Approval({ contract }: { readonly contract: ContractView }) {
             </Notice>
           )}
           {contract.untouched.length > 0 && (
-            <fieldset className="space-y-2">
-              <legend className="mb-2 text-meta font-medium text-ink-soft">
-                逐项确认以下未决项不会被修改
-              </legend>
-              {contract.untouched.map((domain) => (
-                <label key={domain} className={OPTION_CLASS}>
-                  <Checkbox
-                    name="acknowledge"
-                    value={domain}
-                    checked={acknowledged.includes(domain)}
-                    onChange={(event) =>
-                      setAcknowledged(
-                        event.target.checked
-                          ? [...acknowledged, domain]
-                          : acknowledged.filter((entry) => entry !== domain),
-                      )
-                    }
-                  />
-                  <span className="font-medium">{domain}</span>
-                </label>
-              ))}
-            </fieldset>
+            <section className="space-y-2.5">
+              <p className="text-meta font-medium text-ink-soft">
+                以下 {contract.untouched.length} 项未决域不会被修改
+              </p>
+              <ul className="space-y-1.5 rounded-field bg-canvas p-3.5">
+                {contract.untouched.map((domain) => (
+                  <li key={domain} className="flex items-start gap-2 text-sm">
+                    <Check aria-hidden className="mt-0.5 size-4 shrink-0 text-mint-ink" />
+                    <span className="min-w-0 break-words">{domain}</span>
+                  </li>
+                ))}
+              </ul>
+              <label className={OPTION_CLASS}>
+                <Checkbox
+                  name="acknowledge"
+                  checked={acknowledged}
+                  onChange={(event) =>
+                    setConfirmedDigest(event.target.checked ? contract.executionDigest : null)
+                  }
+                />
+                <span>我已确认以上 {contract.untouched.length} 项未决域不会被修改</span>
+              </label>
+            </section>
           )}
-          <Field label="批准说明">
-            <textarea
-              name="approval-statement"
-              rows={2}
-              className={TEXTAREA_CLASS}
-              value={statement}
-              onChange={(event) => setStatement(event.target.value)}
-            />
-          </Field>
+          <p className="text-meta text-muted">批准时会记录：「{statement}」</p>
           <div className="flex flex-wrap items-center gap-2">
             <Button
               tone="approval"
               data-testid="approve-button"
               pending={approve.pending}
-              disabled={!mayApprove || !allAcknowledged || statement.trim() === ''}
+              disabled={!mayApprove || (contract.untouched.length > 0 && !acknowledged)}
               onClick={() =>
                 void approve.run({
                   contractId: contract.contractId,
                   executionDigest: contract.executionDigest,
-                  acknowledgedUnresolvedDomains: acknowledged,
+                  acknowledgedUnresolvedDomains: contract.untouched,
                   statement,
                 })
               }
             >
-              批准在沙箱中执行此契约
+              确认并批准
             </Button>
-            {contract.approvalQuestionId !== null && (
+            {approvalQuestionId !== null && (
               <Button
                 tone="danger"
                 pending={decline.pending}
                 disabled={!mayApprove}
-                onClick={() => setAsking('decline')}
+                onClick={() => {
+                  setAsking('decline');
+                  setDeclineReason(null);
+                }}
               >
                 拒绝批准
               </Button>
             )}
           </div>
+          {asking === 'decline' && approvalQuestionId !== null && (
+            <section className="space-y-3 rounded-field bg-canvas p-4">
+              <p className="text-meta text-apricot-ink">
+                拒绝后不会修改沙箱，系统会将理由反馈给调查流程；如需继续，需重新生成契约并再次审核。
+              </p>
+              <Field label="拒绝理由（必填）">
+                <Select
+                  value={declineReason}
+                  options={reasonOptions(DECLINE_APPROVAL_REASONS)}
+                  onChange={setDeclineReason}
+                  placeholder="选择理由"
+                />
+              </Field>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  size="sm"
+                  tone="danger"
+                  pending={decline.pending}
+                  disabled={declineReason === null}
+                  onClick={() => {
+                    if (declineReason === null) return;
+                    void decline.run({ id: approvalQuestionId, reason: declineReason });
+                    stopAsking();
+                  }}
+                >
+                  确认拒绝
+                </Button>
+                <Button size="sm" onClick={stopAsking}>
+                  取消
+                </Button>
+              </div>
+            </section>
+          )}
           <RefusalNote refusal={approve.refusal ?? decline.refusal} />
         </div>
       )}
@@ -387,32 +468,6 @@ function Approval({ contract }: { readonly contract: ContractView }) {
           分支 {contract.branchId}，快照 {contract.snapshotId}，绑定于 {when(contract.boundAt)}
         </p>
       </Technical>
-      <ConfirmDialog
-        open={asking === 'decline'}
-        onClose={() => setAsking(null)}
-        title="拒绝批准这个执行契约？"
-        warning="拒绝后不会修改沙箱，系统会将拒绝理由反馈给调查流程。"
-        confirmLabel="拒绝批准"
-        tone="danger"
-        reason={{ label: '拒绝理由', name: 'decline-reason' }}
-        onConfirm={(reason) => void decline.run({ id: contract.approvalQuestionId, reason })}
-      >
-        <p>如需继续，需重新生成契约并再次审核。</p>
-      </ConfirmDialog>
-      <ConfirmDialog
-        open={asking === 'revoke' && active !== undefined}
-        onClose={() => setAsking(null)}
-        title="撤销这次执行批准？"
-        warning="尚未执行的补丁将无法继续应用；已写入沙箱的内容不会自动回滚。"
-        confirmLabel="撤销批准"
-        tone="danger"
-        reason={{ label: '撤销理由', name: 'revoke-approval-reason' }}
-        onConfirm={(reason) => {
-          if (active !== undefined) void revoke.run({ id: active.approvalId, reason });
-        }}
-      >
-        <p>后续需重新审核方可继续执行。</p>
-      </ConfirmDialog>
     </div>
   );
 }

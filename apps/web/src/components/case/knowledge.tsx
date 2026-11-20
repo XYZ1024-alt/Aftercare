@@ -18,15 +18,23 @@ import {
 import { type ReactNode, useState } from 'react';
 import useSWR from 'swr';
 import { getJson } from '../../lib/api.ts';
-import { APPLICABILITY_LABEL, reasonLabel, shortId, when } from '../../lib/labels.ts';
+import {
+  APPLICABILITY_LABEL,
+  REVOKE_CONFIRMATION_REASONS,
+  reasonLabel,
+  reasonOptions,
+  shortId,
+  when,
+} from '../../lib/labels.ts';
 import { useCan } from '../../lib/session.tsx';
-import { ConfirmDialog, Drawer } from '../overlay.tsx';
+import { Drawer } from '../overlay.tsx';
 import {
   Button,
   Card,
   Disclosure,
   Dot,
   Empty,
+  Field,
   INPUT_CLASS,
   Json,
   Loading,
@@ -34,6 +42,7 @@ import {
   Pill,
   RefusalNote,
   ROWS_CLASS,
+  Select,
   Technical,
 } from '../ui.tsx';
 import { UntrustedText } from '../untrusted-text.tsx';
@@ -198,19 +207,25 @@ function Evidence() {
   ] as const;
   return (
     <>
-      <div className="mb-4 grid grid-cols-3 gap-2.5 max-md:grid-cols-1">
-        {filters.map(([name, placeholder, value, set]) => (
-          <input
-            key={name}
-            name={name}
-            aria-label={placeholder}
-            className={INPUT_CLASS}
-            placeholder={placeholder}
-            value={value}
-            onChange={(event) => set(event.target.value.trim())}
-          />
-        ))}
-      </div>
+      <Disclosure
+        summary={query === '' ? '筛选' : '筛选（已启用）'}
+        className="mb-4"
+        summaryClassName="text-meta font-medium text-ink-soft hover:text-ink"
+      >
+        <div className="mt-3 grid grid-cols-3 gap-2.5 max-md:grid-cols-1">
+          {filters.map(([name, placeholder, value, set]) => (
+            <input
+              key={name}
+              name={name}
+              aria-label={placeholder}
+              className={INPUT_CLASS}
+              placeholder={placeholder}
+              value={value}
+              onChange={(event) => set(event.target.value.trim())}
+            />
+          ))}
+        </div>
+      </Disclosure>
       {filtered.error !== undefined && (
         <div className="mb-4">
           <Notice tone="rose">筛选条件无效：{filtered.error.message}</Notice>
@@ -275,6 +290,11 @@ function Confirmations() {
   const { view } = useCase();
   const revoke = useCaseAction('revoke-confirmation');
   const [revoking, setRevoking] = useState<string | null>(null);
+  const [reason, setReason] = useState<string | null>(null);
+  const stopRevoking = () => {
+    setRevoking(null);
+    setReason(null);
+  };
   const mayRevoke = [
     useCan('confirm_incident'),
     useCan('confirm_baseline'),
@@ -309,7 +329,10 @@ function Confirmations() {
                   tone="danger"
                   className="ml-auto"
                   pending={revoke.pending}
-                  onClick={() => setRevoking(record.confirmationId)}
+                  onClick={() => {
+                    setRevoking(record.confirmationId);
+                    setReason(null);
+                  }}
                 >
                   撤回确认
                 </Button>
@@ -321,24 +344,43 @@ function Confirmations() {
             <div className="pl-5.5">
               <BasisToggle nodeId={status.nodeId} />
             </div>
+            {revoking === record.confirmationId && (
+              <div className="mt-3 ml-5.5 space-y-3 rounded-field bg-canvas p-4">
+                <p className="text-meta text-apricot-ink">
+                  撤回会使依赖它的计划、契约和报告失效，需要重新确认后才能继续；原确认记录将保留为历史。
+                </p>
+                <Field label="撤回理由（必填）">
+                  <Select
+                    value={reason}
+                    options={reasonOptions(REVOKE_CONFIRMATION_REASONS)}
+                    onChange={setReason}
+                    placeholder="选择理由"
+                  />
+                </Field>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    size="sm"
+                    tone="danger"
+                    pending={revoke.pending}
+                    disabled={reason === null}
+                    onClick={() => {
+                      if (reason === null) return;
+                      void revoke.run({ id: record.confirmationId, reason });
+                      stopRevoking();
+                    }}
+                  >
+                    确认撤回
+                  </Button>
+                  <Button size="sm" onClick={stopRevoking}>
+                    取消
+                  </Button>
+                </div>
+              </div>
+            )}
           </li>
         ))}
       </ul>
       <RefusalNote refusal={revoke.refusal} />
-      <ConfirmDialog
-        open={revoking !== null}
-        onClose={() => setRevoking(null)}
-        title="撤回这项业务确认？"
-        warning="撤回会使依赖它的计划、契约和报告失效，需要重新确认后才能继续。"
-        confirmLabel="撤回确认"
-        tone="danger"
-        reason={{ label: '撤回理由', name: 'revoke-confirmation-reason' }}
-        onConfirm={(reason) => {
-          if (revoking !== null) void revoke.run({ id: revoking, reason });
-        }}
-      >
-        <p>原确认记录将保留为历史。</p>
-      </ConfirmDialog>
     </>
   );
 }

@@ -451,7 +451,8 @@ BEGIN
     WHEN v_run.active_ms >= aftercare_control.agent_limit(v_run, 'maxActiveMs') THEN 'maxActiveMs'
   END;
   IF v_exceeded IS NOT NULL THEN
-    v_run := aftercare_control.agent_conclude(v_run, 'budget_exhausted', jsonb_build_object('limit', v_exceeded));
+    v_run := aftercare_control.agent_stop(v_run, 'paused', 'budget_exhausted',
+      jsonb_build_object('limit', v_exceeded), NULL);
     RETURN jsonb_build_object('outcome', 'stopped', 'run', aftercare_control.agent_run_json(v_run));
   END IF;
 

@@ -1,3 +1,4 @@
+import { autonomyReadiness } from '../autonomy/start.ts';
 import { environmentView } from '../reads.ts';
 import type { AssistantScope } from './registry.ts';
 
@@ -33,19 +34,13 @@ const STAGE_TABLE = [
 
 export async function assistantSystemPrompt(scope: AssistantScope): Promise<string> {
   const { context, env, session } = scope;
-  const [environment, autonomySwitch, charters] = await Promise.all([
+  const [environment, readiness] = await Promise.all([
     environmentView(context, env),
-    context.autonomy.readSwitch(),
-    context.autonomy.chartersInForce(),
+    autonomyReadiness(context),
   ]);
-  const chartersInForce =
-    charters.length === 0
-      ? 'none'
-      : charters.map((charter) => `${charter.body.name} (revision ${charter.revision})`).join(', ');
-  const autonomy =
-    autonomySwitch.enabled && charters.length > 0
-      ? `switch on; charters in force: ${chartersInForce}`
-      : `switch ${autonomySwitch.enabled ? 'on' : 'off'}; charters in force: ${chartersInForce}. You cannot open a case with autonomous=true.`;
+  const autonomy = readiness.ready
+    ? `available: charter "${readiness.charter.body.name}" (revision ${readiness.charter.revision}) is in force, so a case opened now is followed by it unless the user asks for manual handling`
+    : `not available for new cases: ${readiness.message}; a case opened now is followed by a person`;
   const capabilities = session.capabilities.length === 0 ? 'none' : session.capabilities.join(', ');
   const coverage = environment.coverageRegistered
     ? 'registered and current'
@@ -65,9 +60,9 @@ You have six tools:
 
 When the user describes an incident, even vaguely, use open_case. Write the description in the user's own words plus the facts the user added in the conversation; never invent amounts, objects or causes that were not given. Do not ask for details before opening: open with what was said and continue in the conversation. When the user mentions a case that already exists, call list_cases or read_case before opening anything, and do not open a duplicate.
 
-Set autonomous to true only when the user explicitly asks you to handle the case autonomously or under the charter (自主处理 / 按章程处理). The deployment facts below say whether that is possible at all; when they say it is not, say so and leave autonomous at false.
+A new case is placed under the charter in force by default: leave autonomous at its default (true). Set autonomous to false only when the user explicitly asks not to have the case handled autonomously or wants to approve every step themselves (不要自主处理 / 我要自己批). The deployment facts below say whether a charter is in force: a case opened while it is goes to that charter, and a case opened while it is not goes to the people on this console.
 
-After opening a case you may use wait_for_case briefly to see whether it moves on. Then tell the user which case it is and who or what it is waiting for — a business question, an execution approval, a paused run, or nothing yet.
+After opening a case, say which case it is and how it is followed. When the tool result says the case was placed under the charter, say it is followed under the charter (章程跟进中). When it says manual mode, say it is manual (人工模式) and name the condition the tool reports as missing (for example 缺章程, 有多个章程, 自主开关关闭), so the user knows what would put it under a charter. Then you may use wait_for_case briefly to see whether it moves on, and tell the user who or what it is waiting for — a business question, an execution approval, a paused run, or nothing yet.
 
 # What you cannot do
 

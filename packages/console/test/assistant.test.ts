@@ -1,4 +1,4 @@
-import { fiveProducts } from '@aftercare/agent/testing';
+import { type FiveProducts, fiveProducts } from '@aftercare/agent/testing';
 import { recreateTestDatabase } from '@aftercare/storage/testing';
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type {
@@ -16,6 +16,7 @@ import {
   ORIGIN,
   openConsoleHarness,
   type RequestOverrides,
+  registerCharter,
   VIEWER,
 } from './support.ts';
 
@@ -24,11 +25,12 @@ import {
 // of a turn, its tool loop and its history — nothing about a model's ability.
 
 let c: ConsoleHarness;
+let scenario: FiveProducts;
 
 beforeEach(async () => {
   await recreateTestDatabase();
   c = await openConsoleHarness();
-  await fiveProducts(c.h);
+  scenario = await fiveProducts(c.h);
 });
 
 afterEach(async () => {
@@ -233,6 +235,8 @@ describe('the stored conversations of the console assistant', () => {
     const tool = toolMessage(entryAt(entries, 2));
     expect(tool.name).toBe('open_case');
     expect(tool.ok).toBe(true);
+    // Opened by default, but with no charter in force the action falls back to manual mode and says why.
+    expect(tool.result).toMatchObject({ autonomy: { mode: 'manual', reason: 'no_charter' } });
     expect(tool.caseIds).toHaveLength(1);
     expect(assistantMessage(entryAt(entries, 3)).content).toBe('已创建案例并启动调查。');
     expect(await c.context.environment.operations.listCases(10)).toHaveLength(1);
@@ -249,6 +253,20 @@ describe('the stored conversations of the console assistant', () => {
     expect(summary.title).toBe('导入后商品价格异常');
     expect(summary.messageCount).toBe(4);
     expect(summary.running).toBe(false);
+  });
+
+  it('opens a case under the charter in force by default and reports the mode the action chose', async () => {
+    await registerCharter(c, scenario.policy.policyVersionId);
+    const operator = await c.signIn(OPERATOR.principal);
+    const conversationId = crypto.randomUUID();
+    const entries = await entriesOf(await sendTurn(operator, conversationId, '导入后商品价格异常'));
+
+    const tool = toolMessage(entryAt(entries, 2));
+    expect(tool.name).toBe('open_case');
+    expect(tool.ok).toBe(true);
+    expect(tool.result).toMatchObject({ autonomy: { mode: 'autonomous' } });
+    const [enrollment] = await c.context.autonomy.enrollmentsOfCase(caseOf(entries));
+    expect(enrollment).toMatchObject({ trigger: 'console', requestedBy: OPERATOR.principal });
   });
 
   it('continues a conversation from its stored history', async () => {

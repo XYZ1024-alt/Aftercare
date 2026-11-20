@@ -290,12 +290,25 @@ export type RecoveryVerdict =
   | { readonly action: 'top_up'; readonly limits: AgentLimits }
   | { readonly action: 'escalate'; readonly reason: string };
 
-/** What the charter lets the autopilot do about a paused run. */
+/**
+ * Limits spent by consuming them. A budget top-up raises only request quotas,
+ * so raising those against a run that ran out of tokens or time buys nothing:
+ * another model request would hit the same limit again.
+ */
+const SPENT_BY_CONSUMPTION = new Set(['maxInputTokens', 'maxOutputTokens', 'maxActiveMs']);
+
+/**
+ * What the charter lets the autopilot do about a paused run. `exhaustedLimit`
+ * is the limit the database named when it paused the run for its budget (the
+ * `limit` in the run's status detail); without it the top-up raises both
+ * request quotas.
+ */
 export function recoveryVerdict(
   recovery: AutonomyCharter['recovery'],
   pauseReason: string | null,
   resumesSoFar: number,
   limits: AgentLimits,
+  exhaustedLimit: string | null = null,
 ): RecoveryVerdict {
   const resumable = (recovery.resumableReasons as readonly string[]).includes(pauseReason ?? '');
   if (!resumable) {
@@ -311,6 +324,12 @@ export function recoveryVerdict(
     };
   }
   if (pauseReason !== 'budget_exhausted') return { action: 'resume' };
+  if (exhaustedLimit !== null && SPENT_BY_CONSUMPTION.has(exhaustedLimit)) {
+    return {
+      action: 'escalate',
+      reason: `the run ran out of ${exhaustedLimit}; a budget top-up raises only model requests and tool calls, so a person decides`,
+    };
+  }
   const { budgetTopUp } = recovery;
   const next = {
     ...limits,
@@ -323,7 +342,21 @@ export function recoveryVerdict(
       budgetTopUp.maxTotalToolCalls,
     ),
   };
+  if (exhaustedLimit === 'maxModelRequests' && next.maxModelRequests <= limits.maxModelRequests) {
+    return {
+      action: 'escalate',
+      reason: `the run ran out of maxModelRequests, which is already at the charter's ceiling of ${budgetTopUp.maxTotalModelRequests}`,
+    };
+  }
+  if (exhaustedLimit === 'maxToolCalls' && next.maxToolCalls <= limits.maxToolCalls) {
+    return {
+      action: 'escalate',
+      reason: `the run ran out of maxToolCalls, which is already at the charter's ceiling of ${budgetTopUp.maxTotalToolCalls}`,
+    };
+  }
   if (
+    exhaustedLimit !== 'maxModelRequests' &&
+    exhaustedLimit !== 'maxToolCalls' &&
     next.maxModelRequests <= limits.maxModelRequests &&
     next.maxToolCalls <= limits.maxToolCalls
   ) {

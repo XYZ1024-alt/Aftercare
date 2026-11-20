@@ -15,6 +15,8 @@ import {
   fieldKey,
   fieldTitle,
   fieldValue,
+  OPERATOR_CLARIFICATION_SOURCE,
+  OPERATOR_SOURCE,
   QUESTION_KIND_LABEL,
   reasonLabel,
   shortId,
@@ -24,6 +26,7 @@ import {
   Button,
   Card,
   Checkbox,
+  Disclosure,
   Empty,
   Field,
   INPUT_CLASS,
@@ -33,8 +36,6 @@ import {
   Pill,
   Radio,
   RefusalNote,
-  Select,
-  type SelectOption,
   stagger,
   Table,
   TEXTAREA_CLASS,
@@ -43,20 +44,9 @@ import {
 import { UntrustedText } from '../untrusted-text.tsx';
 import { useCase, useCaseAction } from './case-context.tsx';
 
-const SOURCE_KINDS = [
-  ['operations_review', '运营复核'],
-  ['business_decision_record', '业务决策记录'],
-  ['pricing_system_record', '定价系统记录'],
-] as const;
-
-const SOURCE_OPTIONS: readonly SelectOption<string>[] = SOURCE_KINDS.map(([value, label]) => ({
-  value,
-  label,
-}));
-
 const DECISION: Readonly<Record<string, string>> = {
   confirm_operations: '确认事故操作',
-  confirm_baseline: '确认基线价格',
+  confirm_baseline: '确认基线值',
   select_policy: '选定回放策略',
   clarify: '记录业务说明',
   remark: '留言',
@@ -76,6 +66,44 @@ const KIND_ICON: Readonly<Record<QuestionView['kind'], LucideIcon>> = {
   clarification: MessageSquareText,
   execution_approval: ShieldCheck,
 };
+
+type IncidentCandidates = Extract<QuestionView['body'], { kind: 'incident_scope' }>['candidates'];
+type BaselineEntries = Extract<QuestionView['body'], { kind: 'baseline' }>['entries'];
+
+/** int64 text compared as integers: the commits keep the order they were recorded in. */
+const compareInt64 = (left: string, right: string): number => {
+  const a = BigInt(left);
+  const b = BigInt(right);
+  return a < b ? -1 : a > b ? 1 : 0;
+};
+
+/** The first few values, then a count: a generated statement stays readable and bounded. */
+const listed = (values: readonly string[], limit: number): string =>
+  values.length <= limit
+    ? values.join('、')
+    : `${values.slice(0, limit).join('、')} 等 ${values.length} 项`;
+
+// The server keeps a statement of at least one character with every answer, but
+// it is now generated from the record the answer is about rather than typed:
+// what an audit reads then comes from the same records the question showed.
+
+/** What confirming these operations records, from their commits and objects. */
+function incidentStatement(candidates: IncidentCandidates): string {
+  const sequences = [...new Set(candidates.map((candidate) => candidate.commitSeq))].sort(
+    compareInt64,
+  );
+  const objects = [...new Set(candidates.flatMap((candidate) => candidate.objects))];
+  return `确认提交序号 ${listed(sequences, 10)} 的 ${candidates.length} 个操作属事故${
+    objects.length === 0 ? '' : `（涉及 ${listed(objects, 8)}）`
+  }`;
+}
+
+/** What confirming the baseline records: its entries, their watermark, and the evidence it rests on. */
+function baselineStatement(entries: BaselineEntries, trustedWatermark: string): string {
+  const evidence = [...new Set(entries.map((entry) => entry.evidenceId))];
+  const cited = evidence.length === 0 ? '' : `，证据 ${listed(evidence.map(shortId), 8)}`;
+  return `确认以上 ${entries.length} 项基线值与所引证据一致（可信水位 ${trustedWatermark}${cited}）`;
+}
 
 function Subject({ question }: { readonly question: QuestionView }) {
   const { view } = useCase();
@@ -128,10 +156,12 @@ function AnswerForm({ question }: { readonly question: QuestionView }) {
   const answer = useCaseAction('answer');
   const { body } = question;
   const [operations, setOperations] = useState<readonly string[]>([]);
-  const [policy, setPolicy] = useState('');
-  const [statement, setStatement] = useState('');
-  const [sourceKind, setSourceKind] = useState<string>(SOURCE_KINDS[0][0]);
-  const [reference, setReference] = useState('');
+  // A single registered policy is the only choice there is: preselect it.
+  const [policy, setPolicy] = useState(() => {
+    if (body.kind !== 'replay_policy' || body.options.length !== 1) return '';
+    return body.options[0]?.policyVersionId ?? '';
+  });
+  const [clarification, setClarification] = useState('');
   const [note, setNote] = useState('');
 
   const send = (decision: object) =>
@@ -140,8 +170,14 @@ function AnswerForm({ question }: { readonly question: QuestionView }) {
       questionDigest: question.digest,
       answer: decision,
     });
-  const source = { kind: sourceKind, reference: reference.trim() };
-  const grounded = statement.trim() !== '' && reference.trim() !== '';
+  const selectedCandidates =
+    body.kind === 'incident_scope'
+      ? body.candidates.filter((candidate) => operations.includes(candidate.operationId))
+      : [];
+  const policyOption =
+    body.kind === 'replay_policy'
+      ? body.options.find((option) => option.policyVersionId === policy)
+      : undefined;
   const disabled = !question.mayAnswer;
 
   return (
@@ -203,45 +239,30 @@ function AnswerForm({ question }: { readonly question: QuestionView }) {
           ))}
         </fieldset>
       )}
-      <Field
-        label={
-          body.kind === 'clarification' ? '业务说明（按原文留存，不折算为具体金额）' : '确认说明'
-        }
-      >
-        <textarea
-          name="statement"
-          rows={2}
-          className={TEXTAREA_CLASS}
-          value={statement}
-          onChange={(event) => setStatement(event.target.value)}
-        />
-      </Field>
-      <div className="grid grid-cols-2 gap-4 max-md:grid-cols-1">
-        <Field label="依据来源">
-          <Select
-            name="source-kind"
-            value={sourceKind}
-            options={SOURCE_OPTIONS}
-            onChange={setSourceKind}
+      {body.kind === 'clarification' && (
+        <Field label="业务说明（按原文留存，不折算为具体金额）">
+          <textarea
+            name="statement"
+            rows={3}
+            className={TEXTAREA_CLASS}
+            value={clarification}
+            onChange={(event) => setClarification(event.target.value)}
           />
         </Field>
-        <Field label="依据编号或出处">
-          <input
-            name="source-reference"
-            className={INPUT_CLASS}
-            value={reference}
-            onChange={(event) => setReference(event.target.value)}
-          />
-        </Field>
-      </div>
+      )}
       <div className="flex flex-wrap items-center gap-2">
         {body.kind === 'incident_scope' && (
           <Button
             tone="primary"
             pending={answer.pending}
-            disabled={disabled || !grounded || operations.length === 0}
+            disabled={disabled || operations.length === 0}
             onClick={() =>
-              send({ decision: 'confirm_operations', operationIds: operations, statement, source })
+              send({
+                decision: 'confirm_operations',
+                operationIds: operations,
+                statement: incidentStatement(selectedCandidates),
+                source: OPERATOR_SOURCE,
+              })
             }
           >
             确认所选 {operations.length} 个操作为事故
@@ -251,20 +272,32 @@ function AnswerForm({ question }: { readonly question: QuestionView }) {
           <Button
             tone="primary"
             pending={answer.pending}
-            disabled={disabled || !grounded}
-            onClick={() => send({ decision: 'confirm_baseline', statement, source })}
+            disabled={disabled}
+            onClick={() =>
+              send({
+                decision: 'confirm_baseline',
+                statement: baselineStatement(body.entries, body.trustedWatermark),
+                source: OPERATOR_SOURCE,
+              })
+            }
           >
-            确认以上基线价格正确
+            确认这些数对
           </Button>
         )}
         {body.kind === 'replay_policy' && (
           <Button
             tone="primary"
             pending={answer.pending}
-            disabled={disabled || !grounded || policy === ''}
-            onClick={() =>
-              send({ decision: 'select_policy', policyVersionId: policy, statement, source })
-            }
+            disabled={disabled || policyOption === undefined}
+            onClick={() => {
+              if (policyOption === undefined) return;
+              send({
+                decision: 'select_policy',
+                policyVersionId: policyOption.policyVersionId,
+                statement: `采用策略修订 ${policyOption.revision}`,
+                source: OPERATOR_SOURCE,
+              });
+            }}
           >
             确认适用所选策略
           </Button>
@@ -273,44 +306,56 @@ function AnswerForm({ question }: { readonly question: QuestionView }) {
           <Button
             tone="primary"
             pending={answer.pending}
-            disabled={disabled || !grounded}
-            onClick={() => send({ decision: 'clarify', statement, source })}
+            disabled={disabled || clarification.trim() === ''}
+            onClick={() =>
+              send({
+                decision: 'clarify',
+                statement: clarification.trim(),
+                source: OPERATOR_CLARIFICATION_SOURCE,
+              })
+            }
           >
             记录业务说明
           </Button>
         )}
-        {!grounded && <span className="text-meta text-muted">请先填写说明与依据出处</span>}
       </div>
       {body.kind !== 'clarification' && (
-        <div className="space-y-4 rounded-field bg-canvas p-4">
-          <Field label="留言或拒绝理由（不构成确认，不产生授权）">
-            <input
-              name="note"
-              className={INPUT_CLASS}
-              value={note}
-              onChange={(event) => setNote(event.target.value)}
-            />
-          </Field>
-          <div className="flex flex-wrap gap-2">
-            <Button
-              size="sm"
-              pending={answer.pending}
-              disabled={disabled || note.trim() === ''}
-              onClick={() => send({ decision: 'remark', text: note })}
-            >
-              仅留言
-            </Button>
-            <Button
-              size="sm"
-              tone="danger"
-              pending={answer.pending}
-              disabled={disabled || note.trim() === ''}
-              onClick={() => send({ decision: 'decline', reason: note })}
-            >
-              不予确认
-            </Button>
+        <Disclosure
+          summary="仅留言或不予确认"
+          className="rounded-field bg-canvas px-4 py-3"
+          summaryClassName="text-meta font-medium text-ink-soft hover:text-ink"
+        >
+          <div className="mt-3 space-y-3">
+            <p className="text-xs text-muted">只记录理由，不构成确认，也不产生授权。</p>
+            <Field label="留言或拒绝理由（必填）">
+              <input
+                name="note"
+                className={INPUT_CLASS}
+                value={note}
+                onChange={(event) => setNote(event.target.value)}
+              />
+            </Field>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                size="sm"
+                pending={answer.pending}
+                disabled={disabled || note.trim() === ''}
+                onClick={() => send({ decision: 'remark', text: note.trim() })}
+              >
+                仅留言
+              </Button>
+              <Button
+                size="sm"
+                tone="danger"
+                pending={answer.pending}
+                disabled={disabled || note.trim() === ''}
+                onClick={() => send({ decision: 'decline', reason: note.trim() })}
+              >
+                不予确认
+              </Button>
+            </div>
           </div>
-        </div>
+        </Disclosure>
       )}
       <RefusalNote refusal={answer.refusal} />
     </div>

@@ -80,6 +80,12 @@ interface Plan {
   readonly rule: string;
   readonly input: JsonObject;
   readonly act: () => Promise<{ readonly applied: boolean; readonly outcome: JsonObject }>;
+  /**
+   * The subject of the decision this act needs. When that decision was
+   * refused, the act is not carried out: a person is handed this subject
+   * instead, with the refusal as the reason.
+   */
+  readonly unlessRefused?: { readonly subject: string; readonly reason: string };
 }
 
 interface HistoryVersion {
@@ -90,6 +96,15 @@ interface HistoryVersion {
 }
 
 const ENDED_WITHOUT_RESULT = new Set(['unresolved', 'failed', 'cancelled']);
+
+/** What a refused decision recorded, in words a person reading the hand-over needs. */
+function refusalText(outcome: JsonObject | null): string {
+  if (outcome === null) return 'no outcome was recorded';
+  const message = outcome.message;
+  if (typeof message === 'string' && message.length > 0) return message;
+  const code = outcome.code;
+  return typeof code === 'string' ? code : 'no reason was recorded';
+}
 
 export function createAutopilot(
   context: ConsoleContext,
@@ -318,14 +333,22 @@ export function createAutopilot(
           escalated: verdict.escalated.map((entry) => ({ ...entry })),
           evidenceIds,
         };
-        const reason = [
-          ...verdict.escalated.map((entry) => entry.reason),
-          ...verdict.rejected.map((entry) => entry.reason),
-        ]
-          .join('; ')
-          .slice(0, 2000);
-        // A candidate writes a field the charter has no rule for: a person decides the question.
-        if (verdict.escalated.length > 0) {
+        const unmatched = [
+          ...verdict.escalated.map((entry) => `${entry.operationId}: ${entry.reason}`),
+          ...verdict.rejected.map((entry) => `${entry.operationId}: ${entry.reason}`),
+        ];
+        const reason = (
+          verdict.confirmed.length === 0
+            ? unmatched.join('; ')
+            : `${verdict.confirmed.length} operation(s) match the incident rule; a person decides the rest: ${unmatched.join('; ')}`
+        ).slice(0, 2000);
+        // A mixed batch is never confirmed in part silently: every unmatched
+        // operation is named in the hand-over, so a person decides what to do
+        // with it. The charter answers only when everything matched.
+        if (
+          verdict.escalated.length > 0 ||
+          (verdict.confirmed.length > 0 && verdict.rejected.length > 0)
+        ) {
           return escalation(subject, 'incidentRule', reason, input);
         }
         if (verdict.confirmed.length > 0) {
@@ -461,10 +484,19 @@ export function createAutopilot(
     const resumes = (await autonomy.decisionsOfEnrollment(enrollment.enrollmentId)).filter(
       (decision) => decision.action === 'resume' && decision.status === 'applied',
     ).length;
-    const verdict = recoveryVerdict(charter.body.recovery, run.statusReason, resumes, run.limits);
+    const exhaustedLimit =
+      typeof run.statusDetail.limit === 'string' ? run.statusDetail.limit : null;
+    const verdict = recoveryVerdict(
+      charter.body.recovery,
+      run.statusReason,
+      resumes,
+      run.limits,
+      exhaustedLimit,
+    );
     const pauseSeq = (await autonomy.pauseOf(run.agentRunId)) ?? run.updatedAt;
     const pause = `pause:${pauseSeq}`;
-    const input = { pauseReason: run.statusReason, resumesSoFar: resumes };
+    const budget = `budget:${pauseSeq}`;
+    const input = { pauseReason: run.statusReason, resumesSoFar: resumes, exhaustedLimit };
     if (verdict.action === 'escalate')
       return [escalation(pause, 'recovery', verdict.reason, input)];
     const reason = `resumed under the autonomy charter "${charter.body.name}" after "${run.statusReason}"`;
@@ -473,6 +505,16 @@ export function createAutopilot(
       action: 'resume',
       rule: 'recovery',
       input,
+      // A top-up is the only reason to resume a budget pause; if it was
+      // refused, resuming would pause the run again at the same ceiling.
+      ...(verdict.action === 'top_up'
+        ? {
+            unlessRefused: {
+              subject: budget,
+              reason: 'the budget top-up was refused, so the run was not resumed',
+            },
+          }
+        : {}),
       act: async () => {
         const resumed = await service.forIdentity(identity).resume(run.agentRunId, reason);
         return resumed.ok
@@ -485,7 +527,7 @@ export function createAutopilot(
     };
     if (verdict.action === 'resume') return [resume];
     const topUp: Plan = {
-      subject: `budget:${pauseSeq}`,
+      subject: budget,
       action: 'top_up',
       rule: 'recovery',
       input: { ...input, from: { ...run.limits }, to: { ...verdict.limits } },
@@ -706,6 +748,18 @@ export function createAutopilot(
         );
   }
 
+  /** The decision recorded for one subject, from this round or from the record. */
+  async function decisionOf(
+    enrollment: AutonomyEnrollment,
+    subject: string,
+    settledThisRound: ReadonlyMap<string, AutonomyDecision>,
+  ): Promise<AutonomyDecision | null> {
+    const justSettled = settledThisRound.get(subject);
+    if (justSettled !== undefined) return justSettled;
+    const recorded = await autonomy.decisionsOfEnrollment(enrollment.enrollmentId);
+    return recorded.find((entry) => entry.subject === subject) ?? null;
+  }
+
   async function plansFor(
     enrollment: AutonomyEnrollment,
     charter: AutonomyCharterRecord,
@@ -751,9 +805,37 @@ export function createAutopilot(
             );
           }
           const plans = (await plansFor(enrollment, charter, run)) ?? [];
+          const settledBySubject = new Map<string, AutonomyDecision>();
           for (const plan of plans) {
-            const settled = await decide(enrollment, plan);
-            if (settled !== null) decisions.push(settled);
+            let effective = plan;
+            if (plan.unlessRefused !== undefined) {
+              const prerequisite = await decisionOf(
+                enrollment,
+                plan.unlessRefused.subject,
+                settledBySubject,
+              );
+              if (prerequisite?.status === 'refused') {
+                effective = escalation(
+                  plan.subject,
+                  plan.rule,
+                  `${plan.unlessRefused.reason}: ${refusalText(prerequisite.outcome)}`,
+                  {
+                    ...plan.input,
+                    blockedBy: {
+                      decisionId: prerequisite.decisionId,
+                      subject: prerequisite.subject,
+                      status: prerequisite.status,
+                      outcome: prerequisite.outcome,
+                    },
+                  },
+                );
+              }
+            }
+            const settled = await decide(enrollment, effective);
+            if (settled !== null) {
+              decisions.push(settled);
+              settledBySubject.set(settled.subject, settled);
+            }
           }
           const intents = (await autonomy.decisionsOfEnrollment(enrollment.enrollmentId)).filter(
             (entry) =>

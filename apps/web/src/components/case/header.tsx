@@ -3,7 +3,9 @@
 import { FileText, Gauge, Power } from 'lucide-react';
 import { useState } from 'react';
 import {
+  BUDGET_AMEND_REASON,
   EVENT_LABEL,
+  OPERATOR_REQUEST_REASON,
   reasonLabel,
   STAGE_LABEL,
   stageTone,
@@ -22,6 +24,8 @@ import {
   Notice,
   Pill,
   RefusalNote,
+  Select,
+  type SelectOption,
   SOFT_CLASS,
   SOLID_CLASS,
   Technical,
@@ -38,12 +42,20 @@ const CONNECTION: Readonly<Record<FeedConnection, readonly [Tone, string]>> = {
   polling: ['apricot', '事件流不可用，改为轮询'],
 };
 
+/** The limits a run starts with, and the ceilings the budget contract enforces. */
+const DEFAULT_BUDGET = { modelRequests: 40, toolCalls: 120 } as const;
+const BUDGET_CAPS = { modelRequests: 500, toolCalls: 2000 } as const;
+
+type BudgetPreset = 'default' | 'double' | 'custom';
+
+const inRange = (value: number, cap: number): boolean =>
+  Number.isInteger(value) && value >= 1 && value <= cap;
+
 /** Pause, resume and cancel of the current run, with what it is doing now. */
 export function Controls() {
   const { view, feed } = useCase();
   const manage = useCan('manage_case');
   const control = useCaseAction<{ status: string }>('control');
-  const [reason, setReason] = useState('');
   const [confirmCancel, setConfirmCancel] = useState(false);
   const run = view.run;
   if (run === null || ENDED.includes(run.status)) {
@@ -54,7 +66,7 @@ export function Controls() {
     void control.run({
       agentRunId: run.agentRunId,
       action,
-      reason: reason.trim() || '操作员在操作台请求',
+      reason: OPERATOR_REQUEST_REASON,
     });
   const stopping = run.controlRequest !== null;
   return (
@@ -65,16 +77,7 @@ export function Controls() {
           at={when(last.recordedAt)}
         />
       )}
-      <Field label="原因">
-        <input
-          name="control-reason"
-          className={INPUT_CLASS}
-          placeholder="选填，将记入事件"
-          value={reason}
-          onChange={(event) => setReason(event.target.value)}
-        />
-      </Field>
-      <div className="mt-3 flex flex-wrap gap-2">
+      <div className="flex flex-wrap gap-2">
         {run.status === 'paused' ? (
           <Button
             tone="primary"
@@ -178,15 +181,54 @@ export function Budget() {
   const { view } = useCase();
   const mayAmend = useCan('manage_budget');
   const amend = useCaseAction('budget');
+  const [preset, setPreset] = useState<BudgetPreset | null>(null);
   const [requests, setRequests] = useState('');
   const [toolCalls, setToolCalls] = useState('');
-  const [reason, setReason] = useState('');
   const run = view.run;
   if (run === null) return null;
   const { usage, limits, cost } = run;
   const withData = view.execution.branches.filter((branch) => !branch.dataRemoved).length;
   const activeSeconds = Number(usage.activeMs) / 1000;
   const ended = ENDED.includes(run.status);
+  const presets = {
+    default: {
+      maxModelRequests: DEFAULT_BUDGET.modelRequests,
+      maxToolCalls: DEFAULT_BUDGET.toolCalls,
+    },
+    double: {
+      maxModelRequests: Math.min(limits.maxModelRequests * 2, BUDGET_CAPS.modelRequests),
+      maxToolCalls: Math.min(limits.maxToolCalls * 2, BUDGET_CAPS.toolCalls),
+    },
+  };
+  const custom = {
+    maxModelRequests: requests === '' ? limits.maxModelRequests : Number(requests),
+    maxToolCalls: toolCalls === '' ? limits.maxToolCalls : Number(toolCalls),
+  };
+  const customValid =
+    inRange(custom.maxModelRequests, BUDGET_CAPS.modelRequests) &&
+    inRange(custom.maxToolCalls, BUDGET_CAPS.toolCalls);
+  const target =
+    preset === 'custom' ? (customValid ? custom : null) : preset === null ? null : presets[preset];
+  const changed =
+    target !== null &&
+    (target.maxModelRequests !== limits.maxModelRequests ||
+      target.maxToolCalls !== limits.maxToolCalls);
+  // A preset that would submit the limits already in force is not offered: the
+  // budget contract refuses an amendment that changes nothing.
+  const options: SelectOption<BudgetPreset>[] = (['default', 'double'] as const)
+    .filter(
+      (key) =>
+        presets[key].maxModelRequests !== limits.maxModelRequests ||
+        presets[key].maxToolCalls !== limits.maxToolCalls,
+    )
+    .map((key) => ({
+      value: key,
+      label:
+        key === 'default'
+          ? `恢复默认（模型轮次 ${DEFAULT_BUDGET.modelRequests}，工具调用 ${DEFAULT_BUDGET.toolCalls}）`
+          : `加倍（模型轮次 ${presets.double.maxModelRequests}，工具调用 ${presets.double.maxToolCalls}）`,
+    }));
+  options.push({ value: 'custom', label: '自定义' });
   return (
     <Card title="预算与资源" icon={Gauge} tone="sky" testId="budget">
       <ul className="space-y-3">
@@ -273,48 +315,58 @@ export function Budget() {
             className="mt-3 space-y-3"
             onSubmit={(event) => {
               event.preventDefault();
+              if (target === null || !changed) return;
               void amend.run({
                 agentRunId: run.agentRunId,
-                reason,
-                limits: {
-                  ...limits,
-                  ...(/^\d+$/.test(requests) ? { maxModelRequests: Number(requests) } : {}),
-                  ...(/^\d+$/.test(toolCalls) ? { maxToolCalls: Number(toolCalls) } : {}),
-                },
+                reason: BUDGET_AMEND_REASON,
+                limits: { ...limits, ...target },
               });
             }}
           >
-            <div className="grid grid-cols-2 gap-2">
-              <Field label="模型轮次上限">
-                <input
-                  name="budget-model-requests"
-                  inputMode="numeric"
-                  className={INPUT_CLASS}
-                  value={requests}
-                  placeholder={String(limits.maxModelRequests)}
-                  onChange={(event) => setRequests(event.target.value)}
-                />
-              </Field>
-              <Field label="工具调用上限">
-                <input
-                  name="budget-tool-calls"
-                  inputMode="numeric"
-                  className={INPUT_CLASS}
-                  value={toolCalls}
-                  placeholder={String(limits.maxToolCalls)}
-                  onChange={(event) => setToolCalls(event.target.value)}
-                />
-              </Field>
-            </div>
-            <Field label="原因">
-              <input
-                name="budget-reason"
-                className={INPUT_CLASS}
-                value={reason}
-                onChange={(event) => setReason(event.target.value)}
+            <Field label="调整方式">
+              <Select
+                value={preset}
+                options={options}
+                onChange={setPreset}
+                placeholder="选择调整方式"
               />
             </Field>
-            <Button type="submit" size="sm" pending={amend.pending} disabled={reason.trim() === ''}>
+            {preset === 'custom' && (
+              <div className="grid grid-cols-2 gap-2">
+                <Field label="模型轮次上限">
+                  <input
+                    name="budget-model-requests"
+                    inputMode="numeric"
+                    className={INPUT_CLASS}
+                    value={requests}
+                    placeholder={String(limits.maxModelRequests)}
+                    onChange={(event) => setRequests(event.target.value)}
+                  />
+                </Field>
+                <Field label="工具调用上限">
+                  <input
+                    name="budget-tool-calls"
+                    inputMode="numeric"
+                    className={INPUT_CLASS}
+                    value={toolCalls}
+                    placeholder={String(limits.maxToolCalls)}
+                    onChange={(event) => setToolCalls(event.target.value)}
+                  />
+                </Field>
+              </div>
+            )}
+            {preset === 'custom' && !customValid && (
+              <p className="text-xs text-apricot-ink">
+                模型轮次上限取 1–{BUDGET_CAPS.modelRequests}，工具调用上限取 1–
+                {BUDGET_CAPS.toolCalls} 的整数。
+              </p>
+            )}
+            <Button
+              type="submit"
+              size="sm"
+              pending={amend.pending}
+              disabled={target === null || !changed}
+            >
               调整预算
             </Button>
           </form>

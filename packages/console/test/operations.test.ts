@@ -50,7 +50,7 @@ const ready = async () =>
   ).json() as Promise<HealthView>;
 
 describe('failures end in a recorded state with a way on', () => {
-  it('an exhausted budget ends the run without a result; a holder of manage_budget can let a paused run go on', async () => {
+  it('an exhausted budget pauses the run without a result; a holder of manage_budget can let it go on', async () => {
     const spent = value(
       await operator.post<{ caseId: string }>('/api/cases', {
         requestKey: crypto.randomUUID(),
@@ -60,35 +60,42 @@ describe('failures end in a recorded state with a way on', () => {
       }),
     ).caseId;
     c.startWorker();
-    const ended = await c.untilRun(
+    const paused = await c.untilRun(
       spent,
-      (run) => !['queued', 'running'].includes(run.status),
+      (run) => run.status === 'paused',
       'the budget to run out',
     );
-    expect(ended).toMatchObject({
-      status: 'unresolved',
+    // The stop names the exhausted limit and hands the run to a person: no
+    // result was produced, and nothing keeps consuming the budget.
+    expect(paused).toMatchObject({
+      status: 'paused',
       statusReason: 'budget_exhausted',
-      statusDetail: { note: { limit: 'maxModelRequests' }, sealedReport: null },
+      statusDetail: { limit: 'maxModelRequests' },
     });
     const view = await operator.view(spent);
-    expect(view.stage).toMatchObject({ stage: 'unresolved', reason: 'budget_exhausted' });
+    expect(view.stage).toMatchObject({
+      stage: 'paused',
+      reason: 'budget_exhausted',
+      waitingOnOperator: true,
+    });
     expect(view.run?.usage.modelRequests).toBe(2);
     expect(view.reports).toEqual([]);
-    // An ended run keeps its budget; the way on is a new run.
-    expect(
-      refusalOf(
-        await (await c.signIn(ADMIN)).post(`/api/cases/${spent}/budget`, {
-          requestKey: crypto.randomUUID(),
-          agentRunId: ended.agentRunId,
-          limits: { ...ended.limits, maxModelRequests: 50 },
-          reason: 'more',
-        }),
-      ),
-    ).toMatchObject({ code: 'illegal_status' });
+    // A paused run keeps its budget. A holder of manage_budget raises it, and
+    // the run then goes on where the pause stopped it.
     value(
-      await operator.post(`/api/cases/${spent}/runs`, {
+      await (await c.signIn(ADMIN)).post(`/api/cases/${spent}/budget`, {
         requestKey: crypto.randomUUID(),
-        description: 'again, with the default budget',
+        agentRunId: paused.agentRunId,
+        limits: { ...paused.limits, maxModelRequests: 50 },
+        reason: 'more',
+      }),
+    );
+    value(
+      await operator.post(`/api/cases/${spent}/control`, {
+        requestKey: crypto.randomUUID(),
+        agentRunId: paused.agentRunId,
+        action: 'resume',
+        reason: 'the budget was raised',
       }),
     );
     expect((await runToEnd(c, spent, operator, approver)).status).toBe('partially_resolved');

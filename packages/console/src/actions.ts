@@ -14,7 +14,11 @@ import {
 import { digestJson, type JsonObject } from '@aftercare/domain';
 import { z } from 'zod';
 import { admitEnvironment, admitNewRun, refuse } from './admission.ts';
-import { startAutonomousRun } from './autonomy/start.ts';
+import {
+  autonomyReadiness,
+  startAutonomousRun,
+  startAutonomousTakeover,
+} from './autonomy/start.ts';
 import { type ConsoleContext, identityOf } from './context.ts';
 import type { ActionResult } from './view-model.ts';
 
@@ -39,6 +43,9 @@ const statementSchema = z.string().trim().min(1).max(2000);
 
 /** How long a request that never finished blocks a retry with its key. */
 const TAKEOVER_SECONDS = 20;
+
+/** The run statuses in which a run a resumed request started is still the one that request asked for. */
+const ACTIVE_RUN_STATUSES: ReadonlySet<string> = new Set(['queued', 'running', 'awaiting_input']);
 
 const refusalSchema = z.strictObject({
   code: z.string(),
@@ -79,8 +86,32 @@ const startInputSchema = z.strictObject({
   limits: z.record(z.string(), z.number().int()).default({}),
   /** Required when a model service outside this machine will be sent case content. */
   acknowledgeDataEgress: z.boolean().default(false),
-  /** Puts the run under the autonomy charter in force: its autopilot starts it and answers for the owner. */
-  autonomous: z.boolean().default(false),
+  /**
+   * Places the case under the autonomy charter in force when the switch is on
+   * and exactly one charter is registered. Otherwise the case is opened in
+   * manual mode and the reason is reported; an explicit false means the person
+   * asked to handle the case themselves.
+   */
+  autonomous: z.boolean().default(true),
+});
+
+/** Whether a case opened now is followed by the charter, and if not, why. */
+const incidentAutonomySchema = z.discriminatedUnion('mode', [
+  z.strictObject({ mode: z.literal('autonomous') }),
+  z.strictObject({
+    mode: z.literal('manual'),
+    reason: z.enum([
+      'autonomy_switched_off',
+      'no_charter',
+      'charter_ambiguous',
+      'requested_manual',
+    ]),
+  }),
+]);
+const incidentStartedSchema = z.strictObject({
+  caseId: z.uuid(),
+  agentRunId: z.uuid(),
+  autonomy: incidentAutonomySchema,
 });
 
 const switchInputSchema = z.strictObject({
@@ -94,6 +125,14 @@ const rerunInputSchema = z.strictObject({
   description: z.string().trim().min(1).max(4000),
   acknowledgeIsolation: z.boolean().default(false),
   acknowledgeDataEgress: z.boolean().default(false),
+  /** Under a charter the new run is started by the autopilot; an explicit false keeps the rerun manual. */
+  autonomous: z.boolean().default(true),
+});
+
+const takeoverInputSchema = z.strictObject({
+  requestKey: requestKeySchema,
+  description: z.string().trim().min(1).max(4000),
+  acknowledgeIsolation: z.boolean().default(false),
 });
 
 const provenance = { source: provenanceSchema };
@@ -297,25 +336,66 @@ export function createActions(
     }
   }
 
+  /** The run a resumed request already started with this description, if it is still the one asked for. */
+  async function runStartedBy(
+    caseId: string,
+    startedBy: string,
+    description: string,
+    resumed: boolean,
+  ): Promise<string | null> {
+    if (!resumed) {
+      return null;
+    }
+    const latest = (await agentStore.listRunsOfCase(caseId)).at(-1);
+    return latest !== undefined &&
+      latest.startedBy === startedBy &&
+      latest.description === description &&
+      ACTIVE_RUN_STATUSES.has(latest.status)
+      ? latest.agentRunId
+      : null;
+  }
+
   return {
-    /** Opens a case for an incident description in the registered environment and queues an agent run on it. */
+    /**
+     * Opens a case for an incident description in the registered environment and
+     * queues an agent run on it. It is followed by the charter when one is in
+     * force; otherwise it is opened in manual mode and the reason is returned.
+     */
     submitIncident: (input: JsonObject) =>
       parsed(startInputSchema, input, ({ requestKey, ...request }) =>
-        once('submit_incident', requestKey, request, startedSchema, async (claim) => {
-          // An autonomous run is admitted under the charter's own acknowledgement, in startAutonomousRun.
-          const blocked =
-            (await admitEnvironment(context, request.environment)) ??
-            (request.autonomous ? null : await admitNewRun(context, request.acknowledgeDataEgress));
-          if (blocked !== null) {
-            return { ok: false, refusal: blocked };
+        once('submit_incident', requestKey, request, incidentStartedSchema, async (claim) => {
+          const blockedEnvironment = await admitEnvironment(context, request.environment);
+          if (blockedEnvironment !== null) {
+            return { ok: false, refusal: blockedEnvironment };
+          }
+          // Decided before a case exists: an autonomy start that will be refused
+          // must not leave a case with no run behind. No charter is not an error:
+          // the case is opened in manual mode and the reason travels with it.
+          const readiness = request.autonomous ? await autonomyReadiness(context) : null;
+          const charter = readiness?.ready === true ? readiness.charter : null;
+          const autonomy: z.output<typeof incidentAutonomySchema> =
+            readiness === null
+              ? { mode: 'manual', reason: 'requested_manual' }
+              : readiness.ready
+                ? { mode: 'autonomous' }
+                : { mode: 'manual', reason: readiness.code };
+          // An autonomous run is admitted under the charter's own acknowledgement.
+          const blockedRun = await admitNewRun(
+            context,
+            charter === null
+              ? request.acknowledgeDataEgress
+              : charter.body.intake.acknowledgeDataEgress,
+          );
+          if (blockedRun !== null) {
+            return { ok: false, refusal: blockedRun };
           }
           // Checked before the case is created: a refused request leaves no case behind.
           if (!(await operations.hasCapability(principal, 'manage_case'))) {
             return refused(
               'not_authorized',
-              request.autonomous
-                ? 'placing a case under the autonomy charter needs the manage_case capability'
-                : 'opening a case needs the manage_case capability',
+              charter === null
+                ? 'opening a case needs the manage_case capability'
+                : 'placing a case under the autonomy charter needs the manage_case capability',
             );
           }
           let caseId = claim.caseId;
@@ -331,19 +411,24 @@ export function createActions(
           // A request that was interrupted after its run had started finds that run.
           const existing = (await agentStore.listRunsOfCase(caseId)).at(-1);
           if (existing !== undefined) {
-            return { ok: true, value: { caseId, agentRunId: existing.agentRunId }, replayed: true };
+            return {
+              ok: true,
+              value: { caseId, agentRunId: existing.agentRunId, autonomy },
+              replayed: true,
+            };
           }
-          if (request.autonomous) {
+          if (charter !== null) {
             const autonomous = await startAutonomousRun(context, {
               trigger: 'console',
               requestedBy: principal,
               description: request.description,
               caseId,
+              autopilot: charter.autopilotPrincipal,
             });
             return autonomous.ok
               ? {
                   ok: true,
-                  value: { caseId, agentRunId: autonomous.value.agentRunId },
+                  value: { caseId, agentRunId: autonomous.value.agentRunId, autonomy },
                   replayed: false,
                 }
               : autonomous;
@@ -354,7 +439,11 @@ export function createActions(
             limits: request.limits,
           });
           return started.ok
-            ? { ok: true, value: { caseId, agentRunId: started.value.agentRunId }, replayed: false }
+            ? {
+                ok: true,
+                value: { caseId, agentRunId: started.value.agentRunId, autonomy },
+                replayed: false,
+              }
             : fromAgent(started.rejection);
         }),
       ),
@@ -374,23 +463,47 @@ export function createActions(
         }),
       ),
 
-    /** Starts another agent run on a case whose earlier run has ended (after a stale result, an unresolved end, a failure). */
+    /**
+     * Starts another agent run on a case whose earlier run has ended (after a
+     * stale result, an unresolved end, a failure). Under a charter the new run
+     * is a takeover by the autopilot; the earlier run stays as history.
+     */
     startRun: (caseId: string, input: JsonObject) =>
       parsed(rerunInputSchema, input, ({ requestKey, ...request }) =>
         once('start_run', requestKey, { caseId, ...request }, startedSchema, async (claim) => {
+          const readiness = request.autonomous ? await autonomyReadiness(context) : null;
+          if (readiness?.ready === true) {
+            const taken = await runStartedBy(
+              caseId,
+              readiness.charter.autopilotPrincipal,
+              request.description,
+              claim.resumed,
+            );
+            if (taken !== null) {
+              return { ok: true, value: { caseId, agentRunId: taken }, replayed: true };
+            }
+            const takeover = await startAutonomousTakeover(context, {
+              caseId,
+              trigger: 'console',
+              requestedBy: principal,
+              description: request.description,
+              acknowledgeIsolation: request.acknowledgeIsolation,
+            });
+            return takeover.ok
+              ? {
+                  ok: true,
+                  value: { caseId, agentRunId: takeover.value.agentRunId },
+                  replayed: false,
+                }
+              : takeover;
+          }
           const blocked = await admitNewRun(context, request.acknowledgeDataEgress);
           if (blocked !== null) {
             return { ok: false, refusal: blocked };
           }
-          const latest = (await agentStore.listRunsOfCase(caseId)).at(-1);
-          if (
-            claim.resumed &&
-            latest !== undefined &&
-            latest.startedBy === principal &&
-            latest.description === request.description &&
-            ['queued', 'running', 'awaiting_input'].includes(latest.status)
-          ) {
-            return { ok: true, value: { caseId, agentRunId: latest.agentRunId }, replayed: true };
+          const resumed = await runStartedBy(caseId, principal, request.description, claim.resumed);
+          if (resumed !== null) {
+            return { ok: true, value: { caseId, agentRunId: resumed }, replayed: true };
           }
           const started = await service.forIdentity(identity).start({
             caseId,
@@ -401,6 +514,50 @@ export function createActions(
             ? { ok: true, value: { caseId, agentRunId: started.value.agentRunId }, replayed: false }
             : fromAgent(started.rejection);
         }),
+      ),
+
+    /**
+     * Takes an existing case over as the charter's autopilot: a new run on the
+     * same case, enrolled in the same breath, with the earlier run kept as
+     * history. Needs the person's own manage_case; a case on hold after an
+     * invariant failure needs acknowledgeIsolation.
+     */
+    takeoverAutonomous: (caseId: string, input: JsonObject) =>
+      parsed(takeoverInputSchema, input, ({ requestKey, ...request }) =>
+        once(
+          'takeover_autonomous',
+          requestKey,
+          { caseId, ...request },
+          startedSchema,
+          async (claim) => {
+            const readiness = await autonomyReadiness(context);
+            if (readiness.ready) {
+              const taken = await runStartedBy(
+                caseId,
+                readiness.charter.autopilotPrincipal,
+                request.description,
+                claim.resumed,
+              );
+              if (taken !== null) {
+                return { ok: true, value: { caseId, agentRunId: taken }, replayed: true };
+              }
+            }
+            const takeover = await startAutonomousTakeover(context, {
+              caseId,
+              trigger: 'console',
+              requestedBy: principal,
+              description: request.description,
+              acknowledgeIsolation: request.acknowledgeIsolation,
+            });
+            return takeover.ok
+              ? {
+                  ok: true,
+                  value: { caseId, agentRunId: takeover.value.agentRunId },
+                  replayed: false,
+                }
+              : takeover;
+          },
+        ),
       ),
 
     /** Answers one business question as the signed-in operator. Never an execution approval. */

@@ -340,3 +340,58 @@ export const PROMOTION_CHECK_LABEL: Readonly<
   superseded_by_later_write: '写回后源库又有合法变更',
   mismatch: '不一致',
 };
+
+/**
+ * What the console records instead of asking the operator for a free text: a
+ * request made on the console is its own origin, and the record says so.
+ */
+export const OPERATOR_REQUEST_REASON = '操作员在操作台请求';
+export const BUDGET_AMEND_REASON = '操作员在操作台调整预算';
+
+/** The origin of a confirmation given on the console: the operator's review is what it rests on. */
+export const OPERATOR_SOURCE = {
+  kind: 'operations_review',
+  reference: '操作台业务审核',
+} as const;
+
+/** A clarification is answered on the console itself, so it cites no outside record. */
+export const OPERATOR_CLARIFICATION_SOURCE = {
+  kind: 'operations_review',
+  reference: '操作台业务澄清',
+} as const;
+
+// Fixed reasons for the actions that must record why. The record is shown as
+// it was written, so a fixed reason is stored and displayed as this text.
+export const DECLINE_APPROVAL_REASONS = [
+  '修正方向与业务判断不符',
+  '未决域需要先处理',
+  '修改范围超出本案例',
+  '基线或策略需要重新确认',
+] as const;
+
+export const REVOKE_APPROVAL_REASONS = [
+  '发现契约内容与审核结论不符',
+  '未决域需要先处理',
+  '执行时机不再合适',
+  '改为重新生成契约',
+] as const;
+
+export const REVOKE_CONFIRMATION_REASONS = [
+  '依据核对有误',
+  '确认范围不正确',
+  '证据已变化，需要重新确认',
+  '改为按新的业务结论重做',
+] as const;
+
+export const REVOKE_ARTEFACT_REASONS = [
+  '产物内容有误',
+  '依据已变化，需要重新生成',
+  '下载范围需要收紧',
+  '登记重复或不再需要',
+] as const;
+
+/** The fixed reasons as the options of a select: the recorded text is its own label. */
+export const reasonOptions = (
+  reasons: readonly string[],
+): readonly { readonly value: string; readonly label: string }[] =>
+  reasons.map((reason) => ({ value: reason, label: reason }));

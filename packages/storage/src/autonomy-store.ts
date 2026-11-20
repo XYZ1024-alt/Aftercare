@@ -104,7 +104,10 @@ const AUTONOMY_STATEMENTS = {
     SELECT aftercare_control.autonomy_decision_json(d) AS document
       FROM aftercare_control.autonomy_decisions AS d WHERE d.case_id = $1
      ORDER BY d.recorded_at, d.decision_id`,
-  // An escalation still waits while what it handed over is still there.
+  // An escalation still waits while what it handed over is still there. A run
+  // that ended without a result, and a promotion refused after one, have no
+  // later record that closes them: they stay open until a person deals with
+  // them, so the case page keeps showing them.
   escalationsOfCase: `
     SELECT jsonb_build_object(
              'decisionId', d.decision_id,
@@ -114,6 +117,7 @@ const AUTONOMY_STATEMENTS = {
                  SELECT 1 FROM aftercare_control.agent_questions AS q
                   WHERE q.question_id::text = substr(d.subject, 10) AND q.state = 'open')
                WHEN d.subject LIKE 'pause:%' THEN a.status = 'paused'
+               WHEN d.subject LIKE 'run:%' OR d.subject LIKE 'promotion:%' THEN TRUE
                ELSE a.status NOT IN (${ENDED}) END) AS document
       FROM aftercare_control.autonomy_decisions AS d
       JOIN aftercare_control.agent_runs AS a ON a.agent_run_id = d.agent_run_id

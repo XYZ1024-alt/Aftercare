@@ -3,7 +3,9 @@ import { fiveProducts } from '@aftercare/agent/testing';
 import {
   AUTONOMY_IDENTITY_SOURCE,
   type AutonomyDecision,
+  CONSOLE_IDENTITY_SOURCE,
   ENDED_AGENT_RUN_STATUSES,
+  type OperatorSession,
 } from '@aftercare/contracts';
 import {
   batchSetPrice,
@@ -16,6 +18,7 @@ import { recreateTestDatabase } from '@aftercare/storage/testing';
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   type Autopilot,
+  createActions,
   createAutopilot,
   openPromotionStores,
   type PromotionInput,
@@ -29,6 +32,7 @@ import {
 import {
   APPROVER,
   CHARTER_OWNER,
+  type ConsoleClient,
   type ConsoleHarness,
   OPERATOR,
   ORIGIN,
@@ -149,7 +153,7 @@ describe('a pricing incident carried through by the autopilot, with no person an
     expect(typeof delivered?.outcome?.artefactId).toBe('string');
   });
 
-  it('a mixed batch: confirms only the operations the rule matches, and completes', async () => {
+  it('a mixed batch: escalates the operations the rule does not match, with every unmatched operation in the input', async () => {
     for (const productId of ['p1', 'p2', 'p3', 'p4']) {
       await createProduct(c.h, productId, 10_000n);
     }
@@ -161,24 +165,24 @@ describe('a pricing incident carried through by the autopilot, with no person an
     const { caseId, agentRunId } = await startUnderCharter();
     c.startWorker();
 
-    const run = await until(
-      () => c.h.agentStore.findRun(agentRunId),
-      (entry) => entry !== null && ended(entry.status),
-      'the autonomous run to end',
-      40_000,
-    );
-    expect(run?.status).toBe('completed');
     const view = await settledView(
       caseId,
-      (actions) => actions.includes('deliver'),
-      'the delivery',
+      (actions) => actions.includes('escalate'),
+      'the hand-over',
     );
+    // The run waits for the person the two unmatched operations were handed to.
+    expect((await c.h.agentStore.findRun(agentRunId))?.status).toBe('awaiting_input');
     const incident = view.decisions.find((entry) => entry.rule === 'incidentRule');
-    expect(incident?.input.confirmed).toHaveLength(2);
+    expect(incident).toMatchObject({ action: 'escalate', status: 'applied' });
     expect(incident?.input.confirmed).toEqual(
       expect.arrayContaining([batch.operations.p1, batch.operations.p2]),
     );
     expect(incident?.input.rejected).toHaveLength(2);
+    for (const operationId of [batch.operations.p3, batch.operations.p4]) {
+      expect(incident?.input.reason).toContain(operationId);
+    }
+    expect(view.escalations).toHaveLength(1);
+    expect(view.escalations[0]).toMatchObject({ open: true });
   });
 
   it('a legitimate repricing: declines the proposition, the run ends unresolved and is handed to a person', async () => {
@@ -300,6 +304,171 @@ describe('outside the envelope: a person decides, and the database refuses the a
   });
 });
 
+type OpenedIncident = {
+  readonly caseId: string;
+  readonly agentRunId: string;
+  readonly autonomy:
+    | { readonly mode: 'autonomous' }
+    | { readonly mode: 'manual'; readonly reason: string };
+};
+
+/** Opens an incident through the console, leaving autonomous at its default unless the test says otherwise. */
+async function openIncident(client: ConsoleClient, autonomous?: boolean): Promise<OpenedIncident> {
+  return value(
+    await client.post<OpenedIncident>('/api/cases', {
+      requestKey: crypto.randomUUID(),
+      description: '导入后商品价格异常',
+      environment: c.h.sourceEnvironment,
+      ...(autonomous === undefined ? {} : { autonomous }),
+    }),
+  );
+}
+
+/** Ends the latest run of a case so that another run can start on it. */
+async function endRun(client: ConsoleClient, caseId: string, agentRunId: string): Promise<void> {
+  value(
+    await client.post(`/api/cases/${caseId}/control`, {
+      requestKey: crypto.randomUUID(),
+      agentRunId,
+      action: 'cancel',
+      reason: 'integration test: end the run so the case can be started again',
+    }),
+  );
+}
+
+describe('opening a case: default autonomy', () => {
+  it('places the case under the charter in force, with the autopilot as the owner of the run', async () => {
+    const scenario = await fiveProducts(c.h);
+    const charter = await registerCharter(c, scenario.policy.policyVersionId);
+    const operator = await c.signIn(OPERATOR.principal);
+    const opened = await openIncident(operator);
+
+    expect(opened.autonomy).toEqual({ mode: 'autonomous' });
+    const [enrollment] = await c.context.autonomy.enrollmentsOfCase(opened.caseId);
+    expect(enrollment).toMatchObject({
+      trigger: 'console',
+      requestedBy: OPERATOR.principal,
+      agentRunId: opened.agentRunId,
+      charterId: charter.charterId,
+    });
+    expect((await c.h.agentStore.findRun(opened.agentRunId))?.startedBy).toBe(
+      charter.autopilotPrincipal,
+    );
+    // The person opened the case; the charter answers for it.
+    expect((await c.context.environment.operations.findCase(opened.caseId))?.openedBy).toBe(
+      OPERATOR.principal,
+    );
+  });
+
+  it('opens the case in manual mode and says why when no charter is in force', async () => {
+    const operator = await c.signIn(OPERATOR.principal);
+    const opened = await openIncident(operator);
+
+    expect(opened.autonomy).toEqual({ mode: 'manual', reason: 'no_charter' });
+    expect(await c.context.autonomy.enrollmentsOfCase(opened.caseId)).toEqual([]);
+    expect((await c.h.agentStore.findRun(opened.agentRunId))?.startedBy).toBe(OPERATOR.principal);
+  });
+
+  it('stays manual when the person asks for it, and when more than one charter is in force', async () => {
+    const scenario = await fiveProducts(c.h);
+    await registerCharter(c, scenario.policy.policyVersionId);
+    await registerCharter(c, scenario.policy.policyVersionId, (body) => ({
+      ...body,
+      name: '定价事故自主处置（第二份章程）',
+      autopilotPrincipal: 'autopilot:second-pricing',
+    }));
+    const operator = await c.signIn(OPERATOR.principal);
+
+    const requested = await openIncident(operator, false);
+    expect(requested.autonomy).toEqual({ mode: 'manual', reason: 'requested_manual' });
+    const ambiguous = await openIncident(operator);
+    expect(ambiguous.autonomy).toEqual({ mode: 'manual', reason: 'charter_ambiguous' });
+    expect(await c.context.autonomy.enrollmentsOfCase(requested.caseId)).toEqual([]);
+    expect(await c.context.autonomy.enrollmentsOfCase(ambiguous.caseId)).toEqual([]);
+    expect((await c.h.agentStore.findRun(ambiguous.agentRunId))?.startedBy).toBe(
+      OPERATOR.principal,
+    );
+  });
+});
+
+describe('taking a case over under the charter', () => {
+  it('reruns a manual case as the autopilot, keeping the earlier run as history', async () => {
+    const scenario = await fiveProducts(c.h);
+    const charter = await registerCharter(c, scenario.policy.policyVersionId);
+    const operator = await c.signIn(OPERATOR.principal);
+    const opened = await openIncident(operator, false);
+    expect(opened.autonomy).toEqual({ mode: 'manual', reason: 'requested_manual' });
+    await endRun(operator, opened.caseId, opened.agentRunId);
+
+    const rerun = value(
+      await operator.post<{ caseId: string; agentRunId: string }>(
+        `/api/cases/${opened.caseId}/runs`,
+        { requestKey: crypto.randomUUID(), description: '按章程接管这个案例' },
+      ),
+    );
+    const runs = await c.h.agentStore.listRunsOfCase(opened.caseId);
+    expect(runs.map((run) => run.startedBy)).toEqual([
+      OPERATOR.principal,
+      charter.autopilotPrincipal,
+    ]);
+    expect(runs[0]).toMatchObject({ agentRunId: opened.agentRunId, status: 'cancelled' });
+    const [enrollment] = await c.context.autonomy.enrollmentsOfCase(opened.caseId);
+    expect(enrollment).toMatchObject({
+      trigger: 'console',
+      requestedBy: OPERATOR.principal,
+      agentRunId: rerun.agentRunId,
+      charterId: charter.charterId,
+    });
+
+    // An explicit manual rerun stays a run of the person: no second enrollment.
+    await endRun(operator, opened.caseId, rerun.agentRunId);
+    const manual = value(
+      await operator.post<{ caseId: string; agentRunId: string }>(
+        `/api/cases/${opened.caseId}/runs`,
+        {
+          requestKey: crypto.randomUUID(),
+          description: '人工再查一次',
+          autonomous: false,
+        },
+      ),
+    );
+    expect((await c.h.agentStore.findRun(manual.agentRunId))?.startedBy).toBe(OPERATOR.principal);
+    expect(await c.context.autonomy.enrollmentsOfCase(opened.caseId)).toHaveLength(1);
+  });
+
+  it('is an action of the console of its own, on an existing case', async () => {
+    const scenario = await fiveProducts(c.h);
+    const charter = await registerCharter(c, scenario.policy.policyVersionId);
+    const operator = await c.signIn(OPERATOR.principal);
+    const opened = await openIncident(operator, false);
+    await endRun(operator, opened.caseId, opened.agentRunId);
+    const session: OperatorSession = {
+      sessionId: crypto.randomUUID(),
+      principal: OPERATOR.principal,
+      displayName: 'Operations operator',
+      identitySource: CONSOLE_IDENTITY_SOURCE,
+      createdAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+      capabilities: [],
+    };
+    const taken = await createActions(c.context, session).takeoverAutonomous(opened.caseId, {
+      requestKey: crypto.randomUUID(),
+      description: '接管这个案例',
+      acknowledgeIsolation: false,
+    });
+    if (!taken.ok) {
+      throw new Error(`takeover refused: ${taken.refusal.code}: ${taken.refusal.message}`);
+    }
+    expect((await c.h.agentStore.findRun(taken.value.agentRunId))?.startedBy).toBe(
+      charter.autopilotPrincipal,
+    );
+    expect(await c.context.autonomy.enrollmentsOfCase(opened.caseId)).toMatchObject([
+      { agentRunId: taken.value.agentRunId, requestedBy: OPERATOR.principal },
+    ]);
+    expect(await c.h.agentStore.listRunsOfCase(opened.caseId)).toHaveLength(2);
+  });
+});
+
 const INTAKE_SECRET = 'intake-secret-for-the-tests-0123456789';
 const DELIVERY_SECRET = 'delivery-secret-for-the-tests-0123456789';
 
@@ -412,6 +581,83 @@ describe('recovery and delivery', () => {
     );
   });
 
+  it('a run that spent its input tokens is escalated, never topped up: request quota would not buy a token', async () => {
+    const scenario = await fiveProducts(c.h);
+    await registerCharter(c, scenario.policy.policyVersionId, (body) => ({
+      ...body,
+      intake: {
+        ...body.intake,
+        limits: { ...body.intake.limits, maxInputTokens: 100 },
+      },
+    }));
+    const { caseId, agentRunId } = await startUnderCharter();
+    c.startWorker();
+
+    const view = await settledView(
+      caseId,
+      (actions) => actions.includes('escalate'),
+      'the budget hand-over',
+    );
+    const handedOver = view.decisions.find(
+      (entry) => entry.action === 'escalate' && entry.rule === 'recovery',
+    );
+    expect(handedOver).toMatchObject({
+      status: 'applied',
+      input: { pauseReason: 'budget_exhausted', exhaustedLimit: 'maxInputTokens' },
+    });
+    expect(view.decisions.some((entry) => entry.action === 'top_up')).toBe(false);
+    expect(await c.h.agentStore.findRun(agentRunId)).toMatchObject({
+      status: 'paused',
+      statusReason: 'budget_exhausted',
+    });
+  });
+
+  it('does not resume when the budget top-up was refused: the pause is handed to a person', async () => {
+    const scenario = await fiveProducts(c.h);
+    const charter = await registerCharter(c, scenario.policy.policyVersionId, (body) => ({
+      ...body,
+      intake: {
+        ...body.intake,
+        limits: { ...body.intake.limits, maxModelRequests: 2 },
+      },
+    }));
+    // The autopilot may still decide under the charter, but it lost the one
+    // capability a top-up needs; the amendment is refused rather than forbidden.
+    const { rows } = await c.h.db.migratorPool.query<{ authority_id: string }>(
+      `SELECT a.authority_id FROM aftercare_control.confirmation_authorities AS a
+        WHERE a.principal = $1 AND a.capability = 'manage_budget'
+          AND NOT EXISTS (SELECT 1 FROM aftercare_control.confirmation_authority_revocations AS r
+                           WHERE r.authority_id = a.authority_id)`,
+      [charter.autopilotPrincipal],
+    );
+    if (rows.length === 0) throw new Error('the autopilot holds no manage_budget authority');
+    for (const row of rows) {
+      await c.h.db.authorities.revoke(row.authority_id, 'integration test: budget withdrawn');
+    }
+    const { caseId, agentRunId } = await startUnderCharter();
+    c.startWorker();
+
+    const view = await settledView(
+      caseId,
+      (actions) => actions.includes('escalate'),
+      'the budget hand-over',
+    );
+    const topUp = view.decisions.find((entry) => entry.action === 'top_up');
+    const handedOver = view.decisions.find(
+      (entry) => entry.action === 'escalate' && entry.rule === 'recovery',
+    );
+    expect(topUp).toMatchObject({ status: 'refused' });
+    expect(handedOver).toMatchObject({
+      status: 'applied',
+      input: { blockedBy: { decisionId: topUp?.decisionId } },
+    });
+    expect(view.decisions.some((entry) => entry.action === 'resume')).toBe(false);
+    expect(await c.h.agentStore.findRun(agentRunId)).toMatchObject({
+      status: 'paused',
+      statusReason: 'budget_exhausted',
+    });
+  });
+
   it('delivers a signed webhook, retrying a failed attempt', async () => {
     await c.close();
     c = await openConsoleHarness({ AFTERCARE_DELIVERY_SECRET: DELIVERY_SECRET });
@@ -496,6 +742,62 @@ describe('recovery and delivery', () => {
       const state = await c.context.environment.caseStore.readCaseState(caseId);
       expect(state?.currentSnapshotId).not.toBe(firstSnapshot);
       expect(seen.map((entry) => entry.run.agentRunId)).toContain(second?.agentRunId);
+    } finally {
+      await daemon.stop();
+    }
+  });
+});
+
+describe('what a person still has to decide stays visible', () => {
+  it('a run that ended without a result is handed over as an open matter', async () => {
+    for (const productId of ['v1', 'v2', 'v3']) {
+      await createProduct(c.h, productId, 10_000n);
+    }
+    await batchSetPrice(c.h, { v1: 9_000n, v2: 9_000n, v3: 9_000n });
+    await setPrice(c.h, 'v2', 9_500n);
+    const policy = await registerPolicy(c.h, standardPolicy(c.h));
+    await registerCharter(c, policy.policyVersionId);
+    const { caseId } = await startUnderCharter();
+    c.startWorker();
+
+    const view = await settledView(
+      caseId,
+      (actions) => actions.includes('escalate'),
+      'the hand-over',
+    );
+    const handedOver = view.decisions.find(
+      (entry) => entry.action === 'escalate' && entry.rule === 'run',
+    );
+    expect(handedOver).toBeDefined();
+    expect(
+      view.escalations.find((entry) => entry.decision.decisionId === handedOver?.decisionId),
+    ).toMatchObject({ open: true });
+  });
+
+  it('a promotion refused after the report was sealed is handed over as an open matter', async () => {
+    const scenario = await fiveProducts(c.h);
+    await registerCharter(c, scenario.policy.policyVersionId);
+    const promote = async (): Promise<PromotionStep> => ({
+      kind: 'refused',
+      reason: 'the source moved on while the repair was prepared',
+      detail: { objectId: 'a' },
+    });
+    const { caseId, agentRunId } = await startUnderCharter();
+    const daemon = startWorkerWith(createAutopilot(c.context, { promote }));
+    try {
+      const view = await settledView(
+        caseId,
+        (actions) => actions.includes('deliver'),
+        'the delivery',
+      );
+      expect((await c.h.agentStore.findRun(agentRunId))?.status).toBe('partially_resolved');
+      const handedOver = view.decisions.find(
+        (entry) => entry.action === 'escalate' && entry.rule === 'promotion',
+      );
+      expect(handedOver).toBeDefined();
+      expect(
+        view.escalations.find((entry) => entry.decision.decisionId === handedOver?.decisionId),
+      ).toMatchObject({ open: true });
     } finally {
       await daemon.stop();
     }

@@ -27,7 +27,7 @@ afterAll(recreateTestDatabase);
 
 // SCRIPTED MODEL throughout.
 describe('budgets', () => {
-  it('stop a run that keeps asking: the run ends unresolved at the limit, with the reason, and the model is not called again', async () => {
+  it('stop a run that keeps asking: the run pauses at the limit, with the reason, and the model is not called again', async () => {
     const run = await h.start('导入后商品价格异常', { maxModelRequests: 3 });
     let turn = 0;
     const model = ruleModel(() => {
@@ -44,10 +44,12 @@ describe('budgets', () => {
     });
     const { run: ended } = await h.worker(model).drive(run.agentRunId);
 
+    // The budget stop is a pause: the run waits for a raised budget and a
+    // resume instead of ending without a result.
     expect(ended).toMatchObject({
-      status: 'unresolved',
+      status: 'paused',
       statusReason: 'budget_exhausted',
-      statusDetail: { sealedReport: null, note: { limit: 'maxModelRequests' } },
+      statusDetail: { limit: 'maxModelRequests' },
     });
     expect(model.requests()).toHaveLength(3);
     expect(ended.usage).toMatchObject({
@@ -57,6 +59,7 @@ describe('budgets', () => {
       outputTokens: '60',
       usageUnknownRequests: 0,
     });
+    // Paused is a resting state: the run does not carry on by itself.
     expect(await h.worker(model).drive(run.agentRunId)).toMatchObject({ stop: 'not_runnable' });
   });
 

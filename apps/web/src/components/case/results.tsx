@@ -8,18 +8,20 @@ import {
   fieldKey,
   fieldTitle,
   fieldValue,
+  REVOKE_ARTEFACT_REASONS,
   reasonLabel,
+  reasonOptions,
   shortId,
   type Tone,
   VERDICT_LABEL,
   when,
 } from '../../lib/labels.ts';
 import { useCan, useSession } from '../../lib/session.tsx';
-import { ConfirmDialog } from '../overlay.tsx';
 import {
   Button,
   Card,
   Checkbox,
+  Disclosure,
   Dot,
   Empty,
   Field,
@@ -30,8 +32,8 @@ import {
   Pill,
   RefusalNote,
   ROWS_CLASS,
+  Select,
   Table,
-  TEXTAREA_CLASS,
   Technical,
 } from '../ui.tsx';
 import { UntrustedText } from '../untrusted-text.tsx';
@@ -75,10 +77,13 @@ function Artefacts({ report }: { readonly report: VerificationReport }) {
   const { csrfToken } = useSession();
   const produce = useCaseAction('artefacts');
   const revoke = useCaseAction('revoke-artefact');
-  const [schema, setSchema] = useState('');
+  // The rehearsal target is local to this machine and has a safe default; it is
+  // only changed under the advanced options. The database refuses this system's schema.
+  const [schema, setSchema] = useState('rehearsal_local');
   const [downloadRefusal, setDownloadRefusal] = useState<Refusal | null>(null);
   const [downloaded, setDownloaded] = useState<string | null>(null);
   const [revoking, setRevoking] = useState<Artefact | null>(null);
+  const [revokeReason, setRevokeReason] = useState<string | null>(null);
   const mayDownload = useCan('download_artefact');
   const mayExport = useCan('export_repair');
   const mayReadHistory = useCan('read_historical_artefact');
@@ -124,52 +129,100 @@ function Artefacts({ report }: { readonly report: VerificationReport }) {
                 data-testid="artefact"
                 data-kind={artefact.kind}
                 data-status={artefact.status}
-                className="flex flex-wrap items-center gap-x-3 gap-y-2 text-sm"
+                className="space-y-2 text-sm"
               >
-                <span className="font-medium">
-                  {KIND[artefact.kind]}
-                  {artefact.kind === 'sql_export' && !artefact.executable ? '（不可执行）' : ''}
-                </span>
-                <Pill tone={tone}>{label}</Pill>
-                <span className="text-meta text-muted tabular-nums">
-                  有效至 {when(artefact.expiresAt)}
-                </span>
-                {downloaded === artefact.artefactId && (
-                  <span className="text-meta text-mint-ink">已下载。</span>
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+                  <span className="font-medium">
+                    {KIND[artefact.kind]}
+                    {artefact.kind === 'sql_export' && !artefact.executable ? '（不可执行）' : ''}
+                  </span>
+                  <Pill tone={tone}>{label}</Pill>
+                  <span className="text-meta text-muted tabular-nums">
+                    有效至 {when(artefact.expiresAt)}
+                  </span>
+                  {downloaded === artefact.artefactId && (
+                    <span className="text-meta text-mint-ink">已下载。</span>
+                  )}
+                  <span className="ml-auto flex flex-wrap gap-2">
+                    {artefact.status === 'ready' && artefact.currency === 'current' && (
+                      <Button
+                        size="sm"
+                        disabled={
+                          !(artefact.kind === 'verification_report' ? mayDownload : mayExport)
+                        }
+                        onClick={() => void download(artefact, false)}
+                      >
+                        <Download aria-hidden className="size-3.5" />
+                        下载
+                      </Button>
+                    )}
+                    {artefact.status === 'ready' && artefact.currency === 'historical' && (
+                      <Button
+                        size="sm"
+                        disabled={!mayReadHistory}
+                        onClick={() => void download(artefact, true)}
+                      >
+                        作为历史材料下载
+                      </Button>
+                    )}
+                    {artefact.status === 'ready' && (
+                      <Button
+                        size="sm"
+                        tone="danger"
+                        pending={revoke.pending}
+                        onClick={() => {
+                          setRevoking(artefact);
+                          setRevokeReason(null);
+                        }}
+                      >
+                        撤销登记
+                      </Button>
+                    )}
+                  </span>
+                </div>
+                {revoking?.artefactId === artefact.artefactId && (
+                  <div className="space-y-3 rounded-field bg-canvas p-4">
+                    <p className="text-meta text-apricot-ink">
+                      撤销登记后，该产物将无法再从控制台下载。{NOT_RECALLABLE}
+                    </p>
+                    <Field label="撤销理由（必填）">
+                      <Select
+                        value={revokeReason}
+                        options={reasonOptions(REVOKE_ARTEFACT_REASONS)}
+                        onChange={setRevokeReason}
+                        placeholder="选择理由"
+                      />
+                    </Field>
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        size="sm"
+                        tone="danger"
+                        pending={revoke.pending}
+                        disabled={revokeReason === null}
+                        onClick={() => {
+                          if (revokeReason === null) return;
+                          void revoke.run({
+                            id: artefact.artefactId,
+                            reason: revokeReason,
+                          });
+                          setRevoking(null);
+                          setRevokeReason(null);
+                        }}
+                      >
+                        确认撤销登记
+                      </Button>
+                      <Button
+                        size="sm"
+                        onClick={() => {
+                          setRevoking(null);
+                          setRevokeReason(null);
+                        }}
+                      >
+                        取消
+                      </Button>
+                    </div>
+                  </div>
                 )}
-                <span className="ml-auto flex flex-wrap gap-2">
-                  {artefact.status === 'ready' && artefact.currency === 'current' && (
-                    <Button
-                      size="sm"
-                      disabled={
-                        !(artefact.kind === 'verification_report' ? mayDownload : mayExport)
-                      }
-                      onClick={() => void download(artefact, false)}
-                    >
-                      <Download aria-hidden className="size-3.5" />
-                      下载
-                    </Button>
-                  )}
-                  {artefact.status === 'ready' && artefact.currency === 'historical' && (
-                    <Button
-                      size="sm"
-                      disabled={!mayReadHistory}
-                      onClick={() => void download(artefact, true)}
-                    >
-                      作为历史材料下载
-                    </Button>
-                  )}
-                  {artefact.status === 'ready' && (
-                    <Button
-                      size="sm"
-                      tone="danger"
-                      pending={revoke.pending}
-                      onClick={() => setRevoking(artefact)}
-                    >
-                      撤销登记
-                    </Button>
-                  )}
-                </span>
               </li>
             );
           })}
@@ -195,17 +248,6 @@ function Artefacts({ report }: { readonly report: VerificationReport }) {
             生成差异报告
           </Button>
           <div className="flex min-w-64 flex-1 flex-wrap items-end gap-3">
-            <div className="min-w-48 flex-1">
-              <Field label="SQL 导出的本地演练目标 schema">
-                <input
-                  name="export-schema"
-                  className={INPUT_CLASS}
-                  placeholder="例如 rehearsal_local"
-                  value={schema}
-                  onChange={(event) => setSchema(event.target.value.trim())}
-                />
-              </Field>
-            </div>
             <Button
               pending={produce.pending}
               disabled={!mayExport || schema === ''}
@@ -219,24 +261,29 @@ function Artefacts({ report }: { readonly report: VerificationReport }) {
             >
               生成 SQL 导出
             </Button>
+            <Disclosure
+              summary={`高级选项（目标 schema：${schema}）`}
+              summaryClassName="text-meta text-ink-soft hover:text-ink"
+            >
+              <div className="mt-2 min-w-64">
+                <Field
+                  label="SQL 导出的本地演练目标 schema"
+                  hint="以小写字母开头，可含数字与下划线；数据库会拒绝指向本系统的 schema。"
+                >
+                  <input
+                    name="export-schema"
+                    className={INPUT_CLASS}
+                    placeholder="rehearsal_local"
+                    value={schema}
+                    onChange={(event) => setSchema(event.target.value.trim())}
+                  />
+                </Field>
+              </div>
+            </Disclosure>
           </div>
         </div>
       )}
       <RefusalNote refusal={produce.refusal ?? revoke.refusal ?? downloadRefusal} />
-      <ConfirmDialog
-        open={revoking !== null}
-        onClose={() => setRevoking(null)}
-        title="撤销这份产物的登记？"
-        warning={NOT_RECALLABLE}
-        confirmLabel="撤销登记"
-        tone="danger"
-        reason={{ label: '撤销理由', name: 'revoke-artefact-reason' }}
-        onConfirm={(reason) => {
-          if (revoking !== null) void revoke.run({ id: revoking.artefactId, reason });
-        }}
-      >
-        <p>撤销登记后，该产物将无法再从控制台下载。</p>
-      </ConfirmDialog>
     </section>
   );
 }
@@ -454,12 +501,14 @@ function Reopen() {
   const manage = useCan('manage_case');
   const { modelMode } = useSession();
   const start = useCaseAction('runs');
-  const [description, setDescription] = useState(view.run?.description ?? view.overview.title);
   const [isolation, setIsolation] = useState(false);
   const [egress, setEgress] = useState(false);
   const run = view.run;
   if (run !== null && !ENDED.includes(run.status)) return null;
   const held = view.stage.stage === 'quarantined';
+  // A new investigation of the same case reuses the incident as it was described:
+  // asking again would only invite the text to drift from the record.
+  const description = run?.description ?? view.overview.title;
   return (
     <Card
       title="重新调查"
@@ -469,15 +518,6 @@ function Reopen() {
       testId="reopen"
     >
       <div className="space-y-4 text-sm">
-        <Field label="事故描述">
-          <textarea
-            name="rerun-description"
-            rows={2}
-            className={TEXTAREA_CLASS}
-            value={description}
-            onChange={(event) => setDescription(event.target.value)}
-          />
-        </Field>
         {held && (
           <label className={OPTION_CLASS}>
             <Checkbox

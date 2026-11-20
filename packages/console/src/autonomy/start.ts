@@ -1,5 +1,6 @@
 import {
   AUTONOMY_IDENTITY_SOURCE,
+  type AutonomyCharterRecord,
   type AutonomyCharterSummary,
   type AutonomyEnrollment,
   type AutonomyTrigger,
@@ -27,6 +28,19 @@ export interface AutonomousStartRequest {
   readonly reopen?: { readonly of: string; readonly reason: string };
   /** Default: the autopilot of the one charter in force. */
   readonly autopilot?: string;
+  /** The case was stopped by a deterministic invariant failure and the caller accepts that. */
+  readonly acknowledgeIsolation?: boolean;
+}
+
+/** A new run on an existing case, started as the charter's autopilot; the earlier run stays as history. */
+export interface AutonomousTakeoverRequest {
+  readonly caseId: string;
+  readonly trigger: AutonomyTrigger;
+  /** The person asking for the takeover: their own manage_case is checked, never the autopilot's. */
+  readonly requestedBy: string;
+  readonly description: string;
+  /** The case was stopped by a deterministic invariant failure and the caller accepts that. */
+  readonly acknowledgeIsolation?: boolean;
 }
 
 export interface AutonomousStart {
@@ -34,6 +48,50 @@ export interface AutonomousStart {
   readonly agentRunId: string;
   readonly enrollment: AutonomyEnrollment;
   readonly charter: AutonomyCharterSummary;
+}
+
+/** Why a case opened now would not be followed by a charter. */
+export type AutonomyUnavailableCode = 'autonomy_switched_off' | 'no_charter' | 'charter_ambiguous';
+
+export type AutonomyReadiness =
+  | { readonly ready: true; readonly charter: AutonomyCharterRecord }
+  | {
+      readonly ready: false;
+      readonly code: AutonomyUnavailableCode;
+      readonly message: string;
+    };
+
+/**
+ * Whether a case opened now would be followed by a charter: the switch is on
+ * and exactly one charter is in force. Every way into autonomy decides this
+ * here, so the console, the assistant and the prompt cannot disagree.
+ */
+export async function autonomyReadiness(context: ConsoleContext): Promise<AutonomyReadiness> {
+  const { autonomy } = context;
+  if (!(await autonomy.readSwitch()).enabled) {
+    return {
+      ready: false,
+      code: 'autonomy_switched_off',
+      message: 'autonomy is switched off for this deployment',
+    };
+  }
+  const charters = await autonomy.chartersInForce();
+  const [charter] = charters;
+  if (charter === undefined) {
+    return {
+      ready: false,
+      code: 'no_charter',
+      message: 'no autonomy charter is in force for this environment',
+    };
+  }
+  if (charters.length > 1) {
+    return {
+      ready: false,
+      code: 'charter_ambiguous',
+      message: 'more than one charter is in force; name the autopilot',
+    };
+  }
+  return { ready: true, charter };
 }
 
 export const autopilotIdentity = (autopilotPrincipal: string): IdentityContext => ({
@@ -46,26 +104,44 @@ const refused = <T>(code: string, message: string): ActionResult<T> => ({
   refusal: refuse(code, message),
 });
 
-export async function startAutonomousRun(
+/** The charter a run starts under: the one named autopilot's, or the one charter in force. */
+async function charterInForce(
   context: ConsoleContext,
-  request: AutonomousStartRequest,
-): Promise<ActionResult<AutonomousStart>> {
-  const { autonomy, environment } = context;
-  if (!(await autonomy.readSwitch()).enabled) {
+  autopilot: string | undefined,
+): Promise<ActionResult<AutonomyCharterRecord>> {
+  if (autopilot === undefined) {
+    const readiness = await autonomyReadiness(context);
+    return readiness.ready
+      ? { ok: true, value: readiness.charter, replayed: false }
+      : refused(readiness.code, readiness.message);
+  }
+  if (!(await context.autonomy.readSwitch()).enabled) {
     return refused('autonomy_switched_off', 'autonomy is switched off for this deployment');
   }
-  const charters = await autonomy.chartersInForce();
-  const charter =
-    request.autopilot === undefined
-      ? charters.length === 1
-        ? charters[0]
-        : undefined
-      : charters.find((entry) => entry.autopilotPrincipal === request.autopilot);
-  if (charter === undefined) {
-    return request.autopilot === undefined && charters.length > 1
-      ? refused('charter_ambiguous', 'more than one charter is in force; name the autopilot')
-      : refused('no_charter', 'no autonomy charter is in force for this environment');
-  }
+  const charters = await context.autonomy.chartersInForce();
+  const charter = charters.find((entry) => entry.autopilotPrincipal === autopilot);
+  return charter === undefined
+    ? refused('no_charter', 'no autonomy charter is in force for this environment')
+    : { ok: true, value: charter, replayed: false };
+}
+
+interface CharteredStart {
+  readonly caseId?: string;
+  readonly description: string;
+  readonly trigger: AutonomyTrigger;
+  readonly requestedBy: string;
+  readonly intakeId?: string;
+  readonly reopen?: { readonly of: string; readonly reason: string };
+  readonly acknowledgeIsolation?: boolean;
+}
+
+/** What every way into a chartered run has to do once the charter is chosen. */
+async function startUnderCharter(
+  context: ConsoleContext,
+  charter: AutonomyCharterRecord,
+  request: CharteredStart,
+): Promise<ActionResult<AutonomousStart>> {
+  const { environment } = context;
   const blocked =
     (await admitEnvironment(context, null)) ??
     (await admitNewRun(context, charter.body.intake.acknowledgeDataEgress));
@@ -86,6 +162,7 @@ export async function startAutonomousRun(
     description: request.description,
     limits: charter.body.intake.limits,
     freshSnapshot: request.reopen !== undefined,
+    acknowledgeIsolation: request.acknowledgeIsolation ?? false,
   });
   if (!started.ok) {
     return refused(
@@ -93,7 +170,7 @@ export async function startAutonomousRun(
       started.rejection.message,
     );
   }
-  const enrolled = await autonomy.enroll({
+  const enrolled = await context.autonomy.enroll({
     autopilot: identity.principal,
     caseId,
     agentRunId: started.value.agentRunId,
@@ -122,4 +199,35 @@ export async function startAutonomousRun(
     },
     replayed: false,
   };
+}
+
+export async function startAutonomousRun(
+  context: ConsoleContext,
+  request: AutonomousStartRequest,
+): Promise<ActionResult<AutonomousStart>> {
+  const charter = await charterInForce(context, request.autopilot);
+  return charter.ok ? startUnderCharter(context, charter.value, request) : charter;
+}
+
+/**
+ * Takes an existing case over: a new run on the same case, started as the
+ * charter's autopilot and enrolled in the same breath. The earlier run is kept
+ * as history; nothing is moved under the charter after the fact.
+ */
+export async function startAutonomousTakeover(
+  context: ConsoleContext,
+  request: AutonomousTakeoverRequest,
+): Promise<ActionResult<AutonomousStart>> {
+  // The person asking must be allowed to manage the case, whatever the autopilot holds.
+  if (!(await context.environment.operations.hasCapability(request.requestedBy, 'manage_case'))) {
+    return refused(
+      'not_authorized',
+      'placing a case under the autonomy charter needs the manage_case capability',
+    );
+  }
+  const readiness = await autonomyReadiness(context);
+  if (!readiness.ready) {
+    return refused(readiness.code, readiness.message);
+  }
+  return startUnderCharter(context, readiness.charter, request);
 }
