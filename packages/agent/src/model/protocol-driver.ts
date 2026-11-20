@@ -633,6 +633,7 @@ export function createProtocolDriverModel(options: ProtocolDriverOptions = {}): 
         ok: true,
         response: {
           text: `[TEST MODE, scripted] ${step.text}`,
+          reasoning: null,
           toolCalls: step.calls.map((call, index) => ({
             id: `call_${index}`,
             name: call.tool,

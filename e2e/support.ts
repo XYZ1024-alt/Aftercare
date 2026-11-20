@@ -7,7 +7,7 @@ import {
   PASSWORD,
 } from '@aftercare/console/testing';
 import { recreateTestDatabase } from '@aftercare/storage/testing';
-import { test as base, expect, type Page } from '@playwright/test';
+import { test as base, expect, type Locator, type Page } from '@playwright/test';
 
 // Fixtures of the browser tests. Each test starts from a freshly migrated
 // TEST database with the five-product business activity, console accounts
@@ -40,12 +40,24 @@ export async function signIn(page: Page, principal: string): Promise<void> {
   await expect(page.getByTestId('principal')).toContainText(principal);
 }
 
+/**
+ * A page, or the part of it that shows a case: the workbench of a GenUI block
+ * or the case drawer. The panels inside are the same, so every helper that
+ * works on a case takes either.
+ */
+type CaseScope = Page | Locator;
+
 /** Reports an incident to the assistant in a new conversation and returns the id of the case it opens. */
 export async function reportToAssistant(page: Page, description: string): Promise<string> {
   await page.goto('/agent');
   await page.locator('textarea[name=message]').fill(description);
   await page.getByRole('button', { name: '发送' }).click();
-  const opened = page.locator('[data-testid=opened-case]').last();
+  // The case is named by the case_opened event of the stored turn, and only
+  // when the turn's own tool record backs it.
+  const opened = page
+    .locator('[data-testid=agent-event][data-kind=case_opened]')
+    .locator('[data-testid=opened-case]')
+    .last();
   await expect(opened).toBeVisible();
   const caseId = (await opened.getAttribute('data-case-id')) ?? '';
   expect(caseId).toMatch(/^[0-9a-f-]{36}$/);
@@ -59,22 +71,22 @@ export async function submitIncident(page: Page, description: string): Promise<s
   return caseId;
 }
 
-export const stage = (page: Page) => page.getByTestId('stage');
+export const stage = (scope: CaseScope) => scope.getByTestId('stage');
 
 /** Waits until the case shows one of the stages. */
-export async function untilStage(page: Page, ...stages: string[]): Promise<void> {
-  await expect(stage(page)).toHaveAttribute('data-stage', new RegExp(`^(${stages.join('|')})$`), {
+export async function untilStage(scope: CaseScope, ...stages: string[]): Promise<void> {
+  await expect(stage(scope)).toHaveAttribute('data-stage', new RegExp(`^(${stages.join('|')})$`), {
     timeout: 40_000,
   });
 }
 
 /** Answers the open business question in the browser, as a person filling in the form. */
 export async function answerOpenQuestion(
-  page: Page,
+  scope: CaseScope,
   choose: { readonly operations?: number } = {},
 ): Promise<string> {
-  await page.getByTestId('tab-questions').click();
-  const question = page.locator('[data-testid=question][data-state=open]').first();
+  await scope.getByTestId('tab-questions').click();
+  const question = scope.locator('[data-testid=question][data-state=open]').first();
   await expect(question).toBeVisible();
   const kind = (await question.getAttribute('data-kind')) ?? '';
   const questionId = (await question.getAttribute('data-question')) ?? '';
@@ -98,7 +110,7 @@ export async function answerOpenQuestion(
     throw new Error(`not a business question: ${kind}`);
   }
   // The next question may already be open: wait for THIS one to be recorded as answered.
-  await expect(page.locator(`[data-question="${questionId}"]`)).toHaveAttribute(
+  await expect(scope.locator(`[data-question="${questionId}"]`)).toHaveAttribute(
     'data-state',
     'answered',
   );
@@ -106,22 +118,22 @@ export async function answerOpenQuestion(
 }
 
 /** Answers business questions in the browser until the case waits for an execution approval. */
-export async function answerUntilApproval(page: Page): Promise<string[]> {
+export async function answerUntilApproval(scope: CaseScope): Promise<string[]> {
   const kinds: string[] = [];
   for (let round = 0; round < 8; round += 1) {
-    await untilStage(page, 'awaiting_answer', 'awaiting_approval');
-    if ((await stage(page).getAttribute('data-stage')) === 'awaiting_approval') {
+    await untilStage(scope, 'awaiting_answer', 'awaiting_approval');
+    if ((await stage(scope).getAttribute('data-stage')) === 'awaiting_approval') {
       return kinds;
     }
-    kinds.push(await answerOpenQuestion(page));
+    kinds.push(await answerOpenQuestion(scope));
   }
   throw new Error('the case did not reach an approval request');
 }
 
 /** Reviews the plan and approves the bound contract in the browser, acknowledging every unresolved domain. */
-export async function approveInBrowser(page: Page): Promise<void> {
-  await page.getByTestId('tab-plan').click();
-  const approval = page.getByTestId('approval');
+export async function approveInBrowser(scope: CaseScope): Promise<void> {
+  await scope.getByTestId('tab-plan').click();
+  const approval = scope.getByTestId('approval');
   for (const box of await approval.locator('input[name=acknowledge]').all()) {
     await box.check();
   }

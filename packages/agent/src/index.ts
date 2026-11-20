@@ -6,6 +6,7 @@ export * from './feedback.ts';
 export { derivedUuid } from './ids.ts';
 export * from './model/adapter.ts';
 export * from './model/config.ts';
+export * from './model/models-dev.ts';
 export * from './model/openai-compatible.ts';
 export * from './model/protocol-driver.ts';
 export * from './model/scripted.ts';

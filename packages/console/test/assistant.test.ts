@@ -1,6 +1,8 @@
+import { createServer, type Server } from 'node:http';
 import { type FiveProducts, fiveProducts } from '@aftercare/agent/testing';
 import { recreateTestDatabase } from '@aftercare/storage/testing';
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { extractAssistantUi } from '../src/assistant/ui-parser.ts';
 import type {
   AssistantConversation,
   AssistantConversationSummary,
@@ -22,7 +24,8 @@ import {
 
 // SCRIPTED TEST DOUBLE throughout (see flow.test.ts): the assistant is driven
 // by createScriptedAssistantModel, so these tests show the stored conversation
-// of a turn, its tool loop and its history — nothing about a model's ability.
+// of a turn, its tool loop, its streamed preview and its history — nothing
+// about a model's ability.
 
 let c: ConsoleHarness;
 let scenario: FiveProducts;
@@ -56,17 +59,27 @@ function requestHeaders(
 }
 
 /** Posts one turn the way the browser does. */
+async function postTurn(
+  client: ConsoleClient,
+  conversationId: string,
+  body: { readonly content: string; readonly acknowledgeDataEgress: boolean },
+  overrides: RequestOverrides = {},
+): Promise<Response> {
+  return client.raw(`/api/assistant/conversations/${conversationId}/turns`, {
+    method: 'POST',
+    headers: requestHeaders(client, overrides),
+    body: JSON.stringify(body),
+  });
+}
+
+/** Posts one turn of the scripted double, which runs without an egress acknowledgement. */
 async function sendTurn(
   client: ConsoleClient,
   conversationId: string,
   content: string,
   overrides: RequestOverrides = {},
 ): Promise<Response> {
-  return client.raw(`/api/assistant/conversations/${conversationId}/turns`, {
-    method: 'POST',
-    headers: requestHeaders(client, overrides),
-    body: JSON.stringify({ content, acknowledgeDataEgress: false }),
-  });
+  return postTurn(client, conversationId, { content, acknowledgeDataEgress: false }, overrides);
 }
 
 async function deleteConversation(
@@ -80,14 +93,34 @@ async function deleteConversation(
   });
 }
 
-/** The stored entries of an accepted turn, in order; its stream always ends with done. */
-async function entriesOf(response: Response): Promise<AssistantEntry[]> {
+/** The lines of an accepted turn; the last one is always done. */
+async function streamOf(response: Response): Promise<AssistantStreamEvent[]> {
   expect(response.status).toBe(200);
   expect(response.headers.get('content-type') ?? '').toContain('application/x-ndjson');
   const text = (await response.text()).trim();
   const events = text.split('\n').map((line) => JSON.parse(line) as AssistantStreamEvent);
   expect(events.at(-1)).toEqual({ type: 'done' });
+  return events;
+}
+
+/** The stored entries of a stream, in order: only the entry frames were written. */
+function entriesOf(events: readonly AssistantStreamEvent[]): AssistantEntry[] {
   return events.flatMap((event) => (event.type === 'entry' ? [event.entry] : []));
+}
+
+/** The text of the preview frames of one step, as the browser assembles it. */
+function previewText(
+  events: readonly AssistantStreamEvent[],
+  step: number,
+  attempt: number,
+): string {
+  return events
+    .flatMap((event) =>
+      event.type === 'preview_delta' && event.step === step && event.attempt === attempt
+        ? [event.delta]
+        : [],
+    )
+    .join('');
 }
 
 /** The conversations of the given client, as its history lists them. */
@@ -151,6 +184,15 @@ function toolMessage(entry: AssistantEntry): Extract<AssistantMessage, { role: '
   return message;
 }
 
+/** The state and events the stored OpenUI Lang of a message carries. */
+function uiOf(message: Extract<AssistantMessage, { role: 'assistant' }>) {
+  const ui = message.content === null ? null : extractAssistantUi(message.content);
+  if (ui === null) {
+    throw new Error(`the reply is not valid OpenUI Lang: ${message.content ?? 'null'}`);
+  }
+  return ui;
+}
+
 /** The refusal a tool result carries, as the model reads it. */
 function toolRefusal(message: Extract<AssistantMessage, { role: 'tool' }>): string {
   const refusal = message.result.refusal;
@@ -169,6 +211,19 @@ function caseOf(entries: readonly AssistantEntry[]): string {
   const caseId = toolMessage(entryAt(entries, 2)).caseIds[0];
   if (caseId === undefined) throw new Error('the tool reported no case');
   return caseId;
+}
+
+/** A catalog URL whose host answers 503: the model limits cannot be read. */
+async function unavailableCatalog(server: Server): Promise<string> {
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const address = server.address();
+  if (address === null || typeof address === 'string') {
+    throw new Error('the test catalogue server did not bind a port');
+  }
+  return `http://127.0.0.1:${address.port}/api.json`;
 }
 
 describe('the stored conversations of the console assistant', () => {
@@ -223,14 +278,16 @@ describe('the stored conversations of the console assistant', () => {
     expect(await c.context.environment.operations.listCases(10)).toHaveLength(0);
   });
 
-  it('stores a turn message by message and reads the same conversation back', async () => {
+  it('streams a turn message by message and reads the same conversation back', async () => {
     const operator = await c.signIn(OPERATOR.principal);
     const conversationId = crypto.randomUUID();
-    const entries = await entriesOf(await sendTurn(operator, conversationId, '导入后商品价格异常'));
+    const events = await streamOf(await sendTurn(operator, conversationId, '导入后商品价格异常'));
+    const entries = entriesOf(events);
     expect(entries.map((entry) => entry.seq)).toEqual([1, 2, 3, 4]);
     expect(userMessage(entryAt(entries, 0)).content).toBe('导入后商品价格异常');
     const call = assistantMessage(entryAt(entries, 1));
     expect(call.content).toBeNull();
+    expect(call.ui).toBeNull();
     expect(call.toolCalls.map((toolCall) => toolCall.name)).toEqual(['open_case']);
     const tool = toolMessage(entryAt(entries, 2));
     expect(tool.name).toBe('open_case');
@@ -238,7 +295,33 @@ describe('the stored conversations of the console assistant', () => {
     // Opened by default, but with no charter in force the action falls back to manual mode and says why.
     expect(tool.result).toMatchObject({ autonomy: { mode: 'manual', reason: 'no_charter' } });
     expect(tool.caseIds).toHaveLength(1);
-    expect(assistantMessage(entryAt(entries, 3)).content).toBe('已创建案例并启动调查。');
+
+    // The scripted double streams its final program line by line: the browser
+    // previews exactly the text of the entry that replaces the preview.
+    const final = assistantMessage(entryAt(entries, 3));
+    expect(final.toolCalls).toEqual([]);
+    expect(previewText(events, 1, 0)).toBe(final.content);
+    expect(final.content?.split('\n').length).toBe(
+      events.filter(
+        (event) => event.type === 'preview_delta' && event.step === 1 && event.attempt === 0,
+      ).length,
+    );
+    // The tool-call step wrote no text, so it had no preview to reset; repairs
+    // and text beside tool calls are covered by assistant-turn.test.ts.
+    expect(events.some((event) => event.type === 'preview_reset')).toBe(false);
+
+    // What the server made of the reply is stored with it, and the reply is valid OpenUI Lang.
+    const caseId = caseOf(entries);
+    expect(final.ui).toEqual({ format: 'openui', fallback: false, eventCorroborated: [true] });
+    const ui = uiOf(final);
+    expect(ui.state.mode).toBe('tracking');
+    expect(ui.state.focusCaseId).toBe(caseId);
+    expect(ui.state.trackedCaseIds).toEqual([caseId]);
+    expect(ui.events.map((event) => event.kind)).toEqual(['case_opened']);
+    expect(ui.events[0]?.caseId).toBe(caseId);
+    expect(ui.events[0]?.tab).toBe('process');
+    expect(final.ui?.eventCorroborated[0]).toBe(true);
+    expect(ui.workbenchCaseIds).toEqual([caseId]);
     expect(await c.context.environment.operations.listCases(10)).toHaveLength(1);
 
     // The stored conversation is exactly what the stream carried.
@@ -259,7 +342,9 @@ describe('the stored conversations of the console assistant', () => {
     await registerCharter(c, scenario.policy.policyVersionId);
     const operator = await c.signIn(OPERATOR.principal);
     const conversationId = crypto.randomUUID();
-    const entries = await entriesOf(await sendTurn(operator, conversationId, '导入后商品价格异常'));
+    const entries = entriesOf(
+      await streamOf(await sendTurn(operator, conversationId, '导入后商品价格异常')),
+    );
 
     const tool = toolMessage(entryAt(entries, 2));
     expect(tool.name).toBe('open_case');
@@ -272,10 +357,13 @@ describe('the stored conversations of the console assistant', () => {
   it('continues a conversation from its stored history', async () => {
     const operator = await c.signIn(OPERATOR.principal);
     const conversationId = crypto.randomUUID();
-    const first = await entriesOf(await sendTurn(operator, conversationId, '导入后商品价格异常'));
+    const first = entriesOf(
+      await streamOf(await sendTurn(operator, conversationId, '导入后商品价格异常')),
+    );
     const caseId = caseOf(first);
 
-    const second = await entriesOf(await sendTurn(operator, conversationId, '列出案例'));
+    const secondEvents = await streamOf(await sendTurn(operator, conversationId, '列出案例'));
+    const second = entriesOf(secondEvents);
     expect(second.map((entry) => entry.seq)).toEqual([5, 6, 7, 8]);
     expect(userMessage(entryAt(second, 0)).content).toBe('列出案例');
     const listed = toolMessage(entryAt(second, 2));
@@ -284,7 +372,12 @@ describe('the stored conversations of the console assistant', () => {
     // The cases the tool listed are the ones the workspace follows.
     expect(listed.caseIds).toContain(caseId);
     expect(listed.result.total).toBe(1);
-    expect(assistantMessage(entryAt(second, 3)).content).toBe('共 1 个案例。');
+    const final = assistantMessage(entryAt(second, 3));
+    expect(final.ui).toEqual({ format: 'openui', fallback: false, eventCorroborated: [true] });
+    const ui = uiOf(final);
+    expect(ui.state.mode).toBe('idle');
+    expect(ui.events.map((event) => event.kind)).toEqual(['cases_queried']);
+    expect(ui.events[0]?.caseId).toBeNull();
 
     const conversation = await readOf(operator, conversationId);
     expect(conversation.entries.map((entry) => entry.seq)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
@@ -294,7 +387,7 @@ describe('the stored conversations of the console assistant', () => {
     const operator = await c.signIn(OPERATOR.principal);
     const viewer = await c.signIn(VIEWER);
     const conversationId = crypto.randomUUID();
-    await entriesOf(await sendTurn(operator, conversationId, '导入后商品价格异常'));
+    entriesOf(await streamOf(await sendTurn(operator, conversationId, '导入后商品价格异常')));
 
     expect((await viewer.get(`/api/assistant/conversations/${conversationId}`)).status).toBe(404);
     const deleted = await deleteConversation(viewer, conversationId);
@@ -378,23 +471,26 @@ describe('the stored conversations of the console assistant', () => {
         role: 'assistant',
         content: '正在查看。',
         toolCalls: [{ id: 'scripted-unanswered', name: 'list_cases', argumentsText: '{}' }],
+        ui: null,
       },
       leaseSeconds: 600,
     });
     expect(appended.ok).toBe(true);
     await c.context.assistant.endTurn({ principal: OPERATOR.principal, conversationId, turnId });
 
-    const entries = await entriesOf(await sendTurn(operator, conversationId, '列出案例'));
+    const entries = entriesOf(await streamOf(await sendTurn(operator, conversationId, '列出案例')));
     expect(entries.map((entry) => entry.seq)).toEqual([3, 4, 5, 6]);
-    expect(entries.at(-1)?.message).toEqual(
-      expect.objectContaining({ role: 'assistant', toolCalls: [] }),
-    );
+    const final = assistantMessage(entryAt(entries, 3));
+    expect(final).toEqual(expect.objectContaining({ role: 'assistant', toolCalls: [] }));
+    expect(uiOf(final).state.mode).toBe('idle');
   });
 
   it('answers a viewer without manage_case with a refused tool result and opens nothing', async () => {
     const viewer = await c.signIn(VIEWER);
     const conversationId = crypto.randomUUID();
-    const entries = await entriesOf(await sendTurn(viewer, conversationId, '导入后商品价格异常'));
+    const entries = entriesOf(
+      await streamOf(await sendTurn(viewer, conversationId, '导入后商品价格异常')),
+    );
     expect(userMessage(entryAt(entries, 0)).content).toBe('导入后商品价格异常');
     const tool = toolMessage(entryAt(entries, 2));
     expect(tool.name).toBe('open_case');
@@ -402,5 +498,52 @@ describe('the stored conversations of the console assistant', () => {
     expect(toolRefusal(tool)).toBe('not_authorized');
     expect(tool.caseIds).toEqual([]);
     expect(await c.context.environment.operations.listCases(10)).toHaveLength(0);
+
+    // The refusal of the tool is what the reply reports: a blocked turn, still valid OpenUI Lang.
+    const final = assistantMessage(entryAt(entries, 3));
+    expect(final.ui).toEqual({ format: 'openui', fallback: false, eventCorroborated: [true] });
+    const ui = uiOf(final);
+    expect(ui.state.mode).toBe('blocked');
+    expect(ui.events.map((event) => event.kind)).toEqual(['action_refused']);
+    expect(ui.events[0]?.detailCode).toBe('not_authorized');
+  });
+
+  it('refuses a turn when the model catalogue is unavailable and stores no user message', async () => {
+    // models.dev cannot answer: the turn must not run on limits nobody read.
+    const catalogServer = createServer((_request, response) => {
+      response.statusCode = 503;
+      response.end('catalogue unavailable');
+    });
+    let live: ConsoleHarness | null = null;
+    try {
+      const catalogUrl = await unavailableCatalog(catalogServer);
+      live = await openConsoleHarness({
+        AFTERCARE_MODEL_MODE: 'live',
+        AFTERCARE_MODEL_BASE_URL: 'http://127.0.0.1:4599/v1',
+        AFTERCARE_MODEL_API_KEY: 'test-key-never-sent',
+        AFTERCARE_MODEL_NAME: 'deepseek-flash',
+        AFTERCARE_MODEL_TIMEOUT_MS: '2000',
+        AFTERCARE_MODELS_DEV_URL: catalogUrl,
+      });
+      const operator = await live.signIn(OPERATOR.principal);
+      const conversationId = crypto.randomUUID();
+      const refused = await postTurn(operator, conversationId, {
+        content: '导入后商品价格异常',
+        acknowledgeDataEgress: true,
+      });
+      expect(refused.status).toBe(503);
+      expect((await refusalBody(refused)).refusal.code).toBe('model_limits_unavailable');
+      // The refusal happened before the turn began: not even the user message is stored.
+      expect(await listOf(operator)).toEqual([]);
+      expect(await live.context.assistant.list(OPERATOR.principal, 100)).toEqual([]);
+      expect((await operator.get(`/api/assistant/conversations/${conversationId}`)).status).toBe(
+        404,
+      );
+    } finally {
+      await live?.close();
+      await new Promise<void>((resolve, reject) => {
+        catalogServer.close((error) => (error === undefined ? resolve() : reject(error)));
+      });
+    }
   });
 });

@@ -14,7 +14,7 @@ import {
 import { DatabaseError, type Pool, type QueryResultRow } from 'pg';
 import { z } from 'zod';
 
-// The storage entry of the console assistant (0025). The pool must be
+// The storage entry of the console assistant (0026). The pool must be
 // connected as `aftercare_runtime`.
 //
 // A conversation belongs to the principal who started it and is stored message
@@ -30,6 +30,7 @@ const STATEMENTS = {
   append:
     'SELECT aftercare_control.assistant_append($1, $2::uuid, $3::uuid, $4::jsonb, $5) AS document',
   endTurn: 'SELECT aftercare_control.assistant_end_turn($1, $2::uuid, $3::uuid)',
+  renewTurn: 'SELECT aftercare_control.assistant_renew_turn($1, $2::uuid, $3::uuid, $4) AS renewed',
   list: 'SELECT aftercare_control.assistant_list_conversations($1, $2) AS document',
   read: 'SELECT aftercare_control.assistant_read_conversation($1, $2::uuid) AS document',
   remove: 'SELECT aftercare_control.assistant_delete_conversation($1, $2::uuid) AS document',
@@ -43,7 +44,6 @@ const REJECTION_BY_SQLSTATE: Readonly<Record<string, AssistantRejectionCode>> = 
   AC202: 'not_found',
   AC211: 'turn_in_progress',
   AC212: 'turn_superseded',
-  AC213: 'conversation_full',
 };
 
 /** What the delete entry answers: the conversation it removed. */
@@ -72,6 +72,13 @@ export interface AssistantStore {
     readonly conversationId: string;
     readonly turnId: string;
   }) => Promise<void>;
+  /** Pushes the lease of the turn that still holds the conversation forward; false when it no longer holds it. */
+  readonly renewTurn: (request: {
+    readonly principal: string;
+    readonly conversationId: string;
+    readonly turnId: string;
+    readonly leaseSeconds: number;
+  }) => Promise<boolean>;
   /** The principal's conversations, the newest message first. */
   readonly list: (principal: string, limit: number) => Promise<AssistantConversationSummary[]>;
   /** One conversation with its transcript, or null when it is not there for this principal. */
@@ -182,6 +189,16 @@ export function createAssistantStore(runtimePool: Pool): AssistantStore {
     endTurn: ({ principal, conversationId, turnId }) =>
       attempt('endTurn', async () => {
         await runtimePool.query(STATEMENTS.endTurn, [principal, conversationId, turnId]);
+      }),
+    renewTurn: ({ principal, conversationId, turnId, leaseSeconds }) =>
+      attempt('renewTurn', async () => {
+        const { rows } = await runtimePool.query<QueryResultRow>(STATEMENTS.renewTurn, [
+          principal,
+          conversationId,
+          turnId,
+          leaseSeconds,
+        ]);
+        return z.boolean().parse(rows[0]?.renewed);
       }),
     list: (principal, limit) =>
       attempt('list', () =>

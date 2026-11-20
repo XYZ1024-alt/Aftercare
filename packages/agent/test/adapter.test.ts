@@ -23,6 +23,7 @@ const CONFIG: ModelConfig = {
   parallelToolCalls: 'omit',
   temperature: null,
   pricing: null,
+  catalog: { url: 'https://models.dev/api.json', providerId: null, modelId: 'example-model' },
 };
 
 const REQUEST: ModelRequest = {
@@ -175,6 +176,7 @@ describe('the OpenAI-compatible adapter', () => {
       ok: true,
       response: {
         text: 'Reading two things.',
+        reasoning: null,
         toolCalls: [
           { id: 'call_A', name: 'list_batches', argumentsText: '{}' },
           { id: 'call_B', name: 'list_operations', argumentsText: '{"limit":5}' },
@@ -184,6 +186,73 @@ describe('the OpenAI-compatible adapter', () => {
         model: 'example-model-2026',
       },
     });
+  });
+
+  it('reads the reasoning_content of a thinking-mode answer and treats an empty one as none', async () => {
+    const withReasoning = transport(() =>
+      completion({ content: 'ok', reasoning_content: 'weighing the batches' }),
+    );
+    const read = await createOpenAiCompatibleAdapter(CONFIG, withReasoning.send).complete(REQUEST);
+    expect(read).toMatchObject({ ok: true, response: { reasoning: 'weighing the batches' } });
+
+    const withoutReasoning = transport(() => completion({ content: 'ok', reasoning_content: '' }));
+    const empty = await createOpenAiCompatibleAdapter(CONFIG, withoutReasoning.send).complete(
+      REQUEST,
+    );
+    expect(empty).toMatchObject({ ok: true, response: { reasoning: null } });
+  });
+
+  it('sends reasoning_content back for an assistant message that carries it, and omits it otherwise', async () => {
+    const ASSISTANT = {
+      role: 'assistant',
+      content: 'Reading.',
+      toolCalls: [{ id: 'tc-1', name: 'list_batches', argumentsText: '{}' }],
+    } as const;
+    const carried = {
+      ...ASSISTANT,
+      reasoning: 'The batch list comes first.',
+    } as const;
+    const messages = (assistant: typeof ASSISTANT): ModelRequest['messages'] => [
+      { role: 'user', content: 'user text' },
+      assistant,
+      { role: 'tool', toolCallId: 'tc-1', content: '{"ok":true}' },
+    ];
+
+    const withReasoning = transport(() => completion({ content: 'ok' }));
+    await createOpenAiCompatibleAdapter(CONFIG, withReasoning.send).complete({
+      ...REQUEST,
+      messages: messages(carried),
+    });
+    const sent = withReasoning.captured[0]?.body.messages;
+    expect(sent).toEqual([
+      { role: 'user', content: 'user text' },
+      {
+        role: 'assistant',
+        content: 'Reading.',
+        reasoning_content: 'The batch list comes first.',
+        tool_calls: [
+          { id: 'tc-1', type: 'function', function: { name: 'list_batches', arguments: '{}' } },
+        ],
+      },
+      { role: 'tool', tool_call_id: 'tc-1', content: '{"ok":true}' },
+    ]);
+
+    const withoutReasoning = transport(() => completion({ content: 'ok' }));
+    await createOpenAiCompatibleAdapter(CONFIG, withoutReasoning.send).complete({
+      ...REQUEST,
+      messages: messages(ASSISTANT),
+    });
+    expect(withoutReasoning.captured[0]?.body.messages).toEqual([
+      { role: 'user', content: 'user text' },
+      {
+        role: 'assistant',
+        content: 'Reading.',
+        tool_calls: [
+          { id: 'tc-1', type: 'function', function: { name: 'list_batches', arguments: '{}' } },
+        ],
+      },
+      { role: 'tool', tool_call_id: 'tc-1', content: '{"ok":true}' },
+    ]);
   });
 
   it('reports usage as unknown when the service does not report it, and maps unknown finish reasons', async () => {

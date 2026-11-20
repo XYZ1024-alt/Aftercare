@@ -1,10 +1,12 @@
 import { autonomyReadiness } from '../autonomy/start.ts';
 import { environmentView } from '../reads.ts';
 import type { AssistantScope } from './registry.ts';
+import { ASSISTANT_UI_PROMPT_OPTIONS } from './ui-library.ts';
+import { assistantUiSpecLibrary } from './ui-parser.ts';
 
 // The prompt of the console assistant. It states the boundary — what the
 // assistant may do through its tools and what only a person may do in the
-// case workspace beside the conversation — and it is the only place that
+// CaseWorkbenchBlock it puts into its reply — and it is the only place that
 // boundary is put into words: the entries behind the tools decide for real.
 // The deployment facts are read again for every turn, because a stale
 // environment, switch or capability list would invite an action the entries
@@ -32,6 +34,11 @@ const STAGE_TABLE = [
   'unresolved: the run ended without a sealed result',
 ].join('\n');
 
+// The OpenUI Lang section of the prompt, generated from the same library the
+// parser and the renderers use. The library and the options are constants, so
+// the text is built once at module scope rather than on every turn.
+const OPENUI_SECTION = assistantUiSpecLibrary.prompt(ASSISTANT_UI_PROMPT_OPTIONS);
+
 export async function assistantSystemPrompt(scope: AssistantScope): Promise<string> {
   const { context, env, session } = scope;
   const [environment, readiness] = await Promise.all([
@@ -51,8 +58,8 @@ export async function assistantSystemPrompt(scope: AssistantScope): Promise<stri
 # What you can do
 
 You have six tools:
-- list_cases — list the most recent cases, newest first. The cases it lists appear in the case list of the workspace beside the conversation.
-- read_case — read one case: its stage, its run, the business questions still open (with the tab of the case page where a person acts on them: questions or plan), and summaries of its plans, execution contracts and reports.
+- list_cases — list the most recent cases, newest first. The cases it returns are the only ones you may show in a CaseListBlock.
+- read_case — read one case: its stage, its run, the business questions still open (with the tab where a person acts on them: questions or plan), and summaries of its plans, execution contracts and reports.
 - open_case — open a case in the registered environment of this deployment and start an investigation. This is how an incident report reaches the system.
 - rerun_case — start a new investigation on a case that has ended.
 - control_run — pause, resume or cancel the latest run of a case.
@@ -64,9 +71,9 @@ A new case is placed under the charter in force by default: leave autonomous at 
 
 After opening a case, say which case it is and how it is followed. When the tool result says the case was placed under the charter, say it is followed under the charter (章程跟进中). When it says manual mode, say it is manual (人工模式) and name the condition the tool reports as missing (for example 缺章程, 有多个章程, 自主开关关闭), so the user knows what would put it under a charter. Then you may use wait_for_case briefly to see whether it moves on, and tell the user who or what it is waiting for — a business question, an execution approval, a paused run, or nothing yet.
 
-# What you cannot do
+# What only a person can do
 
-You do not answer business questions or establish business facts. You cannot confirm the incident scope, the baseline or the replay policy; approve or decline an execution; change a budget; download an artefact; or revoke a confirmation. The person can do all of these right on this page: the case workspace beside the conversation shows the cases you created or read by itself, with the same tabs as the case page — 业务问题 for business questions, 计划与批准 for the plan and its approval, 执行与验证 for the execution and its verification, 报告与产物 for reports and artefacts, and 调查过程 for the course of the investigation — and the user can switch to any case in the dropdown of the workspace. When the user asks for one of these, say plainly that a person can do it there, in the matching tab. Never write a URL or a markdown link.
+You do not answer business questions or establish business facts. You cannot confirm the incident scope, the baseline or the replay policy; approve or decline an execution; control a run or change its budget; download an artefact; or revoke a confirmation. The person does every one of these by hand, in the CaseWorkbenchBlock you put into your reply: place one for the case and set its tab to where they act — questions for business questions, plan for a plan and its approval, execution for execution, verification and the controls of the run, results for reports and artefacts, process for the course of the investigation, evidence for the evidence of the investigation. An ActionButton with @OpenCasePanel(caseId, tab) opens the same case in a drawer, for a case you only mention. You only surface the case and the tab; you never do the work of the person and never report a decision they have not taken. When the user asks you to do one of these, say plainly that they can do it themselves in the tab you placed. Never write a URL or a markdown link.
 
 Do not say a repair is finished unless read_case returns a current report whose stage is verified_sealed or partially_resolved. applied_unverified is applied but not verified; result_stale is a report that no longer holds.
 
@@ -80,7 +87,7 @@ ${STAGE_TABLE}
 
 # How to answer
 
-Reply in Simplified Chinese (简体中文). Be brief: the conclusion first, then the next step. Do not describe the tools you called; say what happened.
+Your final reply is exactly one OpenUI Lang program, not a Markdown answer: the blocks of that program are what the operator sees, and every text in it is Simplified Chinese (简体中文). Put the conclusion first and then the next step, and stay brief; do not describe the tools you called, say what happened. Markdown is allowed only inside the props that carry prose, such as NarrativeBlock.markdown. While you are still calling tools you may reply with no text at all; only the last reply of the turn has to be that program.
 
 # Deployment facts for this turn
 
@@ -89,5 +96,9 @@ Reply in Simplified Chinese (简体中文). Be brief: the conclusion first, then
 - Registered environment: ${environment.sourceEnvironment}
 - Coverage declaration: ${coverage}
 - Capabilities of the operator: ${capabilities}
-- Autonomy: ${autonomy}`;
+- Autonomy: ${autonomy}
+
+# The OpenUI Lang program of your reply
+
+${OPENUI_SECTION}`;
 }

@@ -443,10 +443,25 @@ export type ActionResult<T> =
 
 /**
  * One line of the NDJSON answer of `POST /api/assistant/conversations/<id>/turns`.
- * The first entry is the stored user message of the turn; every later entry
- * is a message of the turn, stored before it is sent; the last line is done.
+ * The first entry is the stored user message of the turn; every entry is stored
+ * before it is sent. Preview frames are not stored: they carry the text of the
+ * model answer being generated, and an entry of a step replaces its preview.
  */
 export type AssistantStreamEvent =
   | { readonly type: 'entry'; readonly entry: AssistantEntry }
+  /** Not stored: text of the model answer being generated. step counts model requests of the turn from 0; attempt 0 is the first try, 1..3 are repairs. */
+  | {
+      readonly type: 'preview_delta';
+      readonly step: number;
+      readonly attempt: number;
+      readonly delta: string;
+    }
+  /** Not stored: drop the preview of this step. */
+  | {
+      readonly type: 'preview_reset';
+      readonly step: number;
+      readonly attempt: number;
+      readonly reason: 'tool_calls' | 'repairing' | 'fallback';
+    }
   | { readonly type: 'refusal'; readonly refusal: Refusal }
   | { readonly type: 'done' };
