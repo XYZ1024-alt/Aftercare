@@ -13,7 +13,7 @@
 --   AC001 invalid_argument      AC002 amount_out_of_range   AC003 value_out_of_bounds
 --   AC004 product_not_found     AC005 already_exists        AC008 unsupported_isolation
 --
--- Only the five entry functions at the bottom are SECURITY DEFINER and granted
+-- Only the eight entry functions at the bottom are SECURITY DEFINER and granted
 -- to the business writer role. Helpers are plain functions that nobody but the
 -- owner may execute. No function accepts SQL text or object names.
 --
@@ -421,13 +421,27 @@ AS $$
     'version', p_write ->> 'version');
 $$;
 
+-- The stock entries keep the same result shape under the stock-shaped key.
+CREATE FUNCTION aftercare.stock_write_result(p_write jsonb) RETURNS jsonb
+LANGUAGE sql
+IMMUTABLE
+SET search_path = pg_catalog, pg_temp
+AS $$
+  SELECT jsonb_build_object(
+    'operationId', p_write ->> 'operationId',
+    'productId', p_write ->> 'objectId',
+    'stockQty', p_write ->> 'value',
+    'version', p_write ->> 'version');
+$$;
+
 -- ── Entry points (the only functions granted to the business writer) ────────
 
 CREATE FUNCTION aftercare.create_product(
   p_principal text,
   p_product_id text,
   p_name text,
-  p_initial_price_cents bigint
+  p_initial_price_cents bigint,
+  p_initial_stock_qty bigint
 ) RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -444,6 +458,7 @@ BEGIN
     RAISE EXCEPTION 'product name must be 1..200 characters' USING ERRCODE = 'AC001';
   END IF;
   PERFORM aftercare.assert_field_value('product.price_cents', p_initial_price_cents::text);
+  PERFORM aftercare.assert_field_value('product.stock_qty', p_initial_stock_qty::text);
 
   v_commit_seq := aftercare.begin_commit(p_principal);
 
@@ -451,8 +466,8 @@ BEGIN
     RAISE EXCEPTION 'product % already exists', p_product_id USING ERRCODE = 'AC005';
   END IF;
 
-  INSERT INTO aftercare.products (product_id, name, price_cents, version)
-  VALUES (p_product_id, p_name, p_initial_price_cents, 1);
+  INSERT INTO aftercare.products (product_id, name, price_cents, stock_qty, version)
+  VALUES (p_product_id, p_name, p_initial_price_cents, p_initial_stock_qty, 1);
 
   SELECT to_jsonb(p) INTO STRICT v_row
     FROM aftercare.products AS p
@@ -460,23 +475,26 @@ BEGIN
   v_after_state := aftercare.object_image('product', v_row);
 
   v_operation_id := aftercare.record_operation(
-    v_commit_seq, 1, 'create_product', 1,
+    v_commit_seq, 1, 'create_product', 2,
     jsonb_build_object(
       'product_id', p_product_id,
       'name', p_name,
-      'initial_price_cents', p_initial_price_cents::text),
+      'initial_price_cents', p_initial_price_cents::text,
+      'initial_stock_qty', p_initial_stock_qty::text),
     NULL,
     NULL,
     v_after_state);
 
   PERFORM aftercare.record_write(v_operation_id, 1, 'product', p_product_id, 'name', NULL, 1);
   PERFORM aftercare.record_write(v_operation_id, 2, 'product', p_product_id, 'price_cents', NULL, 1);
+  PERFORM aftercare.record_write(v_operation_id, 3, 'product', p_product_id, 'stock_qty', NULL, 1);
 
   RETURN jsonb_build_object(
     'operationId', v_operation_id,
     'commitSeq', v_commit_seq::text,
     'productId', p_product_id,
     'priceCents', p_initial_price_cents::text,
+    'stockQty', p_initial_stock_qty::text,
     'version', '1');
 END;
 $$;
@@ -589,6 +607,123 @@ BEGIN
           v_commit_seq, i, 'batch_set_price', 1, v_batch_id,
           'product.price_cents', 'absolute', 'price_cents',
           p_product_ids[i], p_prices_cents[i])));
+  END LOOP;
+
+  RETURN jsonb_build_object(
+    'batchId', v_batch_id,
+    'commitSeq', v_commit_seq::text,
+    'targets', v_targets);
+END;
+$$;
+
+CREATE FUNCTION aftercare.set_stock(
+  p_principal text,
+  p_product_id text,
+  p_stock_qty bigint
+) RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $$
+DECLARE
+  v_commit_seq bigint;
+  v_write      jsonb;
+BEGIN
+  PERFORM aftercare.assert_object_id('product', p_product_id);
+  PERFORM aftercare.assert_field_value('product.stock_qty', p_stock_qty::text);
+
+  v_commit_seq := aftercare.begin_commit(p_principal);
+
+  v_write := aftercare.apply_field_write(
+    v_commit_seq, 1, 'set_stock', 1, NULL,
+    'product.stock_qty', 'absolute', 'stock_qty', p_product_id, p_stock_qty);
+
+  RETURN aftercare.stock_write_result(v_write)
+    || jsonb_build_object('commitSeq', v_write ->> 'commitSeq');
+END;
+$$;
+
+CREATE FUNCTION aftercare.adjust_stock(
+  p_principal text,
+  p_product_id text,
+  p_delta_qty bigint
+) RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $$
+DECLARE
+  v_commit_seq bigint;
+  v_write      jsonb;
+BEGIN
+  PERFORM aftercare.assert_object_id('product', p_product_id);
+  IF p_delta_qty IS NULL THEN
+    RAISE EXCEPTION 'stock delta is required' USING ERRCODE = 'AC001';
+  END IF;
+
+  v_commit_seq := aftercare.begin_commit(p_principal);
+
+  v_write := aftercare.apply_field_write(
+    v_commit_seq, 1, 'adjust_stock', 1, NULL,
+    'product.stock_qty', 'delta', 'delta_qty', p_product_id, p_delta_qty);
+
+  RETURN aftercare.stock_write_result(v_write)
+    || jsonb_build_object('commitSeq', v_write ->> 'commitSeq');
+END;
+$$;
+
+-- Targets are applied one by one, in the given order. Any failing target
+-- raises, which rolls back every earlier target, the batch row, the commit row
+-- and the watermark advance together.
+CREATE FUNCTION aftercare.batch_set_stock(
+  p_principal text,
+  p_product_ids text[],
+  p_stock_qtys bigint[]
+) RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $$
+DECLARE
+  v_target_count integer;
+  v_commit_seq   bigint;
+  v_batch_id     uuid := gen_random_uuid();
+  v_targets      jsonb := '[]'::jsonb;
+BEGIN
+  IF p_product_ids IS NULL OR p_stock_qtys IS NULL
+     OR array_ndims(p_product_ids) IS DISTINCT FROM 1
+     OR array_ndims(p_stock_qtys) IS DISTINCT FROM 1
+     OR cardinality(p_product_ids) <> cardinality(p_stock_qtys) THEN
+    RAISE EXCEPTION 'batch targets must be two non-empty one-dimensional arrays of equal length'
+      USING ERRCODE = 'AC001';
+  END IF;
+
+  v_target_count := cardinality(p_product_ids);
+  IF v_target_count > 500 THEN
+    RAISE EXCEPTION 'batch has % targets; at most 500 are allowed', v_target_count
+      USING ERRCODE = 'AC001';
+  END IF;
+
+  IF array_position(p_product_ids, NULL) IS NOT NULL THEN
+    RAISE EXCEPTION 'batch product ids must not be null' USING ERRCODE = 'AC001';
+  END IF;
+
+  IF (SELECT count(DISTINCT t.product_id) FROM unnest(p_product_ids) AS t (product_id)) <> v_target_count THEN
+    RAISE EXCEPTION 'batch targets must reference distinct products' USING ERRCODE = 'AC001';
+  END IF;
+
+  v_commit_seq := aftercare.begin_commit(p_principal);
+
+  INSERT INTO aftercare.batches (batch_id, commit_seq, operation_type, template_version, target_count)
+  VALUES (v_batch_id, v_commit_seq, 'batch_set_stock', 1, v_target_count);
+
+  FOR i IN 1..v_target_count LOOP
+    v_targets := v_targets || jsonb_build_array(
+      aftercare.stock_write_result(
+        aftercare.apply_field_write(
+          v_commit_seq, i, 'batch_set_stock', 1, v_batch_id,
+          'product.stock_qty', 'absolute', 'stock_qty',
+          p_product_ids[i], p_stock_qtys[i])));
   END LOOP;
 
   RETURN jsonb_build_object(

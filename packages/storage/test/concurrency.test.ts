@@ -28,6 +28,7 @@ describe('concurrent controlled writes', () => {
         productId,
         name: productId,
         initialPriceCents: 1000n,
+        initialStockQty: 40n,
       }),
     );
     const watermarkBefore = await db.reader.readCommitWatermark();
@@ -99,6 +100,7 @@ describe('concurrent controlled writes', () => {
         product_id: productId,
         name: productName,
         price_cents: '1350',
+        stock_qty: '40',
         version: '3',
       });
     } finally {
@@ -115,6 +117,7 @@ describe('concurrent controlled writes', () => {
         productId,
         name: productId,
         initialPriceCents: 500n,
+        initialStockQty: 40n,
       }),
     );
     const watermarkBefore = await db.reader.readCommitWatermark();
@@ -157,6 +160,7 @@ describe('concurrent controlled writes', () => {
           product_id: productId,
           name: productId,
           price_cents: price.toString(),
+          stock_qty: '40',
           version: version.toString(),
         });
         price = operation.operationType === 'set_price' ? 800n : price + 30n;
@@ -165,6 +169,7 @@ describe('concurrent controlled writes', () => {
           product_id: productId,
           name: productId,
           price_cents: price.toString(),
+          stock_qty: '40',
           version: version.toString(),
         });
       }

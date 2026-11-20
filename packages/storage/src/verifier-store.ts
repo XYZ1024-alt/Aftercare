@@ -138,9 +138,16 @@ export interface VerifierStore {
   ) => Promise<VerifierOutcome<PublishOutcome> | { readonly ok: 'unknown'; readonly error: Error }>;
   readonly describe: (caseId: string) => Promise<VerifierView>;
   /** Fixed read statement: one row per product of a registered branch or snapshot schema, by id. */
-  readonly readProducts: (
-    schemaName: string,
-  ) => Promise<{ productId: string; name: string; version: string; cents: string }[]>;
+  readonly readProducts: (schemaName: string) => Promise<
+    {
+      productId: string;
+      name: string;
+      version: string;
+      cents: string;
+      /** Every column of the row as canonical text, keyed by column name. */
+      fields: Record<string, string | null>;
+    }[]
+  >;
   readonly readOrders: (schemaName: string) => Promise<
     {
       orderId: string;
@@ -353,13 +360,19 @@ export function createVerifierStore(pool: Pool, faults: SealFaults = {}): Verifi
     describe: (caseId) => one('describe', [caseId], verifierViewSchema),
 
     readProducts: async (schemaName) => {
+      // The whole row, so the verifier can hold the reader to the registry's
+      // column list instead of the reader deciding which columns matter.
       const { rows } = await pool.query<{
         productId: string;
         name: string;
         version: string;
         cents: string;
+        fields: Record<string, string | null>;
       }>(
-        `SELECT p.product_id AS "productId", p.name, p.version::text AS version, p.price_cents::text AS cents
+        `SELECT p.product_id AS "productId", p.name, p.version::text AS version,
+                p.price_cents::text AS cents,
+                (SELECT jsonb_object_agg(kv.key, kv.value)
+                   FROM jsonb_each_text(to_jsonb(p)) AS kv) AS fields
            FROM ${relation(schemaName, 'products')} AS p ORDER BY p.product_id`,
       );
       return rows;

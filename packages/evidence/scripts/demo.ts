@@ -63,6 +63,7 @@ try {
       productId,
       name: 'Demo Grinder',
       initialPriceCents: 45_900n,
+      initialStockQty: 40n,
     }),
   );
   written(

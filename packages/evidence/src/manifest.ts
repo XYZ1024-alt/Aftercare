@@ -29,8 +29,8 @@ const WRITE_ENTRY_POINTS: readonly {
     operationTypes: ['create_product'],
     functionName: 'create_product',
     identityArguments:
-      'p_principal text, p_product_id text, p_name text, p_initial_price_cents bigint',
-    sourceDigest: 'c288e2355b27d0c812b868358ddb180fe2cc3dd8da7664c4044a8596cb7e0bea',
+      'p_principal text, p_product_id text, p_name text, p_initial_price_cents bigint, p_initial_stock_qty bigint',
+    sourceDigest: '62e4b9a7eca5e6c0616dbfe05e15ca48b10eb08b368dc906ed37921293fe940d',
   },
   {
     operationTypes: ['set_price'],
@@ -51,10 +51,28 @@ const WRITE_ENTRY_POINTS: readonly {
     sourceDigest: '894ab78e367ec2fa73fc76653eb80e310d72e1f65504fb7e7146538777001231',
   },
   {
+    operationTypes: ['set_stock'],
+    functionName: 'set_stock',
+    identityArguments: 'p_principal text, p_product_id text, p_stock_qty bigint',
+    sourceDigest: 'fbf761655bcea756b131566b7ff53427b919c9d883f39db2df9f8887048b8dc3',
+  },
+  {
+    operationTypes: ['adjust_stock'],
+    functionName: 'adjust_stock',
+    identityArguments: 'p_principal text, p_product_id text, p_delta_qty bigint',
+    sourceDigest: '77ec44ee7fa082878fdbc8f596c28f87f4f2e612bc23c928667b3b458a0820ce',
+  },
+  {
+    operationTypes: ['batch_set_stock'],
+    functionName: 'batch_set_stock',
+    identityArguments: 'p_principal text, p_product_ids text[], p_stock_qtys bigint[]',
+    sourceDigest: '4b68a9065c2cf525fc6f2eae56b79a392c2cca6abcceb07d69b513c04b665bbd',
+  },
+  {
     // The guarded promotion entry of 0024: one batch per promoted field, each
     // recorded under that field's batch operation type, with one expected
     // object version per target.
-    operationTypes: ['batch_set_price'],
+    operationTypes: ['batch_set_price', 'batch_set_stock'],
     functionName: 'guarded_restore_fields',
     identityArguments: 'p_principal text, p_targets jsonb',
     sourceDigest: '049ed68639dc1641bed4edf23228071ac05f7faf2e75b855195f52ad70271337',
@@ -122,6 +140,11 @@ const PROTOCOL_HELPERS: CoverageManifest['protocolHelpers'] = [
     functionName: 'price_write_result',
     identityArguments: 'p_write jsonb',
     sourceDigest: '7a34341574bdbb6ef7b481679d2ac38037543011c7c1ab153390babe21965a13',
+  },
+  {
+    functionName: 'stock_write_result',
+    identityArguments: 'p_write jsonb',
+    sourceDigest: 'b1374c5c82bc346cc61ed4b74e9215a39cf9bba755eb4daed8bf119c17535966',
   },
   {
     functionName: 'reject_history_mutation',

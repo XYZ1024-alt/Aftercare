@@ -73,7 +73,7 @@ function registryWith(
 }
 
 describe('DEFAULT_REGISTRY', () => {
-  it('describes both object types and the repairable price field', () => {
+  it('describes both object types and the repairable product fields', () => {
     expect(validateRegistry(DEFAULT_REGISTRY)).toEqual([]);
 
     expect(findObject(DEFAULT_REGISTRY, 'product')).toMatchObject({
@@ -81,7 +81,7 @@ describe('DEFAULT_REGISTRY', () => {
       pkColumn: 'product_id',
       versionColumn: 'version',
       displayColumn: 'name',
-      columns: ['product_id', 'name', 'price_cents', 'version'],
+      columns: ['product_id', 'name', 'price_cents', 'stock_qty', 'version'],
       repairable: true,
     });
     expect(findObject(DEFAULT_REGISTRY, 'order')).toMatchObject({
@@ -112,8 +112,19 @@ describe('DEFAULT_REGISTRY', () => {
       copyReaders: [{ objectType: 'order', versionColumn: 'product_version' }],
       batchOperationType: 'batch_set_price',
     });
+    expect(findField(DEFAULT_REGISTRY, 'product.stock_qty')).toMatchObject({
+      objectType: 'product',
+      column: 'stock_qty',
+      valueKind: 'int64',
+      bounds: { min: '0', max: null },
+      unit: 'count',
+      title: '库存',
+      writeback: 'absolute_if_field_unchanged',
+      copyReaders: [],
+      batchOperationType: 'batch_set_stock',
+    });
     expect(findField(DEFAULT_REGISTRY, 'order.unit_price_cents')).toBeUndefined();
-    expect(fieldsOf(DEFAULT_REGISTRY, 'product')).toHaveLength(1);
+    expect(fieldsOf(DEFAULT_REGISTRY, 'product')).toHaveLength(2);
     expect(fieldsOf(DEFAULT_REGISTRY, 'order')).toEqual([]);
     expect(fieldIdOf('product', 'price_cents')).toBe('product.price_cents');
   });

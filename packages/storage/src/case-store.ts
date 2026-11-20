@@ -161,7 +161,7 @@ const CASE_STATEMENTS = {
   /** The current content of a branch's products table, read through branch_rows(). */
   branchProducts: `
     SELECT jsonb_build_object('objectId', r ->> 'product_id', 'version', r ->> 'version',
-                              'cents', r ->> 'price_cents') AS document
+                              'cents', r ->> 'price_cents', 'fields', r) AS document
       FROM aftercare_control.execution_branches AS b
       CROSS JOIN LATERAL aftercare_control.branch_rows(b, 'product') AS r
      WHERE b.case_id = $1 AND b.branch_id = $2
@@ -274,7 +274,14 @@ export interface CaseStore {
   readonly readBranchProducts: (
     caseId: string,
     branchId: string,
-  ) => Promise<{ objectId: string; version: string; cents: string }[]>;
+  ) => Promise<
+    {
+      objectId: string;
+      version: string;
+      cents: string;
+      fields: Record<string, string | null>;
+    }[]
+  >;
   readonly readBranchOrders: (
     caseId: string,
     branchId: string,
@@ -310,6 +317,8 @@ const branchProductSchema = z.strictObject({
   objectId: z.string(),
   version: z.string(),
   cents: z.string(),
+  /** The whole branch row as canonical text, so a reader can see every registered column. */
+  fields: z.record(z.string(), z.string().nullable()),
 });
 
 export function createCaseStore(pool: Pool): CaseStore {

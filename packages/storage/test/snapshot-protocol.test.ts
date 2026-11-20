@@ -39,6 +39,7 @@ async function createProduct(initialPriceCents: bigint): Promise<string> {
       productId,
       name: productId,
       initialPriceCents,
+      initialStockQty: 40n,
     }),
   );
   return productId;
@@ -105,7 +106,7 @@ describe('consistent snapshot protocol', () => {
         objectType: 'product',
         objectId: productId,
         version: '1',
-        fields: { 'product.price_cents': '1000' },
+        fields: { 'product.price_cents': '1000', 'product.stock_qty': '40' },
       });
     });
     // The lock was released with the matching session-level unlock and the connection is gone.
@@ -197,6 +198,7 @@ describe('consistent snapshot protocol', () => {
               product_id: productId,
               name: productId,
               price_cents: order.unitPriceCents.toString(),
+              stock_qty: '40',
               version: order.productVersion.toString(),
             },
           },
@@ -247,7 +249,7 @@ describe('consistent snapshot protocol', () => {
             objectType: 'product',
             objectId: productId,
             version,
-            fields: { 'product.price_cents': priceCents },
+            fields: { 'product.price_cents': priceCents, 'product.stock_qty': '40' },
           });
           const operations = await session.listOperations(
             { afterExclusive: watermarkBefore.toString(), toInclusive: snapshot.baseWatermark },

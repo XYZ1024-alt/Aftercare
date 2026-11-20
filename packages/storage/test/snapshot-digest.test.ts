@@ -31,6 +31,7 @@ beforeAll(async () => {
       productId,
       name: productId,
       initialPriceCents: 700n,
+      initialStockQty: 40n,
     }),
   );
   written(

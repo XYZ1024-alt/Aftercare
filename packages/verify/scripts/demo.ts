@@ -145,6 +145,7 @@ try {
         productId,
         name: productId,
         initialPriceCents: 10_000n,
+        initialStockQty: 40n,
       }),
     ).commitSeq;
   }
@@ -435,11 +436,13 @@ try {
   console.log(`notice: ${obtained.value.grant.notice}`);
 
   await pools.migrator.query(rehearsalTargetDdl(rehearsalSchema, `demo-rehearsal-${suffix}`));
+  // The rehearsal target is created from the registry, so the copy is the whole
+  // registered row: naming the columns here would make a field addition break it.
   await pools.migrator.query(
-    `INSERT INTO ${rehearsalSchema}.products SELECT product_id, name, price_cents, version FROM ${created.snapshot.schemaName}.products`,
+    `INSERT INTO ${rehearsalSchema}.products SELECT * FROM ${created.snapshot.schemaName}.products`,
   );
   await pools.migrator.query(
-    `INSERT INTO ${rehearsalSchema}.orders SELECT order_id, product_id, quantity, unit_price_cents, product_version, version FROM ${created.snapshot.schemaName}.orders`,
+    `INSERT INTO ${rehearsalSchema}.orders SELECT * FROM ${created.snapshot.schemaName}.orders`,
   );
   const exported = await artefacts.produce(OPERATOR, {
     caseId,

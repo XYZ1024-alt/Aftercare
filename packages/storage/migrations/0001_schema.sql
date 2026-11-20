@@ -9,16 +9,19 @@ REVOKE ALL ON SCHEMA aftercare FROM PUBLIC;
 
 -- ── Business data ───────────────────────────────────────────────────────────
 
--- Prices are integer cents (bigint). `version` is the object version: it
--- advances by exactly one on every committed write, including same-value writes.
+-- Prices are integer cents (bigint); stock is a whole count of items. `version`
+-- is the object version: it advances by exactly one on every committed write,
+-- including same-value writes.
 CREATE TABLE aftercare.products (
   product_id  text   PRIMARY KEY,
   name        text   NOT NULL,
   price_cents bigint NOT NULL,
+  stock_qty   bigint NOT NULL,
   version     bigint NOT NULL,
   CONSTRAINT products_id_format CHECK (product_id ~ '^[a-z0-9][a-z0-9_-]{0,62}$'),
   CONSTRAINT products_name_present CHECK (btrim(name) <> '' AND length(name) <= 200),
   CONSTRAINT products_price_non_negative CHECK (price_cents >= 0),
+  CONSTRAINT products_stock_non_negative CHECK (stock_qty >= 0),
   CONSTRAINT products_version_positive CHECK (version >= 1)
 );
 

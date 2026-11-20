@@ -40,6 +40,7 @@ beforeEach(async () => {
       productId: WIDGET,
       name: 'Widget',
       initialPriceCents: 1000n,
+      initialStockQty: 40n,
     }),
   );
   written(await entry.setPrice({ principal: PRINCIPAL, productId: WIDGET, priceCents: 1100n }));
@@ -49,6 +50,7 @@ beforeEach(async () => {
       productId: GADGET,
       name: 'Gadget',
       initialPriceCents: 500n,
+      initialStockQty: 15n,
     }),
   );
   written(
@@ -287,7 +289,7 @@ describe('eligibility degrades with the kind of damage', () => {
       }),
     );
     expect(dependenciesOf(history, 'semantics')[0]?.templates).toEqual([
-      { operationType: 'create_product', templateVersion: 1 },
+      { operationType: 'create_product', templateVersion: 2 },
       { operationType: 'set_price', templateVersion: 2 },
     ]);
     expect(history.rangeConclusion).toMatchObject({ auditCompleteness: 'not_established' });
@@ -575,6 +577,7 @@ async function recreateAndSeedSkippedVersion(): Promise<void> {
       productId: WIDGET,
       name: 'Widget',
       initialPriceCents: 1000n,
+      initialStockQty: 40n,
     }),
   );
   written(
@@ -583,6 +586,7 @@ async function recreateAndSeedSkippedVersion(): Promise<void> {
       productId: GADGET,
       name: 'Gadget',
       initialPriceCents: 500n,
+      initialStockQty: 15n,
     }),
   );
   written(await entry.setPrice({ principal: PRINCIPAL, productId: GADGET, priceCents: 600n }));

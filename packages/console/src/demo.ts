@@ -66,6 +66,19 @@ export function demoCharter(sourceEnvironment: string, policyVersionId: string):
         approval: { maxAbsoluteChange: '20000', maxRelativeChangeBps: 20000 },
         promotion: { maxAbsoluteChange: '20000', maxRelativeChangeBps: 20000 },
       },
+      // Stock: a misaligned stocktake import moves a count by both a relative
+      // and an absolute amount; either being large enough is the incident. A
+      // single absolute threshold would miss 120 -> 85, a single relative one
+      // would never fire on "0 -> N".
+      'product.stock_qty': {
+        incident: {
+          operationTypes: ['batch_set_stock', 'set_stock'],
+          minRelativeChangeBps: 2000,
+          minAbsoluteChange: '50',
+        },
+        approval: { maxAbsoluteChange: '500' },
+        promotion: { maxAbsoluteChange: '500' },
+      },
     },
     onNoMatch: 'decline',
     baselineRule: { kind: 'version_before_first_incident' },
@@ -206,7 +219,7 @@ async function writeDemoActivity(entry: BusinessEntry): Promise<DemoActivity> {
   const products = ['kettle', 'grinder', 'filters', 'scale', 'server'].map(
     (name) => `demo-${suffix}-${name}`,
   );
-  const [kettle, grinder, , scale] = products as [string, string, string, string, string];
+  const [kettle, grinder, filters, scale] = products as [string, string, string, string, string];
   for (const productId of products) {
     written(
       productId,
@@ -215,6 +228,7 @@ async function writeDemoActivity(entry: BusinessEntry): Promise<DemoActivity> {
         productId,
         name: productId,
         initialPriceCents: 10_000n,
+        initialStockQty: 40n,
       }),
     );
   }
@@ -242,7 +256,33 @@ async function writeDemoActivity(entry: BusinessEntry): Promise<DemoActivity> {
       quantity: 1,
     }),
   );
-  return { products, suggestedDescription: `导入后商品价格异常（demo-${suffix}- 开头的商品）` };
+  // Ordinary stock movements after the import, written through the same entry.
+  // They are what a repair of the price must leave alone, and they are the
+  // reads a stock repair would have to replay.
+  written(
+    'stock out',
+    await entry.adjustStock({ principal: 'simulator:pos', productId: kettle, deltaQty: -3n }),
+  );
+  written(
+    'stock in',
+    await entry.adjustStock({
+      principal: 'simulator:purchasing',
+      productId: grinder,
+      deltaQty: 20n,
+    }),
+  );
+  written(
+    'stocktake',
+    await entry.setStock({
+      principal: 'simulator:stocktake',
+      productId: filters,
+      stockQty: 296n,
+    }),
+  );
+  return {
+    products,
+    suggestedDescription: `导入后商品价格异常（demo-${suffix}- 开头的商品）`,
+  };
 }
 
 /**

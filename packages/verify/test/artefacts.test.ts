@@ -72,7 +72,7 @@ async function prepareTarget(targetId = 'rehearsal-1') {
   const snapshot = required(await h.db.store.findSnapshot(h.frozen.ref), 'the snapshot');
   await h.db.adminPool.query(rehearsalTargetDdl(TARGET, targetId));
   await h.db.adminPool.query(
-    `INSERT INTO ${TARGET}.products SELECT product_id, name, price_cents, version FROM ${snapshot.schemaName}.products`,
+    `INSERT INTO ${TARGET}.products SELECT product_id, name, price_cents, stock_qty, version FROM ${snapshot.schemaName}.products`,
   );
   await h.db.adminPool.query(
     `INSERT INTO ${TARGET}.orders SELECT order_id, product_id, quantity, unit_price_cents, product_version, version FROM ${snapshot.schemaName}.orders`,

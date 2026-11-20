@@ -95,6 +95,7 @@ try {
         productId,
         name: productId,
         initialPriceCents: 10_000n,
+        initialStockQty: 40n,
       }),
     ).commitSeq;
   }

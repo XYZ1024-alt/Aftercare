@@ -30,6 +30,7 @@ beforeEach(async () => {
       productId: 'a',
       name: 'a',
       initialPriceCents: 10_000n,
+      initialStockQty: 40n,
     }),
   );
   // switch_snapshot, activate_certificate, begin_investigation: revision 3, investigating.

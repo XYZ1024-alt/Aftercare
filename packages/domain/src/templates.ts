@@ -5,6 +5,9 @@ export const OPERATION_TYPES = [
   'set_price',
   'add_price_delta',
   'batch_set_price',
+  'set_stock',
+  'batch_set_stock',
+  'adjust_stock',
   'create_order',
 ] as const;
 export type OperationType = (typeof OPERATION_TYPES)[number];
@@ -52,6 +55,28 @@ const ABSOLUTE_PRICE_TEMPLATE: OperationTemplate = {
   writes: [{ objectType: 'product', field: 'price_cents' }],
 };
 
+const ABSOLUTE_STOCK_TEMPLATE: OperationTemplate = {
+  templateVersion: 1,
+  params: ['product_id', 'stock_qty'],
+  // An absolute count does not compute from the old count: both reads only guard the write.
+  reads: [
+    { objectType: 'product', field: 'version', dependencyClass: 'concurrency_guard' },
+    { objectType: 'product', field: 'stock_qty', dependencyClass: 'concurrency_guard' },
+  ],
+  writes: [{ objectType: 'product', field: 'stock_qty' }],
+};
+
+/** The creation before stock joined the product row; still interpretable for old history. */
+const CREATE_PRODUCT_V1: OperationTemplate = {
+  templateVersion: 1,
+  params: ['initial_price_cents', 'name', 'product_id'],
+  reads: [],
+  writes: [
+    { objectType: 'product', field: 'name' },
+    { objectType: 'product', field: 'price_cents' },
+  ],
+};
+
 /**
  * The current controlled business templates. The database entry functions are
  * the implementation; integration tests assert that every recorded audit row
@@ -60,12 +85,13 @@ const ABSOLUTE_PRICE_TEMPLATE: OperationTemplate = {
  */
 export const OPERATION_TEMPLATES: Readonly<Record<OperationType, OperationTemplate>> = {
   create_product: {
-    templateVersion: 1,
-    params: ['initial_price_cents', 'name', 'product_id'],
+    templateVersion: 2,
+    params: ['initial_price_cents', 'initial_stock_qty', 'name', 'product_id'],
     reads: [],
     writes: [
       { objectType: 'product', field: 'name' },
       { objectType: 'product', field: 'price_cents' },
+      { objectType: 'product', field: 'stock_qty' },
     ],
   },
   set_price: ABSOLUTE_PRICE_TEMPLATE,
@@ -79,6 +105,18 @@ export const OPERATION_TEMPLATES: Readonly<Record<OperationType, OperationTempla
       { objectType: 'product', field: 'price_cents', dependencyClass: 'business_value' },
     ],
     writes: [{ objectType: 'product', field: 'price_cents' }],
+  },
+  set_stock: ABSOLUTE_STOCK_TEMPLATE,
+  batch_set_stock: ABSOLUTE_STOCK_TEMPLATE,
+  adjust_stock: {
+    templateVersion: 1,
+    params: ['delta_qty', 'product_id'],
+    reads: [
+      { objectType: 'product', field: 'version', dependencyClass: 'concurrency_guard' },
+      // The new count is the old count plus the delta: a genuine dependency on the old count version.
+      { objectType: 'product', field: 'stock_qty', dependencyClass: 'business_value' },
+    ],
+    writes: [{ objectType: 'product', field: 'stock_qty' }],
   },
   create_order: {
     templateVersion: 1,
@@ -106,10 +144,13 @@ export const OPERATION_TEMPLATES: Readonly<Record<OperationType, OperationTempla
 export const OPERATION_TEMPLATE_VERSIONS: Readonly<
   Record<OperationType, readonly OperationTemplate[]>
 > = {
-  create_product: [OPERATION_TEMPLATES.create_product],
+  create_product: [CREATE_PRODUCT_V1, OPERATION_TEMPLATES.create_product],
   set_price: [OPERATION_TEMPLATES.set_price],
   add_price_delta: [OPERATION_TEMPLATES.add_price_delta],
   batch_set_price: [OPERATION_TEMPLATES.batch_set_price],
+  set_stock: [OPERATION_TEMPLATES.set_stock],
+  batch_set_stock: [OPERATION_TEMPLATES.batch_set_stock],
+  adjust_stock: [OPERATION_TEMPLATES.adjust_stock],
   create_order: [OPERATION_TEMPLATES.create_order],
 };
 

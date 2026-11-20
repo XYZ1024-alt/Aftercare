@@ -30,6 +30,7 @@ beforeAll(async () => {
         productId: id,
         name: id,
         initialPriceCents: 100n,
+        initialStockQty: 40n,
       }),
     );
   }

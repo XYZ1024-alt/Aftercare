@@ -1,15 +1,24 @@
 import {
   type AddPriceDeltaInput,
+  type AdjustStockInput,
   type BatchSetPriceInput,
   type BatchSetPriceResult,
+  type BatchSetStockInput,
+  type BatchSetStockResult,
   batchSetPriceResultSchema,
+  batchSetStockResultSchema,
   type CreateOrderInput,
   type CreateOrderResult,
   type CreateProductInput,
+  type CreateProductResult,
   createOrderResultSchema,
+  createProductResultSchema,
   type ProductWriteResult,
   productWriteResultSchema,
   type SetPriceInput,
+  type SetStockInput,
+  type StockWriteResult,
+  stockWriteResultSchema,
   type WriteOutcome,
   type WriteRejectionCode,
 } from '@aftercare/contracts';
@@ -23,10 +32,13 @@ import type { z } from 'zod';
  * names through this module.
  */
 const ENTRY_STATEMENTS = {
-  createProduct: 'SELECT aftercare.create_product($1, $2, $3, $4::bigint) AS result',
+  createProduct: 'SELECT aftercare.create_product($1, $2, $3, $4::bigint, $5::bigint) AS result',
   setPrice: 'SELECT aftercare.set_price($1, $2, $3::bigint) AS result',
   addPriceDelta: 'SELECT aftercare.add_price_delta($1, $2, $3::bigint) AS result',
   batchSetPrice: 'SELECT aftercare.batch_set_price($1, $2::text[], $3::bigint[]) AS result',
+  setStock: 'SELECT aftercare.set_stock($1, $2, $3::bigint) AS result',
+  adjustStock: 'SELECT aftercare.adjust_stock($1, $2, $3::bigint) AS result',
+  batchSetStock: 'SELECT aftercare.batch_set_stock($1, $2::text[], $3::bigint[]) AS result',
   createOrder: 'SELECT aftercare.create_order($1, $2, $3, $4::integer) AS result',
 } as const;
 
@@ -72,10 +84,13 @@ async function callEntry<Schema extends z.ZodType>(
 }
 
 export interface BusinessEntry {
-  readonly createProduct: (input: CreateProductInput) => Promise<WriteOutcome<ProductWriteResult>>;
+  readonly createProduct: (input: CreateProductInput) => Promise<WriteOutcome<CreateProductResult>>;
   readonly setPrice: (input: SetPriceInput) => Promise<WriteOutcome<ProductWriteResult>>;
   readonly addPriceDelta: (input: AddPriceDeltaInput) => Promise<WriteOutcome<ProductWriteResult>>;
   readonly batchSetPrice: (input: BatchSetPriceInput) => Promise<WriteOutcome<BatchSetPriceResult>>;
+  readonly setStock: (input: SetStockInput) => Promise<WriteOutcome<StockWriteResult>>;
+  readonly adjustStock: (input: AdjustStockInput) => Promise<WriteOutcome<StockWriteResult>>;
+  readonly batchSetStock: (input: BatchSetStockInput) => Promise<WriteOutcome<BatchSetStockResult>>;
   readonly createOrder: (input: CreateOrderInput) => Promise<WriteOutcome<CreateOrderResult>>;
 }
 
@@ -90,8 +105,14 @@ export function createBusinessEntry(pool: Pool): BusinessEntry {
       callEntry(
         pool,
         'createProduct',
-        [input.principal, input.productId, input.name, formatInt64(input.initialPriceCents)],
-        productWriteResultSchema,
+        [
+          input.principal,
+          input.productId,
+          input.name,
+          formatInt64(input.initialPriceCents),
+          formatInt64(input.initialStockQty),
+        ],
+        createProductResultSchema,
       ),
     setPrice: (input) =>
       callEntry(
@@ -117,6 +138,31 @@ export function createBusinessEntry(pool: Pool): BusinessEntry {
           input.targets.map((target) => formatInt64(target.priceCents)),
         ],
         batchSetPriceResultSchema,
+      ),
+    setStock: (input) =>
+      callEntry(
+        pool,
+        'setStock',
+        [input.principal, input.productId, formatInt64(input.stockQty)],
+        stockWriteResultSchema,
+      ),
+    adjustStock: (input) =>
+      callEntry(
+        pool,
+        'adjustStock',
+        [input.principal, input.productId, formatInt64(input.deltaQty)],
+        stockWriteResultSchema,
+      ),
+    batchSetStock: (input) =>
+      callEntry(
+        pool,
+        'batchSetStock',
+        [
+          input.principal,
+          input.targets.map((target) => target.productId),
+          input.targets.map((target) => formatInt64(target.stockQty)),
+        ],
+        batchSetStockResultSchema,
       ),
     createOrder: (input) =>
       callEntry(

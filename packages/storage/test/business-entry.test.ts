@@ -28,6 +28,7 @@ async function createProduct(initialPriceCents: bigint): Promise<string> {
       productId,
       name: `Product ${productId}`,
       initialPriceCents,
+      initialStockQty: 40n,
     }),
   );
   return productId;
@@ -44,10 +45,11 @@ describe('create_product', () => {
         productId,
         name: 'Initial Widget',
         initialPriceCents: 1500n,
+        initialStockQty: 25n,
       }),
     );
 
-    expect(result).toMatchObject({ productId, priceCents: 1500n, version: 1n });
+    expect(result).toMatchObject({ productId, priceCents: 1500n, stockQty: 25n, version: 1n });
     expect(result.commitSeq).toBe(watermarkBefore + 1n);
     expect(await db.reader.readCommitWatermark()).toBe(watermarkBefore + 1n);
     expect(await db.reader.readProduct(productId)).toEqual({
@@ -64,13 +66,18 @@ describe('create_product', () => {
       commitSeq: result.commitSeq,
       ordinalInCommit: 1,
       operationType: 'create_product',
-      templateVersion: 1,
-      params: { product_id: productId, name: 'Initial Widget', initial_price_cents: '1500' },
+      templateVersion: 2,
+      params: {
+        product_id: productId,
+        name: 'Initial Widget',
+        initial_price_cents: '1500',
+        initial_stock_qty: '25',
+      },
       principal: PRINCIPAL,
       dbRole: 'aftercare_business_writer',
       batchId: null,
       beforeState: null,
-      afterState: { name: 'Initial Widget', price_cents: '1500', version: '1' },
+      afterState: { name: 'Initial Widget', price_cents: '1500', stock_qty: '25', version: '1' },
       reads: [],
       writes: [
         {
@@ -84,6 +91,13 @@ describe('create_product', () => {
           objectType: 'product',
           objectId: productId,
           field: 'price_cents',
+          versionBefore: null,
+          versionAfter: 1n,
+        },
+        {
+          objectType: 'product',
+          objectId: productId,
+          field: 'stock_qty',
           versionBefore: null,
           versionAfter: 1n,
         },
@@ -246,6 +260,145 @@ describe('add_price_delta', () => {
         versionAfter: 3n,
       },
     ]);
+  });
+});
+
+describe('stock entries', () => {
+  it('writes absolute stock, advances the version and records a concurrency guard', async () => {
+    const productId = await createProduct(1000n);
+    const watermarkBefore = await db.reader.readCommitWatermark();
+
+    const result = written(
+      await db.entry.setStock({ principal: PRINCIPAL, productId, stockQty: 25n }),
+    );
+
+    expect(result).toMatchObject({ productId, stockQty: 25n, version: 2n });
+    expect(result.commitSeq).toBe(watermarkBefore + 1n);
+
+    const [operation] = await db.reader.listOperationsAfter(watermarkBefore, 10);
+    expect(operation).toMatchObject({
+      operationType: 'set_stock',
+      templateVersion: 1,
+      params: { product_id: productId, stock_qty: '25' },
+      beforeState: { stock_qty: '40', version: '1' },
+      afterState: { stock_qty: '25', version: '2' },
+    });
+    expect(operation?.reads).toEqual([
+      {
+        ordinal: 1,
+        objectType: 'product',
+        objectId: productId,
+        field: 'version',
+        objectVersion: 1n,
+        dependencyClass: 'concurrency_guard',
+      },
+      {
+        ordinal: 2,
+        objectType: 'product',
+        objectId: productId,
+        field: 'stock_qty',
+        objectVersion: 1n,
+        dependencyClass: 'concurrency_guard',
+      },
+    ]);
+    expect(operation?.writes).toEqual([
+      {
+        ordinal: 1,
+        objectType: 'product',
+        objectId: productId,
+        field: 'stock_qty',
+        versionBefore: 1n,
+        versionAfter: 2n,
+      },
+    ]);
+  });
+
+  it('applies stock deltas as a business dependency and refuses to go below zero', async () => {
+    const productId = await createProduct(1000n);
+    const watermarkBefore = await db.reader.readCommitWatermark();
+
+    const adjusted = written(
+      await db.entry.adjustStock({ principal: PRINCIPAL, productId, deltaQty: 5n }),
+    );
+    expect(adjusted).toMatchObject({ productId, stockQty: 45n, version: 2n });
+
+    const [operation] = await db.reader.listOperationsAfter(watermarkBefore, 10);
+    expect(operation).toMatchObject({
+      operationType: 'adjust_stock',
+      params: { product_id: productId, delta_qty: '5' },
+      beforeState: { stock_qty: '40', version: '1' },
+      afterState: { stock_qty: '45', version: '2' },
+    });
+    expect(operation?.reads).toEqual([
+      {
+        ordinal: 1,
+        objectType: 'product',
+        objectId: productId,
+        field: 'version',
+        objectVersion: 1n,
+        dependencyClass: 'concurrency_guard',
+      },
+      {
+        ordinal: 2,
+        objectType: 'product',
+        objectId: productId,
+        field: 'stock_qty',
+        objectVersion: 1n,
+        dependencyClass: 'business_value',
+      },
+    ]);
+
+    const ledgerBefore = await readLedgerSummary(db.migratorPool);
+    expect(
+      rejectionOf(await db.entry.adjustStock({ principal: PRINCIPAL, productId, deltaQty: -50n }))
+        .code,
+    ).toBe('value_out_of_bounds');
+    expect(await db.reader.readCommitWatermark()).toBe(watermarkBefore + 1n);
+    expect(await readLedgerSummary(db.migratorPool)).toEqual(ledgerBefore);
+  });
+
+  it('batch sets stock under one batch and one commit', async () => {
+    const first = await createProduct(1000n);
+    const second = await createProduct(2000n);
+    const watermarkBefore = await db.reader.readCommitWatermark();
+
+    const result = written(
+      await db.entry.batchSetStock({
+        principal: PRINCIPAL,
+        targets: [
+          { productId: first, stockQty: 10n },
+          { productId: second, stockQty: 20n },
+        ],
+      }),
+    );
+
+    expect(result.commitSeq).toBe(watermarkBefore + 1n);
+    expect(result.targets).toMatchObject([
+      { productId: first, stockQty: 10n, version: 2n },
+      { productId: second, stockQty: 20n, version: 2n },
+    ]);
+    expect(await db.reader.readBatch(result.batchId)).toEqual({
+      batchId: result.batchId,
+      commitSeq: watermarkBefore + 1n,
+      operationType: 'batch_set_stock',
+      templateVersion: 1,
+      targetCount: 2,
+    });
+
+    const operations = await db.reader.listOperationsAfter(watermarkBefore, 10);
+    expect(operations.map((operation) => operation.operationType)).toEqual([
+      'batch_set_stock',
+      'batch_set_stock',
+    ]);
+    expect(operations.map((operation) => operation.batchId)).toEqual([
+      result.batchId,
+      result.batchId,
+    ]);
+    expect(operations[0]).toMatchObject({
+      params: { product_id: first, stock_qty: '10' },
+      beforeState: { stock_qty: '40', version: '1' },
+      afterState: { stock_qty: '10', version: '2' },
+    });
   });
 });
 
@@ -443,6 +596,7 @@ describe('rejected writes leave no trace', () => {
             productId: uniqueId('product'),
             name: 'Neg',
             initialPriceCents: -1n,
+            initialStockQty: 40n,
           }),
         ),
       'value_out_of_bounds',
@@ -502,6 +656,7 @@ describe('rejected writes leave no trace', () => {
             productId,
             name: 'Again',
             initialPriceCents: 1n,
+            initialStockQty: 40n,
           }),
         ),
       'already_exists',

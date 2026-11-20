@@ -37,6 +37,7 @@ const COLUMN_TYPES: Readonly<Record<string, string>> = {
   product_id: 'text',
   name: 'text',
   price_cents: 'bigint',
+  stock_qty: 'bigint',
   version: 'bigint',
   order_id: 'text',
   quantity: 'integer',

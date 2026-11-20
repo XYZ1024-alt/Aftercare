@@ -53,37 +53,35 @@ export async function readCharterFile(
 
 /** The field rules as plain JSON: optional keys are written only when set, as the database stores them. */
 function fieldsJson(fields: AutonomyCharter['fields']): Record<string, JsonValue> {
-  return Object.fromEntries(
-    Object.entries(fields).map(([fieldId, rules]) => [
-      fieldId,
-      {
-        incident: {
-          operationTypes: [...rules.incident.operationTypes],
-          ...(rules.incident.direction === undefined
-            ? {}
-            : { direction: rules.incident.direction }),
-          ...(rules.incident.minRelativeChangeBps === undefined
-            ? {}
-            : { minRelativeChangeBps: rules.incident.minRelativeChangeBps }),
-          ...(rules.incident.minAbsoluteChange === undefined
-            ? {}
-            : { minAbsoluteChange: rules.incident.minAbsoluteChange }),
-        },
-        approval: {
-          maxAbsoluteChange: rules.approval.maxAbsoluteChange,
-          ...(rules.approval.maxRelativeChangeBps === undefined
-            ? {}
-            : { maxRelativeChangeBps: rules.approval.maxRelativeChangeBps }),
-        },
-        promotion: {
-          maxAbsoluteChange: rules.promotion.maxAbsoluteChange,
-          ...(rules.promotion.maxRelativeChangeBps === undefined
-            ? {}
-            : { maxRelativeChangeBps: rules.promotion.maxRelativeChangeBps }),
-        },
-      } satisfies JsonObject,
-    ]),
-  );
+  const rules: Record<string, JsonValue> = {};
+  for (const [fieldId, rule] of Object.entries(fields)) {
+    if (rule === undefined) continue;
+    rules[fieldId] = {
+      incident: {
+        operationTypes: [...rule.incident.operationTypes],
+        ...(rule.incident.direction === undefined ? {} : { direction: rule.incident.direction }),
+        ...(rule.incident.minRelativeChangeBps === undefined
+          ? {}
+          : { minRelativeChangeBps: rule.incident.minRelativeChangeBps }),
+        ...(rule.incident.minAbsoluteChange === undefined
+          ? {}
+          : { minAbsoluteChange: rule.incident.minAbsoluteChange }),
+      },
+      approval: {
+        maxAbsoluteChange: rule.approval.maxAbsoluteChange,
+        ...(rule.approval.maxRelativeChangeBps === undefined
+          ? {}
+          : { maxRelativeChangeBps: rule.approval.maxRelativeChangeBps }),
+      },
+      promotion: {
+        maxAbsoluteChange: rule.promotion.maxAbsoluteChange,
+        ...(rule.promotion.maxRelativeChangeBps === undefined
+          ? {}
+          : { maxRelativeChangeBps: rule.promotion.maxRelativeChangeBps }),
+      },
+    } satisfies JsonObject;
+  }
+  return rules;
 }
 
 /** The charter as JSON, with every optional field rule key made explicit. */

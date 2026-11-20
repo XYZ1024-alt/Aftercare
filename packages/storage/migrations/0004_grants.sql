@@ -5,7 +5,7 @@
 --
 --   aftercare_migrator        owns every object; used only to run migrations.
 --   aftercare_business_writer the business SIMULATOR. It may read business rows
---                             and call the five entry functions, nothing else.
+--                             and call the eight entry functions, nothing else.
 --                             It is not, and must not become, an Agent credential.
 --   aftercare_investigator    read-only: business rows, audit and watermark.
 
@@ -18,10 +18,13 @@ GRANT USAGE ON SCHEMA aftercare TO aftercare_business_writer, aftercare_investig
 -- Business writer: no table writes at all, no audit access, entry functions only.
 GRANT SELECT ON aftercare.products, aftercare.orders TO aftercare_business_writer;
 
-GRANT EXECUTE ON FUNCTION aftercare.create_product(text, text, text, bigint) TO aftercare_business_writer;
+GRANT EXECUTE ON FUNCTION aftercare.create_product(text, text, text, bigint, bigint) TO aftercare_business_writer;
 GRANT EXECUTE ON FUNCTION aftercare.set_price(text, text, bigint) TO aftercare_business_writer;
 GRANT EXECUTE ON FUNCTION aftercare.add_price_delta(text, text, bigint) TO aftercare_business_writer;
 GRANT EXECUTE ON FUNCTION aftercare.batch_set_price(text, text[], bigint[]) TO aftercare_business_writer;
+GRANT EXECUTE ON FUNCTION aftercare.set_stock(text, text, bigint) TO aftercare_business_writer;
+GRANT EXECUTE ON FUNCTION aftercare.adjust_stock(text, text, bigint) TO aftercare_business_writer;
+GRANT EXECUTE ON FUNCTION aftercare.batch_set_stock(text, text[], bigint[]) TO aftercare_business_writer;
 GRANT EXECUTE ON FUNCTION aftercare.create_order(text, text, text, integer) TO aftercare_business_writer;
 
 -- Investigator: SELECT only, and no function in this schema.

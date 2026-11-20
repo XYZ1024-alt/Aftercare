@@ -44,11 +44,22 @@ const ABSOLUTE_PRICE: TemplateSemantics = [
   { fieldId: 'product.price_cents', kind: 'absolute', param: 'price_cents' },
 ];
 
+const ABSOLUTE_STOCK: TemplateSemantics = [
+  { fieldId: 'product.stock_qty', kind: 'absolute', param: 'stock_qty' },
+];
+
 const SEMANTICS: Readonly<Record<OperationType, readonly TemplateSemanticsEntry[]>> = {
   create_product: [
     {
       templateVersion: 1,
       semantics: [{ fieldId: 'product.price_cents', kind: 'create', param: 'initial_price_cents' }],
+    },
+    {
+      templateVersion: 2,
+      semantics: [
+        { fieldId: 'product.price_cents', kind: 'create', param: 'initial_price_cents' },
+        { fieldId: 'product.stock_qty', kind: 'create', param: 'initial_stock_qty' },
+      ],
     },
   ],
   set_price: [{ templateVersion: 1, semantics: ABSOLUTE_PRICE }],
@@ -57,6 +68,14 @@ const SEMANTICS: Readonly<Record<OperationType, readonly TemplateSemanticsEntry[
     {
       templateVersion: 1,
       semantics: [{ fieldId: 'product.price_cents', kind: 'delta', param: 'delta_cents' }],
+    },
+  ],
+  set_stock: [{ templateVersion: 1, semantics: ABSOLUTE_STOCK }],
+  batch_set_stock: [{ templateVersion: 1, semantics: ABSOLUTE_STOCK }],
+  adjust_stock: [
+    {
+      templateVersion: 1,
+      semantics: [{ fieldId: 'product.stock_qty', kind: 'delta', param: 'delta_qty' }],
     },
   ],
   create_order: [

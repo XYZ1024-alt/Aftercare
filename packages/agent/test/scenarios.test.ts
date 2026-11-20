@@ -298,7 +298,9 @@ describe('an operation whose intent is not on record (c: 80.00 -> 90.00)', () =>
       steps.askBaseline,
       steps.listPolicies,
       steps.askPolicy,
-      // An attempt to smuggle the "obvious" +10.00 into the proposal: there is no field for it.
+      // An attempt to smuggle the "obvious" +10.00 into the proposal: the tool has no
+      // field that carries a value, so a tool call that names one is refused outright.
+      // (The proposal schema is a strict object: an unknown key is an error, not a hint.)
       (view) => {
         const proper = steps.plan(view);
         if (!('calls' in proper) || proper.calls === undefined)
@@ -312,14 +314,12 @@ describe('an operation whose intent is not on record (c: 80.00 -> 90.00)', () =>
             phase,
             call('submit_repair_proposal', {
               ...proposal.args,
-              patch: [
+              amounts: [
                 {
                   objectType: 'product',
                   objectId: 'c',
                   fieldId: 'product.price_cents',
-                  expectedObjectVersion: '3',
-                  fromValue: '9000',
-                  toValue: '11000',
+                  value: '11000',
                 },
               ],
             }),

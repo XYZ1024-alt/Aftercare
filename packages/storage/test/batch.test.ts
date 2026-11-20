@@ -29,6 +29,7 @@ async function createProducts(prices: readonly bigint[]): Promise<string[]> {
         productId,
         name: productId,
         initialPriceCents,
+        initialStockQty: 40n,
       }),
     );
     productIds.push(productId);

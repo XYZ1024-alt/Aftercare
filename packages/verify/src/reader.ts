@@ -59,12 +59,15 @@ async function readObject(
     case 'products': {
       const rows = await store.readProducts(schemaName);
       return rows.map((row) => {
-        const columns = {
-          product_id: row.productId,
-          name: row.name,
-          price_cents: row.cents,
-          version: row.version,
-        };
+        // Every registered column of the product row, taken from the store's
+        // whole-row image; a column the registry declares but the store does
+        // not expose is a reading failure, not a silently narrower row.
+        const columns: Record<string, string> = {};
+        for (const [column, value] of Object.entries(row.fields)) {
+          if (value !== null) {
+            columns[column] = value;
+          }
+        }
         rowColumns(spec, columns);
         return {
           objectType: spec.objectType,

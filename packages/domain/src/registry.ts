@@ -83,7 +83,7 @@ export const DEFAULT_REGISTRY: DomainRegistry = {
       pkColumn: 'product_id',
       versionColumn: 'version',
       displayColumn: 'name',
-      columns: ['product_id', 'name', 'price_cents', 'version'],
+      columns: ['product_id', 'name', 'price_cents', 'stock_qty', 'version'],
       repairable: true,
     },
     {
@@ -115,6 +115,18 @@ export const DEFAULT_REGISTRY: DomainRegistry = {
       writeback: 'absolute_if_field_unchanged',
       copyReaders: [{ objectType: 'order', versionColumn: 'product_version' }],
       batchOperationType: 'batch_set_price',
+    },
+    {
+      fieldId: fieldIdOf('product', 'stock_qty'),
+      objectType: 'product',
+      column: 'stock_qty',
+      valueKind: 'int64',
+      bounds: { min: '0', max: null },
+      unit: 'count',
+      title: '库存',
+      writeback: 'absolute_if_field_unchanged',
+      copyReaders: [],
+      batchOperationType: 'batch_set_stock',
     },
   ],
 };

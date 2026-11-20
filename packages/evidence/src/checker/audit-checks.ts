@@ -291,9 +291,16 @@ const TEMPLATE_FIELD_WRITES: Readonly<Record<string, readonly TemplateFieldWrite
   'create_product@1': [
     { kind: 'create', fieldId: 'product.price_cents', param: 'initial_price_cents' },
   ],
+  'create_product@2': [
+    { kind: 'create', fieldId: 'product.price_cents', param: 'initial_price_cents' },
+    { kind: 'create', fieldId: 'product.stock_qty', param: 'initial_stock_qty' },
+  ],
   'set_price@1': [{ kind: 'absolute', fieldId: 'product.price_cents', param: 'price_cents' }],
   'batch_set_price@1': [{ kind: 'absolute', fieldId: 'product.price_cents', param: 'price_cents' }],
   'add_price_delta@1': [{ kind: 'delta', fieldId: 'product.price_cents', param: 'delta_cents' }],
+  'set_stock@1': [{ kind: 'absolute', fieldId: 'product.stock_qty', param: 'stock_qty' }],
+  'batch_set_stock@1': [{ kind: 'absolute', fieldId: 'product.stock_qty', param: 'stock_qty' }],
+  'adjust_stock@1': [{ kind: 'delta', fieldId: 'product.stock_qty', param: 'delta_qty' }],
   'create_order@1': [
     { kind: 'copy', fieldId: 'product.price_cents', into: 'order.unit_price_cents' },
   ],

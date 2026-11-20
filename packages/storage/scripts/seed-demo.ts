@@ -29,6 +29,7 @@ try {
       productId: 'espresso-beans-1kg',
       name: 'Espresso Beans 1kg',
       initialPriceCents: '12800',
+      initialStockQty: '40',
     }),
   );
 
@@ -44,6 +45,7 @@ try {
           productId: 'pour-over-kettle',
           name: 'Pour-over Kettle',
           initialPriceCents: '23900',
+          initialStockQty: '40',
         }),
       ),
     );
@@ -55,6 +57,7 @@ try {
           productId: 'paper-filters-100',
           name: 'Paper Filters x100',
           initialPriceCents: '1900',
+          initialStockQty: '40',
         }),
       ),
     );

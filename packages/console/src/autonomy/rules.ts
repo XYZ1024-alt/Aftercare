@@ -28,7 +28,7 @@ export interface IncidentVerdict {
 }
 
 type CharterFields = AutonomyCharter['fields'];
-type FieldRules = CharterFields[keyof CharterFields];
+type FieldRules = NonNullable<CharterFields[keyof CharterFields]>;
 type Envelope = FieldRules['approval'];
 
 /** |after - before| in basis points of before; null when before is zero and the value moved. */

@@ -132,7 +132,7 @@ export const autonomyCharterSchema = z
      * be approved, what may be promoted. A field absent here has no envelope.
      */
     fields: z
-      .record(fieldIdSchema, fieldRulesSchema)
+      .partialRecord(fieldIdSchema, fieldRulesSchema)
       .refine((fields) => Object.keys(fields).length > 0, 'a charter rules at least one field'),
     /**
      * When no candidate satisfies the incident rule of its field: decline the

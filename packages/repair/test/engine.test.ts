@@ -149,6 +149,8 @@ function snapshotRows(
       product_id,
       name: product_id,
       price_cents,
+      // No recorded stock write: the stock of a row is inert for these replays.
+      stock_qty: '100',
       version,
     })),
     orders: [],
@@ -192,6 +194,7 @@ function replay(
             product_id: objectId,
             name: objectId,
             price_cents: priceCents.toString(),
+            stock_qty: '100',
             version: version.toString(),
           })),
         ],

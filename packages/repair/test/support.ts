@@ -22,7 +22,12 @@ import {
   type RegisteredPolicyVersion,
   type RepairProposal,
 } from '@aftercare/contracts';
-import { type JsonObject, type JsonValue, OPERATION_TYPES } from '@aftercare/domain';
+import {
+  type JsonObject,
+  type JsonValue,
+  OPERATION_TEMPLATES,
+  OPERATION_TYPES,
+} from '@aftercare/domain';
 import { PRINCIPAL, sabotage, written } from '@aftercare/storage/testing';
 import type { z } from 'zod';
 import {
@@ -30,6 +35,7 @@ import {
   createRepairCompiler,
   type RepairCompiler,
 } from '../src/index.ts';
+import { REPAIR_SEMANTICS_VERSION } from '../src/semantics.ts';
 
 export { BYSTANDER, certify, collect, enterPlanning, OPERATOR };
 
@@ -129,6 +135,7 @@ export async function createProduct(h: RepairHarness, productId: string, cents: 
       productId,
       name: productId,
       initialPriceCents: cents,
+      initialStockQty: 40n,
     }),
   );
 }
@@ -316,8 +323,8 @@ export function standardPolicy(
     },
     supportedTemplates: OPERATION_TYPES.map((operationType) => ({
       operationType,
-      templateVersion: 1,
-      semanticsVersion: 2,
+      templateVersion: OPERATION_TEMPLATES[operationType].templateVersion,
+      semanticsVersion: REPAIR_SEMANTICS_VERSION,
     })),
     deltaReplayRules: [
       {

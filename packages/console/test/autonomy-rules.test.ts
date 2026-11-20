@@ -16,7 +16,7 @@ import {
 const charter = demoCharter('postgresql:1/unit', '00000000-0000-4000-8000-000000000001');
 const limits = agentLimitsSchema.parse({});
 const PRICE = 'product.price_cents';
-type FieldRules = AutonomyCharter['fields'][string];
+type FieldRules = NonNullable<AutonomyCharter['fields'][string]>;
 function priceRules(): FieldRules {
   const rules = charter.fields[PRICE];
   if (rules === undefined) {

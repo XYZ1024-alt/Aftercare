@@ -52,7 +52,7 @@ INSERT INTO aftercare.object_types
   (object_type, table_name, pk_column, version_column, display_column, columns, repairable)
 VALUES
   ('product', 'products', 'product_id', 'version', 'name',
-   ARRAY['product_id', 'name', 'price_cents', 'version'], true),
+   ARRAY['product_id', 'name', 'price_cents', 'stock_qty', 'version'], true),
   ('order', 'orders', 'order_id', 'version', NULL,
    ARRAY['order_id', 'product_id', 'quantity', 'unit_price_cents', 'product_version', 'version'], false);
 
@@ -63,7 +63,11 @@ VALUES
   ('product.price_cents', 'product', 'price_cents', 'int64',
    '{"min": "0", "max": null}', 'cents', '价格',
    'absolute_if_field_unchanged', 'batch_set_price', 'price_cents',
-   '[{"objectType": "order", "versionColumn": "product_version"}]');
+   '[{"objectType": "order", "versionColumn": "product_version"}]'),
+  ('product.stock_qty', 'product', 'stock_qty', 'int64',
+   '{"min": "0", "max": null}', 'count', '库存',
+   'absolute_if_field_unchanged', 'batch_set_stock', 'stock_qty',
+   '[]');
 
 CREATE TABLE aftercare.operation_templates (
   operation_type   text    NOT NULL,
@@ -90,6 +94,12 @@ VALUES
      "reads": [],
      "writes": [{"object_type": "product", "field": "name"},
                 {"object_type": "product", "field": "price_cents"}]}'),
+  ('create_product', 2, false, '{
+     "params": ["initial_price_cents", "initial_stock_qty", "name", "product_id"],
+     "reads": [],
+     "writes": [{"object_type": "product", "field": "name"},
+                {"object_type": "product", "field": "price_cents"},
+                {"object_type": "product", "field": "stock_qty"}]}'),
   ('set_price', 1, false, '{
      "params": ["price_cents", "product_id"],
      "reads": [{"object_type": "product", "field": "version", "dependency_class": "concurrency_guard"},
@@ -105,6 +115,21 @@ VALUES
      "reads": [{"object_type": "product", "field": "version", "dependency_class": "concurrency_guard"},
                {"object_type": "product", "field": "price_cents", "dependency_class": "business_value"}],
      "writes": [{"object_type": "product", "field": "price_cents"}]}'),
+  ('set_stock', 1, false, '{
+     "params": ["product_id", "stock_qty"],
+     "reads": [{"object_type": "product", "field": "version", "dependency_class": "concurrency_guard"},
+               {"object_type": "product", "field": "stock_qty", "dependency_class": "concurrency_guard"}],
+     "writes": [{"object_type": "product", "field": "stock_qty"}]}'),
+  ('batch_set_stock', 1, true, '{
+     "params": ["product_id", "stock_qty"],
+     "reads": [{"object_type": "product", "field": "version", "dependency_class": "concurrency_guard"},
+               {"object_type": "product", "field": "stock_qty", "dependency_class": "concurrency_guard"}],
+     "writes": [{"object_type": "product", "field": "stock_qty"}]}'),
+  ('adjust_stock', 1, false, '{
+     "params": ["delta_qty", "product_id"],
+     "reads": [{"object_type": "product", "field": "version", "dependency_class": "concurrency_guard"},
+               {"object_type": "product", "field": "stock_qty", "dependency_class": "business_value"}],
+     "writes": [{"object_type": "product", "field": "stock_qty"}]}'),
   ('create_order', 1, false, '{
      "params": ["order_id", "product_id", "quantity"],
      "reads": [{"object_type": "product", "field": "price_cents", "dependency_class": "business_value"},

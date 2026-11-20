@@ -13,10 +13,13 @@ import {
 const INSUFFICIENT_PRIVILEGE = '42501';
 const ENTRY_FUNCTIONS = [
   'add_price_delta',
+  'adjust_stock',
   'batch_set_price',
+  'batch_set_stock',
   'create_order',
   'create_product',
   'set_price',
+  'set_stock',
 ];
 const AUDIT_TABLES = ['commits', 'batches', 'operations', 'operation_reads', 'operation_writes'];
 
@@ -34,6 +37,7 @@ beforeAll(async () => {
       productId,
       name: productId,
       initialPriceCents: 1000n,
+      initialStockQty: 40n,
     }),
   );
   // A batch write, so that every audit table (including batches) has rows of its own.
@@ -267,10 +271,13 @@ describe('investigator role', () => {
     await expectDenied(
       db.investigatorPool,
       [
-        `SELECT aftercare.create_product('${PRINCIPAL}', 'rogue', 'Rogue', 1)`,
+        `SELECT aftercare.create_product('${PRINCIPAL}', 'rogue', 'Rogue', 1, 1)`,
         `SELECT aftercare.set_price('${PRINCIPAL}', '${productId}', 1)`,
         `SELECT aftercare.add_price_delta('${PRINCIPAL}', '${productId}', 1)`,
         `SELECT aftercare.batch_set_price('${PRINCIPAL}', ARRAY['${productId}'], ARRAY[1::bigint])`,
+        `SELECT aftercare.set_stock('${PRINCIPAL}', '${productId}', 1)`,
+        `SELECT aftercare.adjust_stock('${PRINCIPAL}', '${productId}', 1)`,
+        `SELECT aftercare.batch_set_stock('${PRINCIPAL}', ARRAY['${productId}'], ARRAY[1::bigint])`,
         `SELECT aftercare.create_order('${PRINCIPAL}', 'rogue', '${productId}', 1)`,
         `SELECT aftercare.begin_commit('${PRINCIPAL}')`,
       ],

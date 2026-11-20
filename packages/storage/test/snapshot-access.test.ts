@@ -33,6 +33,7 @@ beforeAll(async () => {
       productId,
       name: productId,
       initialPriceCents: 100n,
+      initialStockQty: 40n,
     }),
   );
   caseId = await openCase(db);

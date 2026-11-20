@@ -24,6 +24,12 @@ export const priceCentsSchema = int64NonNegativeSchema;
 /** A price delta in cents: the price field of the default registry, kept for the price deltas. */
 export const deltaCentsSchema = int64SignedSchema;
 
+/** A stock count in pieces: the stock field of the default registry. */
+export const stockQtySchema = int64NonNegativeSchema;
+
+/** A stock delta in pieces: the stock field of the default registry. */
+export const deltaQtySchema = int64SignedSchema;
+
 /** Object versions, commit sequence numbers and the watermark: non-negative int64 counters. */
 export const counterSchema = int64FromDecimalString('non_negative');
 

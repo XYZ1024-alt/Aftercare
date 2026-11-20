@@ -41,6 +41,7 @@ beforeAll(async () => {
       productId: KETTLE,
       name: 'Kettle',
       initialPriceCents: 1000n,
+      initialStockQty: 40n,
     }),
   );
   written(await entry.setPrice({ principal: PRINCIPAL, productId: KETTLE, priceCents: 1200n }));
@@ -61,6 +62,7 @@ beforeAll(async () => {
       productId: FILTERS,
       name: 'Filters',
       initialPriceCents: 300n,
+      initialStockQty: 300n,
     }),
   );
   batchId = written(
@@ -359,7 +361,7 @@ describe('evidence is read from the immutable snapshot only', () => {
         templates: [
           { operationType: 'add_price_delta', templateVersion: 1 },
           { operationType: 'batch_set_price', templateVersion: 1 },
-          { operationType: 'create_product', templateVersion: 1 },
+          { operationType: 'create_product', templateVersion: 2 },
           { operationType: 'set_price', templateVersion: 1 },
         ],
       },
@@ -483,6 +485,7 @@ describe('evidence is read from the immutable snapshot only', () => {
               product_id: KETTLE,
               name: 'Kettle',
               price_cents: '1200',
+              stock_qty: '40',
               version: '2',
             },
           },
