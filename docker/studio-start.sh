@@ -88,6 +88,16 @@ backup_cluster() {
 mkdir -p "$ROOT" "$AFTERCARE_DATA_DIR"
 chown -R 1000:1000 "$AFTERCARE_DATA_DIR"
 
+# An explicit, one-shot reset. A restore brings back the schema the backup was
+# taken with; when a release rewrites an already-applied migration (the ledger
+# refuses that on purpose), the only way to reach the new schema is a new
+# database. AFTERCARE_STUDIO_RESET=1 discards the stored cluster once; remove
+# the variable afterwards or every start would start over.
+if [ "${AFTERCARE_STUDIO_RESET:-0}" = "1" ] && [ -s "$BACKUP_DIR/base.tar.gz" ]; then
+  log "AFTERCARE_STUDIO_RESET=1: discarding the stored PostgreSQL cluster"
+  rm -rf "$BACKUP_DIR"
+fi
+
 fresh=0
 if [ ! -s "$PGDATA/PG_VERSION" ]; then
   fresh=1
