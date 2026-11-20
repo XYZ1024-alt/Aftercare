@@ -3,6 +3,7 @@ import { stdin, stdout } from 'node:process';
 import { createInterface } from 'node:readline/promises';
 import { parseArgs } from 'node:util';
 import { CAPABILITIES, charterSummary } from '@aftercare/contracts';
+import { getScenario, SCENARIOS } from '@aftercare/scenarios';
 import { createAuthorityAdmin, openRolePool, readDatabaseEndpoint } from '@aftercare/storage';
 import {
   checkBeforeMigration,
@@ -10,7 +11,7 @@ import {
   runMigrations,
 } from '@aftercare/storage/admin';
 import { fenceAndVerify, restoreDrill, takeBackup } from '../src/backup.ts';
-import { declareCoverage, initialiseDemo } from '../src/demo.ts';
+import { DEFAULT_DEMO_SCENARIO, declareCoverage, initialiseDemo } from '../src/demo.ts';
 import {
   charterDigest,
   deriveCredential,
@@ -49,7 +50,7 @@ const USAGE = `aftercare operations (target: AFTERCARE_DATABASE_TARGET, default 
   restore:release --as <principal>         verifies, then lifts the restore hold (needs administer_local)
   retention [--apply] --as <principal>     dry run by default; removes only what the configuration allows
   demo:register --confirm <database>       marks THIS local database as a demonstration environment
-  demo:init                                accounts, coverage declaration, policy and business activity for the demo
+  demo:init [--scenario <id>]              accounts, coverage, policy and the chosen scenario's business activity
   demo:reset --confirm <database>          drops and re-migrates a REGISTERED demonstration database
   charter:register <file> --as <principal> registers an autonomy charter (YAML or JSON) for <principal>, who must
                                            hold delegate_autonomy and every capability it delegates; its
@@ -71,6 +72,7 @@ const { positionals, values } = parseArgs({
     as: { type: 'string' },
     apply: { type: 'boolean', default: false },
     confirm: { type: 'string' },
+    scenario: { type: 'string' },
   },
 });
 const [command, first, second] = positionals;
@@ -315,7 +317,16 @@ switch (command) {
     break;
   }
   case 'demo:init': {
-    const report = await initialiseDemo(env);
+    const scenarioId = values.scenario ?? DEFAULT_DEMO_SCENARIO;
+    const scenario = getScenario(scenarioId);
+    if (scenario === undefined) {
+      fail(
+        `unknown scenario "${scenarioId}"\n\navailable scenarios:\n${SCENARIOS.map(
+          (entry) => `  ${entry.id}  ${entry.title}`,
+        ).join('\n')}`,
+      );
+    }
+    const report = await initialiseDemo(env, scenario.id);
     show(report);
     console.log(
       '\nThe password above is shown once. Sign in at the console with one of the accounts.',

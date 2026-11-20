@@ -33,6 +33,27 @@ const versionSchema = z.looseObject({
 });
 /** The pricing test double reads the one registered product price field. */
 const PRICE_FIELD_ID = fieldIdOf('product', 'price_cents');
+const STOCK_FIELD_ID = fieldIdOf('product', 'stock_qty');
+
+/**
+ * The one repairable field each operation type writes. The scripted double
+ * reads it from the operation type, so it follows a stocktake batch as readily
+ * as a reprice batch; a type it does not know has no field and is skipped.
+ */
+const FIELD_OF_OPERATION: Readonly<Record<string, string | undefined>> = {
+  create_product: PRICE_FIELD_ID,
+  set_price: PRICE_FIELD_ID,
+  batch_set_price: PRICE_FIELD_ID,
+  add_price_delta: PRICE_FIELD_ID,
+  set_stock: STOCK_FIELD_ID,
+  batch_set_stock: STOCK_FIELD_ID,
+  adjust_stock: STOCK_FIELD_ID,
+};
+/** The registered field an operation type writes, or undefined for a type this double does not model. */
+function fieldOfOperation(operationType: unknown): string | undefined {
+  return typeof operationType === 'string' ? FIELD_OF_OPERATION[operationType] : undefined;
+}
+
 const evidenceResultSchema = z.looseObject({
   ok: z.literal(true),
   source: z.looseObject({ refs: z.looseObject({ snapshotId: z.uuid() }) }),
@@ -240,6 +261,24 @@ function decide(request: ModelRequest): Step {
           .map((target) => target.objectId),
       ),
     ].sort();
+
+  /** Every (product, registered field) pair the given operations actually wrote. */
+  const pairsOf = (operationIds: readonly string[]): { productId: string; fieldId: string }[] => [
+    ...new Map(
+      operations
+        .filter((operation) => operationIds.includes(operation.operationId))
+        .flatMap((operation) => {
+          const fieldId = fieldOfOperation(operation.operationType);
+          if (fieldId === undefined) return [];
+          return (operation.targets ?? [])
+            .filter((target) => target.objectType === 'product')
+            .map(
+              (target) =>
+                [`${target.objectId}|${fieldId}`, { productId: target.objectId, fieldId }] as const,
+            );
+        }),
+    ).values(),
+  ];
   if (batchOperations.length === 0) {
     return finish(
       'unresolved',
@@ -247,26 +286,43 @@ function decide(request: ModelRequest): Step {
     );
   }
 
-  // 2. The field histories of the products the batch operations wrote.
+  // 2. The field histories of the (product, field) pairs the batch operations wrote.
+  // Which field a batch wrote is read from the operation, never assumed: a
+  // stocktake batch writes stock_qty and a reprice writes price_cents.
+  // The observation names the object row but not the field: the field is what
+  // the request asked for, so the key is (object, the field id of that call).
   const histories = evidenceOf('get_field_history');
   const historyOf = new Map(
     histories.flatMap((result) => {
       const { object } = result.data.observations;
-      return object?.objectType === 'product' ? [[object.objectId, result] as const] : [];
+      const requested: unknown = result.data.query;
+      const fieldId =
+        typeof requested === 'object' &&
+        requested !== null &&
+        'tool' in requested &&
+        requested.tool === 'field.history' &&
+        'fieldId' in requested &&
+        typeof requested.fieldId === 'string'
+          ? requested.fieldId
+          : undefined;
+      return object?.objectType === 'product' && typeof fieldId === 'string'
+        ? [[`${object.objectId}|${fieldId}`, result] as const]
+        : [];
     }),
   );
-  const missing = productsOf(batchOperations.map((operation) => operation.operationId)).filter(
-    (productId) => !historyOf.has(productId),
+  const writtenPairs = pairsOf(batchOperations.map((operation) => operation.operationId));
+  const missing = writtenPairs.filter(
+    (pair) => !historyOf.has(`${pair.productId}|${pair.fieldId}`),
   );
   if (missing.length > 0) {
     return {
-      text: `Reading the field history of ${missing.length} product(s) the batch wrote.`,
-      calls: missing.slice(0, 20).map((productId) => ({
+      text: `Reading the field history of ${missing.length} (product, field) pair(s) the batch wrote.`,
+      calls: missing.slice(0, 20).map((pair) => ({
         tool: 'get_field_history',
         args: {
           objectType: 'product',
-          objectId: productId,
-          fieldId: PRICE_FIELD_ID,
+          objectId: pair.productId,
+          fieldId: pair.fieldId,
           limit: 100,
         },
       })),
@@ -312,13 +368,14 @@ function decide(request: ModelRequest): Step {
     });
   }
   const incidentProducts = productsOf(incidentOperationIds);
+  const incidentPairs = pairsOf(incidentOperationIds);
   const baseline = inForce.filter((entry) => entry.kind === 'baseline').at(-1);
   if (baseline === undefined) {
     if (notConfirmed('baseline')) {
       return finish('unresolved', 'The baseline was not confirmed.', ['baseline']);
     }
-    const entries = incidentProducts.flatMap((productId) => {
-      const history = historyOf.get(productId);
+    const entries = incidentPairs.flatMap((pair) => {
+      const history = historyOf.get(`${pair.productId}|${pair.fieldId}`);
       const first = history?.data.observations.versions?.find((version) =>
         incidentOperationIds.includes(version.operationId),
       );
@@ -331,8 +388,8 @@ function decide(request: ModelRequest): Step {
         : [
             {
               objectType: 'product',
-              objectId: productId,
-              fieldId: PRICE_FIELD_ID,
+              objectId: pair.productId,
+              fieldId: pair.fieldId,
               fieldVersion: baselineVersion.versionAfter,
             },
           ];
@@ -360,7 +417,14 @@ function decide(request: ModelRequest): Step {
             trustedWatermark: (firstIncident - 1n).toString(),
             entries,
             evidenceIds: incidentProducts
-              .flatMap((productId) => historyOf.get(productId)?.data.evidenceId ?? [])
+              .flatMap(
+                (_productId) =>
+                  incidentPairs.flatMap((pair) =>
+                    [...historyOf]
+                      .filter(([key]) => key.startsWith(`${pair.productId}|`))
+                      .map(([, result]) => result.data.evidenceId),
+                  ) ?? [],
+              )
               .slice(0, 50),
           },
         },
@@ -419,7 +483,12 @@ function decide(request: ModelRequest): Step {
 
   // 5. The deterministic compilation.
   const historyEvidence = incidentProducts.flatMap(
-    (productId) => historyOf.get(productId)?.data.evidenceId ?? [],
+    (_productId) =>
+      incidentPairs.flatMap((pair) =>
+        [...historyOf]
+          .filter(([key]) => key.startsWith(`${pair.productId}|`))
+          .map(([, result]) => result.data.evidenceId),
+      ) ?? [],
   );
   const propose = (parentPlanId: string | null, text: string): Step => {
     const proposal = {
@@ -497,8 +566,12 @@ function decide(request: ModelRequest): Step {
             fieldScope: unresolvedFields.slice(0, 200),
             evidenceIds: unresolvedProducts
               .flatMap(
-                (productId) =>
-                  historyOf.get(productId)?.data.evidenceId ?? historyEvidence.slice(0, 1),
+                (_productId) =>
+                  incidentPairs.flatMap((pair) =>
+                    [...historyOf]
+                      .filter(([key]) => key.startsWith(`${pair.productId}|`))
+                      .map(([, result]) => result.data.evidenceId),
+                  ) ?? historyEvidence.slice(0, 1),
               )
               .slice(0, 50),
           },

@@ -48,6 +48,9 @@ const ALLOWED_PREFIXES = [
   // by construction: they exist to drive the price field in tests.
   'packages/agent/src/model/protocol-driver.ts',
   'packages/agent/src/tools/basis.ts',
+  // The demo scenario library: ordinary business activity written as data, so
+  // the price field and its stock companion appear as catalog values, not code.
+  'packages/scenarios/src/',
   // The console's money formatting and its demo charter.
   'apps/web/src/lib/labels.ts',
   'packages/console/src/demo.ts',

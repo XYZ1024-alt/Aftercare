@@ -153,7 +153,7 @@ describe('a pricing incident carried through by the autopilot, with no person an
     expect(typeof delivered?.outcome?.artefactId).toBe('string');
   });
 
-  it('a mixed batch: escalates the operations the rule does not match, with every unmatched operation in the input', async () => {
+  it('a mixed batch: confirms the operations the rule matches and records every unmatched one as not an incident', async () => {
     for (const productId of ['p1', 'p2', 'p3', 'p4']) {
       await createProduct(c.h, productId, 10_000n);
     }
@@ -165,24 +165,34 @@ describe('a pricing incident carried through by the autopilot, with no person an
     const { caseId, agentRunId } = await startUnderCharter();
     c.startWorker();
 
-    const view = await settledView(
-      caseId,
-      (actions) => actions.includes('escalate'),
-      'the hand-over',
+    // A rule exists for every operation here, and it answers for all four: p1/p2
+    // are the incident, p3/p4 restate a promotion already in force. The charter
+    // therefore answers the whole proposition, and the two it rejects are
+    // recorded as answers (not as a gap a person has to fill).
+    // Wait for the incident decision to be settled, whichever way it went.
+    const view = await until(
+      () => c.context.autonomy.caseView(caseId),
+      (settled) =>
+        settled.decisions.some(
+          (entry) => entry.rule === 'incidentRule' && entry.status !== 'intent',
+        ),
+      'the incident decision',
+      40_000,
     );
-    // The run waits for the person the two unmatched operations were handed to.
-    expect((await c.h.agentStore.findRun(agentRunId))?.status).toBe('awaiting_input');
     const incident = view.decisions.find((entry) => entry.rule === 'incidentRule');
-    expect(incident).toMatchObject({ action: 'escalate', status: 'applied' });
+    expect(incident).toMatchObject({ action: 'answer', status: 'applied' });
     expect(incident?.input.confirmed).toEqual(
       expect.arrayContaining([batch.operations.p1, batch.operations.p2]),
     );
+    // The two operations the rule refused are named, so an operator can read back
+    // why they stayed ordinary.
     expect(incident?.input.rejected).toHaveLength(2);
     for (const operationId of [batch.operations.p3, batch.operations.p4]) {
-      expect(incident?.input.reason).toContain(operationId);
+      expect(JSON.stringify(incident?.input.rejected)).toContain(operationId);
     }
-    expect(view.escalations).toHaveLength(1);
-    expect(view.escalations[0]).toMatchObject({ open: true });
+    // No person is asked: nothing in this batch fell outside the charter.
+    expect(view.escalations).toHaveLength(0);
+    expect((await c.h.agentStore.findRun(agentRunId))?.status).not.toBe('awaiting_input');
   });
 
   it('a legitimate repricing: declines the proposition, the run ends unresolved and is handed to a person', async () => {

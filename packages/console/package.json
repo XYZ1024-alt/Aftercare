@@ -22,6 +22,7 @@
     "@aftercare/evidence": "workspace:*",
     "@aftercare/execution": "workspace:*",
     "@aftercare/repair": "workspace:*",
+    "@aftercare/scenarios": "workspace:*",
     "@aftercare/storage": "workspace:*",
     "@aftercare/verify": "workspace:*",
     "@openuidev/lang-core": "^1.1.1",

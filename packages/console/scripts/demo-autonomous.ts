@@ -1,8 +1,15 @@
 import { parseArgs } from 'node:util';
 import { formatEvent } from '@aftercare/agent';
 import { type AutonomyDecisionAction, ENDED_AGENT_RUN_STATUSES } from '@aftercare/contracts';
+import { DEFAULT_REGISTRY, findField } from '@aftercare/domain';
+import { getScenario, SCENARIOS } from '@aftercare/scenarios';
 import { z } from 'zod';
-import { DEMO_AUTOPILOT, seedDemoIncident } from '../src/demo.ts';
+import {
+  DEFAULT_DEMO_SCENARIO,
+  DEMO_AUTOPILOT,
+  type DemoPresenterCard,
+  seedDemoIncident,
+} from '../src/demo.ts';
 import {
   createHttpApi,
   modelOf,
@@ -81,12 +88,24 @@ const clockOf = (startedAt: number): string => {
   return `${String(minutes).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
 };
 
-const centsText = (cents: string): string => `¥${(Number(cents) / 100).toFixed(2)}`;
+/**
+ * A field value as the console shows it, decided by the field's registered unit:
+ * money in cents reads as ¥, a count reads in 件. Formatting every value as
+ * money would print a stock of 85 as ¥0.85.
+ */
+const fieldText = (fieldId: string, value: string): string => {
+  const field = findField(DEFAULT_REGISTRY, fieldId);
+  if (field?.unit === 'cents') {
+    return `¥${(Number(value) / 100).toFixed(2)}`;
+  }
+  return field?.unit === 'count' ? `${value} 件` : value;
+};
 
 const arguments_ = parseArgs({
   options: {
     scripted: { type: 'boolean', default: false },
     timeout: { type: 'string', default: String(DEFAULT_TIMEOUT_SECONDS) },
+    scenario: { type: 'string' },
   },
   strict: true,
 });
@@ -108,11 +127,35 @@ if (arguments_.values.scripted === true) {
   console.log('');
 }
 
+function printPresenterCard(card: DemoPresenterCard): void {
+  console.log('');
+  console.log('━━━━━━━━━━━━━━ 演示者卡片 ━━━━━━━━━━━━━━');
+  console.log(`场景：${card.title}（${card.scenarioId}）`);
+  console.log(`背景：${card.story}`);
+  console.log(`角色：${card.actors.join('、')}`);
+  console.log('时间线：');
+  card.steps.forEach((step, index) => {
+    console.log(`  ${index + 1}. ${step.actor}｜${step.note}`);
+  });
+  console.log(`现象：${card.symptom}`);
+  console.log('');
+}
+
+const scenarioId = arguments_.values.scenario ?? DEFAULT_DEMO_SCENARIO;
+const scenario = getScenario(scenarioId);
+if (scenario === undefined) {
+  throw new Error(
+    `未知场景 "${scenarioId}"；可用：${SCENARIOS.map((entry) => entry.id).join('、')}`,
+  );
+}
+
 // A new batch of business activity in the initialised demonstration database
 // (pnpm ops demo:init). Accounts, sessions, the policy and the charter stay as
 // they are, so the console can watch the run while people stay signed in.
-const report = await seedDemoIncident(process.env);
+const report = await seedDemoIncident(process.env, scenario.id);
+printPresenterCard(report.presenterCard);
 console.log(`演示库：${report.database}（${report.products.length} 个商品）`);
+// The alert states the scenario's symptom, never its cause or expected repair.
 console.log(`建议告警描述：${report.suggestedDescription}`);
 
 // The demo prints the records itself; the worker's structured log keeps only warnings and errors.
@@ -457,8 +500,9 @@ try {
         );
         return record.targets.map((target) => ({
           商品: target.objectId,
-          写回前: centsText(target.fromValue),
-          写回后: centsText(target.toValue),
+          字段: target.fieldId,
+          写回前: fieldText(target.fieldId, target.fromValue),
+          写回后: fieldText(target.fieldId, target.toValue),
           核验结论:
             findings.get(target.objectId) ??
             (check === undefined ? '未核验' : (CHECK_LABELS[check.conclusion] ?? check.conclusion)),

@@ -337,18 +337,18 @@ export function createAutopilot(
           ...verdict.escalated.map((entry) => `${entry.operationId}: ${entry.reason}`),
           ...verdict.rejected.map((entry) => `${entry.operationId}: ${entry.reason}`),
         ];
-        const reason = (
-          verdict.confirmed.length === 0
-            ? unmatched.join('; ')
-            : `${verdict.confirmed.length} operation(s) match the incident rule; a person decides the rest: ${unmatched.join('; ')}`
-        ).slice(0, 2000);
-        // A mixed batch is never confirmed in part silently: every unmatched
-        // operation is named in the hand-over, so a person decides what to do
-        // with it. The charter answers only when everything matched.
-        if (
-          verdict.escalated.length > 0 ||
-          (verdict.confirmed.length > 0 && verdict.rejected.length > 0)
-        ) {
+        const reason = unmatched.slice(0, 2000).join('; ');
+        // Two different things are "not confirmed", and only one of them asks a
+        // person:
+        //   escalated  the charter has no rule for a field this operation wrote,
+        //              so the charter cannot answer for it at all;
+        //   rejected   a rule exists and says this is not an incident (the change
+        //              is too small, or the direction is wrong). That is an
+        //              answer, not a gap: the operation stays a normal one, and
+        //              the reason is still recorded in the decision so it can be
+        //              read back. Escalating those would turn every ordinary
+        //              movement inside a batch into a question.
+        if (verdict.escalated.length > 0) {
           return escalation(subject, 'incidentRule', reason, input);
         }
         if (verdict.confirmed.length > 0) {

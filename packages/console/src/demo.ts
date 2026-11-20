@@ -7,11 +7,17 @@ import {
   DELEGABLE_CAPABILITIES,
   POLICY_COMPOSITION,
   principalSchema,
-  type WriteOutcome,
 } from '@aftercare/contracts';
 import { OPERATION_TYPES } from '@aftercare/domain';
 import { buildCoverageManifest } from '@aftercare/evidence';
 import { createRegistrationService, REPAIR_SEMANTICS_VERSION } from '@aftercare/repair';
+import {
+  type CatalogKey,
+  getScenario,
+  runScenario,
+  SCENARIOS,
+  type Scenario,
+} from '@aftercare/scenarios';
 import {
   type BusinessEntry,
   createAuthorityAdmin,
@@ -39,6 +45,9 @@ type Capability = CaseCapability | ConfirmationCapability;
 
 export const DEMO_OWNER = 'ops:demo-owner';
 export const DEMO_AUTOPILOT = 'autopilot:demo-pricing';
+
+/** The scenario both demo entry points run unless --scenario names another. */
+export const DEFAULT_DEMO_SCENARIO: string = SCENARIOS[0].id;
 
 /**
  * The charter of the demonstration: for the price field, decreases of 15 % or
@@ -73,8 +82,12 @@ export function demoCharter(sourceEnvironment: string, policyVersionId: string):
       'product.stock_qty': {
         incident: {
           operationTypes: ['batch_set_stock', 'set_stock'],
-          minRelativeChangeBps: 2000,
-          minAbsoluteChange: '50',
+          // A misaligned stocktake moves many counts by a modest amount, so the
+          // threshold has to catch a few dozen units: 40 -> 120 (+200%) and
+          // 120 -> 85 (-29%, 35 units) are both incidents, while a normal
+          // day's sale of a handful is not.
+          minRelativeChangeBps: 1000,
+          minAbsoluteChange: '20',
         },
         approval: { maxAbsoluteChange: '500' },
         promotion: { maxAbsoluteChange: '500' },
@@ -155,13 +168,6 @@ const SIMULATOR = 'simulator:demo-init';
 const EVERYTHING_PRODUCT = { kind: 'all', objectType: 'product' } as const;
 const ALWAYS = { fromInclusive: '0', toInclusive: null };
 
-function written<T>(step: string, outcome: WriteOutcome<T>): T {
-  if (!outcome.ok) {
-    throw new Error(`demo write "${step}" was rejected: ${outcome.rejection.message}`);
-  }
-  return outcome.value;
-}
-
 /**
  * Declares the coverage of the environment of this deployment for the schema
  * it runs now, unless such a declaration is already registered. A coverage
@@ -204,84 +210,80 @@ export async function declareCoverage(
   }
 }
 
-/** One batch of ordinary business activity: an import that lowered five prices, and what followed it. */
-export interface DemoActivity {
-  readonly products: readonly string[];
-  readonly suggestedDescription: string;
+/** One presenter-facing step of a scenario card. */
+export interface DemoCardStep {
+  readonly id: string;
+  /** Chinese display name of the actor, e.g. '运营·小李'. */
+  readonly actor: string;
+  /** What the actor did, in plain language. */
+  readonly note: string;
 }
 
 /**
- * Ordinary business activity through the controlled entry. Nothing in it marks
- * an incident: which writes were wrong is for the investigation to establish.
+ * The card the presenter reads before the demo. It never enters the database
+ * and never reaches a model: it explains the story, the people and the order
+ * of ordinary operations that produced the symptom.
  */
-async function writeDemoActivity(entry: BusinessEntry): Promise<DemoActivity> {
-  const suffix = randomBytes(3).toString('hex');
-  const products = ['kettle', 'grinder', 'filters', 'scale', 'server'].map(
-    (name) => `demo-${suffix}-${name}`,
-  );
-  const [kettle, grinder, filters, scale] = products as [string, string, string, string, string];
-  for (const productId of products) {
-    written(
-      productId,
-      await entry.createProduct({
-        principal: SIMULATOR,
-        productId,
-        name: productId,
-        initialPriceCents: 10_000n,
-        initialStockQty: 40n,
-      }),
+export interface DemoPresenterCard {
+  readonly scenarioId: string;
+  readonly title: string;
+  readonly story: string;
+  readonly symptom: string;
+  readonly actors: readonly string[];
+  readonly steps: readonly DemoCardStep[];
+}
+
+/** One batch of ordinary business activity: the chosen scenario's operations. */
+export interface DemoActivity {
+  readonly scenarioId: string;
+  readonly products: readonly string[];
+  readonly productIds: Readonly<Record<CatalogKey, string>>;
+  readonly orderIds: readonly string[];
+  readonly suggestedDescription: string;
+  readonly presenterCard: DemoPresenterCard;
+}
+
+/** Resolves a scenario id to its definition; the default is the first round. */
+function demoScenario(scenarioId: string): Scenario {
+  const scenario = getScenario(scenarioId);
+  if (scenario === undefined) {
+    throw new Error(
+      `unknown demo scenario "${scenarioId}"; available: ${SCENARIOS.map((entry) => entry.id).join(
+        ', ',
+      )}`,
     );
   }
-  written(
-    'import batch',
-    await entry.batchSetPrice({
-      principal: 'simulator:import-job',
-      targets: products.map((productId) => ({ productId, priceCents: 8_000n })),
-    }),
-  );
-  written(
-    'delta',
-    await entry.addPriceDelta({ principal: SIMULATOR, productId: kettle, deltaCents: 1_000n }),
-  );
-  written(
-    'later price',
-    await entry.setPrice({ principal: SIMULATOR, productId: grinder, priceCents: 9_500n }),
-  );
-  written(
-    'order',
-    await entry.createOrder({
-      principal: SIMULATOR,
-      orderId: `demo-${suffix}-order`,
-      productId: scale,
-      quantity: 1,
-    }),
-  );
-  // Ordinary stock movements after the import, written through the same entry.
-  // They are what a repair of the price must leave alone, and they are the
-  // reads a stock repair would have to replay.
-  written(
-    'stock out',
-    await entry.adjustStock({ principal: 'simulator:pos', productId: kettle, deltaQty: -3n }),
-  );
-  written(
-    'stock in',
-    await entry.adjustStock({
-      principal: 'simulator:purchasing',
-      productId: grinder,
-      deltaQty: 20n,
-    }),
-  );
-  written(
-    'stocktake',
-    await entry.setStock({
-      principal: 'simulator:stocktake',
-      productId: filters,
-      stockQty: 296n,
-    }),
-  );
+  return scenario;
+}
+
+function presenterCardOf(scenario: Scenario): DemoPresenterCard {
   return {
-    products,
-    suggestedDescription: `导入后商品价格异常（demo-${suffix}- 开头的商品）`,
+    scenarioId: scenario.id,
+    title: scenario.title,
+    story: scenario.story,
+    symptom: scenario.symptom,
+    actors: Object.values(scenario.actors),
+    steps: scenario.steps.map((step) => ({
+      id: step.id,
+      actor: scenario.actors[step.actor] ?? step.actor,
+      note: step.note ?? step.action.op,
+    })),
+  };
+}
+
+/**
+ * Runs the scenario through the controlled entry. Nothing written marks an
+ * incident: which operations were wrong is for the investigation to establish.
+ */
+async function writeDemoActivity(entry: BusinessEntry, scenario: Scenario): Promise<DemoActivity> {
+  const run = await runScenario(entry, scenario);
+  return {
+    scenarioId: scenario.id,
+    products: Object.values(run.productIds),
+    productIds: run.productIds,
+    orderIds: run.orderIds,
+    suggestedDescription: run.suggestedDescription,
+    presenterCard: presenterCardOf(scenario),
   };
 }
 
@@ -292,7 +294,9 @@ async function writeDemoActivity(entry: BusinessEntry): Promise<DemoActivity> {
  */
 export async function seedDemoIncident(
   env: NodeJS.ProcessEnv,
+  scenarioId: string = DEFAULT_DEMO_SCENARIO,
 ): Promise<DemoActivity & { readonly database: string }> {
+  const scenario = demoScenario(scenarioId);
   const settings = readConsoleSettings(env);
   const pools = {
     writer: openRolePool(env, 'business_writer', settings.target),
@@ -306,7 +310,7 @@ export async function seedDemoIncident(
     }
     return {
       database: settings.target,
-      ...(await writeDemoActivity(createBusinessEntry(pools.writer))),
+      ...(await writeDemoActivity(createBusinessEntry(pools.writer), scenario)),
     };
   } finally {
     await Promise.all(Object.values(pools).map((pool) => pool.end()));
@@ -324,7 +328,11 @@ export interface DemoInitReport extends DemoActivity {
   readonly charter: { readonly charterId: string; readonly autopilotPrincipal: string };
 }
 
-export async function initialiseDemo(env: NodeJS.ProcessEnv): Promise<DemoInitReport> {
+export async function initialiseDemo(
+  env: NodeJS.ProcessEnv,
+  scenarioId: string = DEFAULT_DEMO_SCENARIO,
+): Promise<DemoInitReport> {
+  const scenario = demoScenario(scenarioId);
   const settings = readConsoleSettings(env);
   const pools = {
     writer: openRolePool(env, 'business_writer', settings.target),
@@ -416,7 +424,7 @@ export async function initialiseDemo(env: NodeJS.ProcessEnv): Promise<DemoInitRe
       digest: charterDigest(body),
     });
 
-    const activity = await writeDemoActivity(createBusinessEntry(pools.writer));
+    const activity = await writeDemoActivity(createBusinessEntry(pools.writer), scenario);
 
     return {
       database: settings.target,
