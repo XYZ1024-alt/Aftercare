@@ -17,6 +17,13 @@ import {
   autonomySwitchSchema,
   charterSummary,
   type IdentityContext,
+  type SentinelFinding,
+  type SentinelFindingView,
+  type SentinelMatchedOperation,
+  type SentinelState,
+  sentinelFindingSchema,
+  sentinelFindingViewSchema,
+  sentinelStateSchema,
 } from '@aftercare/contracts';
 import type { JsonObject } from '@aftercare/domain';
 import { DatabaseError, type Pool, type QueryResultRow } from 'pg';
@@ -56,7 +63,7 @@ const AUTONOMY_STATEMENTS = {
       FROM aftercare_control.autonomy_charters AS c WHERE c.charter_id = $1`,
   admitIntake: 'SELECT aftercare_control.autonomy_admit_intake($1, $2, $3, $4) AS document',
   enroll:
-    'SELECT aftercare_control.autonomy_enroll($1, $2, $3, $4, $5, $6, $7, $8, $9) AS document',
+    'SELECT aftercare_control.autonomy_enroll($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) AS document',
   enrollmentOfRun: `
     SELECT aftercare_control.autonomy_enrollment_json(e) AS document
       FROM aftercare_control.autonomy_enrollments AS e WHERE e.agent_run_id = $1`,
@@ -68,6 +75,44 @@ const AUTONOMY_STATEMENTS = {
     SELECT aftercare_control.autonomy_enrollment_json(e) AS document
       FROM aftercare_control.autonomy_enrollments AS e WHERE e.intake_id = $1
      ORDER BY e.enrolled_at, e.enrollment_id`,
+  enrollmentsOfFinding: `
+    SELECT aftercare_control.autonomy_enrollment_json(e) AS document
+      FROM aftercare_control.autonomy_enrollments AS e WHERE e.finding_id = $1
+     ORDER BY e.enrolled_at, e.enrollment_id`,
+  activeSentinelRunCount: `
+    SELECT count(*)::int AS document
+      FROM aftercare_control.autonomy_enrollments AS e
+      JOIN aftercare_control.agent_runs AS a ON a.agent_run_id = e.agent_run_id
+     WHERE e.trigger = 'sentinel' AND a.status NOT IN (${ENDED})`,
+  readSentinelState: 'SELECT aftercare_control.sentinel_read_state() AS document',
+  advanceSentinelCursor: 'SELECT aftercare_control.sentinel_advance_cursor($1::bigint) AS document',
+  recordSentinelBlock: 'SELECT aftercare_control.sentinel_record_block($1, $2) AS document',
+  admitSentinelFinding:
+    'SELECT aftercare_control.sentinel_admit_finding($1::bigint, $2, $3::timestamptz, $4::uuid, $5::integer, $6, $7::jsonb) AS document',
+  recentSentinelFindings: `
+    SELECT jsonb_build_object(
+             'finding', aftercare_control.sentinel_finding_json(f),
+             'caseId', latest.case_id,
+             'agentRunId', latest.agent_run_id,
+             'runStatus', latest.status) AS document
+      FROM aftercare_control.sentinel_findings AS f
+      LEFT JOIN LATERAL (
+        SELECT e.case_id, e.agent_run_id, a.status
+          FROM aftercare_control.autonomy_enrollments AS e
+          JOIN aftercare_control.agent_runs AS a ON a.agent_run_id = e.agent_run_id
+         WHERE e.finding_id = f.finding_id
+         ORDER BY e.enrolled_at DESC, e.enrollment_id DESC
+         LIMIT 1
+      ) AS latest ON true
+     ORDER BY f.commit_seq DESC
+     LIMIT $1`,
+  findingOfCase: `
+    SELECT aftercare_control.sentinel_finding_json(f) AS document
+      FROM aftercare_control.autonomy_enrollments AS e
+      JOIN aftercare_control.sentinel_findings AS f ON f.finding_id = e.finding_id
+     WHERE e.case_id = $1
+     ORDER BY e.enrolled_at DESC, e.enrollment_id DESC
+     LIMIT 1`,
   // What a round of the autopilot looks at: runs that have not ended, ended
   // runs with a sealed report whose delivery is not settled, runs that ended
   // without one and were not yet handed to a person, and anything with an
@@ -162,8 +207,24 @@ export interface EnrollmentRequest {
   /** A console account, "intake:<source>" or "sentinel". */
   readonly requestedBy: string;
   readonly intakeId: string | null;
+  readonly findingId: string | null;
   readonly reopenOf: string | null;
   readonly reopenReason: string | null;
+}
+
+export interface SentinelFindingRequest {
+  readonly commitSeq: string;
+  readonly commitPrincipal: string;
+  readonly committedAt: string;
+  readonly charterId: string;
+  readonly charterRevision: number;
+  readonly summary: string;
+  readonly matchedOperations: readonly SentinelMatchedOperation[];
+}
+
+export interface AdmittedSentinelFinding {
+  readonly outcome: 'admitted' | 'duplicate';
+  readonly finding: SentinelFinding;
 }
 
 export interface DecisionRequest {
@@ -197,6 +258,15 @@ export interface AutonomyStore {
   readonly enrollmentOfRun: (agentRunId: string) => Promise<AutonomyEnrollment | null>;
   readonly enrollmentsOfCase: (caseId: string) => Promise<AutonomyEnrollment[]>;
   readonly enrollmentsOfIntake: (intakeId: string) => Promise<AutonomyEnrollment[]>;
+  readonly enrollmentsOfFinding: (findingId: string) => Promise<AutonomyEnrollment[]>;
+  readonly activeSentinelRunCount: () => Promise<number>;
+  readonly readSentinelState: () => Promise<SentinelState>;
+  readonly advanceSentinelCursor: (commitSeq: string) => Promise<SentinelState>;
+  readonly recordSentinelBlock: (code: string, message: string) => Promise<SentinelState>;
+  readonly admitSentinelFinding: (
+    request: SentinelFindingRequest,
+  ) => Promise<AdmittedSentinelFinding>;
+  readonly recentSentinelFindings: (limit: number) => Promise<SentinelFindingView[]>;
   /** What one round of the autopilot has to look at, oldest first. */
   readonly workable: (limit: number) => Promise<AutonomyEnrollment[]>;
   /** The sequence number of the event that last paused the run, or null. */
@@ -225,6 +295,10 @@ const admittedSchema = z.strictObject({
 const recordedSchema = z.strictObject({
   outcome: z.enum(['recorded', 'recorded_before']),
   decision: autonomyDecisionSchema,
+});
+const admittedFindingSchema = z.strictObject({
+  outcome: z.enum(['admitted', 'duplicate']),
+  finding: sentinelFindingSchema,
 });
 const switchChangeSchema = z.looseObject({ enabled: z.boolean() });
 
@@ -311,6 +385,7 @@ export function createAutonomyStore(pool: Pool): AutonomyStore {
             request.intakeId,
             request.reopenOf,
             request.reopenReason,
+            request.findingId,
           ],
           autonomyEnrollmentSchema,
         ),
@@ -321,6 +396,30 @@ export function createAutonomyStore(pool: Pool): AutonomyStore {
       documents('enrollmentsOfCase', [caseId], autonomyEnrollmentSchema),
     enrollmentsOfIntake: (intakeId) =>
       documents('enrollmentsOfIntake', [intakeId], autonomyEnrollmentSchema),
+    enrollmentsOfFinding: (findingId) =>
+      documents('enrollmentsOfFinding', [findingId], autonomyEnrollmentSchema),
+    activeSentinelRunCount: () => one('activeSentinelRunCount', [], z.number().int().min(0)),
+    readSentinelState: () => one('readSentinelState', [], sentinelStateSchema),
+    advanceSentinelCursor: (commitSeq) =>
+      one('advanceSentinelCursor', [commitSeq], sentinelStateSchema),
+    recordSentinelBlock: (code, message) =>
+      one('recordSentinelBlock', [code, message], sentinelStateSchema),
+    admitSentinelFinding: (request) =>
+      one(
+        'admitSentinelFinding',
+        [
+          request.commitSeq,
+          request.commitPrincipal,
+          request.committedAt,
+          request.charterId,
+          request.charterRevision,
+          request.summary,
+          JSON.stringify(request.matchedOperations),
+        ],
+        admittedFindingSchema,
+      ),
+    recentSentinelFindings: (limit) =>
+      documents('recentSentinelFindings', [limit], sentinelFindingViewSchema),
     workable: (limit) => documents('workable', [limit], autonomyEnrollmentSchema),
     pauseOf: async (agentRunId) => one('pauseOf', [agentRunId], z.string().nullable()),
     recordDecision: (request) =>
@@ -346,11 +445,12 @@ export function createAutonomyStore(pool: Pool): AutonomyStore {
     decisionsOfEnrollment: (enrollmentId) =>
       documents('decisionsOfEnrollment', [enrollmentId], autonomyDecisionSchema),
     caseView: async (caseId) => {
-      const [enrollments, decisions, escalations, autonomySwitch] = await Promise.all([
+      const [enrollments, decisions, escalations, autonomySwitch, findings] = await Promise.all([
         documents('enrollmentsOfCase', [caseId], autonomyEnrollmentSchema),
         documents('decisionsOfCase', [caseId], autonomyDecisionSchema),
         documents('escalationsOfCase', [caseId], escalationRowSchema),
         readSwitch(),
+        documents('findingOfCase', [caseId], sentinelFindingSchema),
       ]);
       const latest = enrollments.at(-1);
       const charter = latest === undefined ? null : await findCharter(latest.charterId);
@@ -364,6 +464,7 @@ export function createAutonomyStore(pool: Pool): AutonomyStore {
           return decision === undefined ? [] : [{ decision, open: row.open, reason: row.reason }];
         }),
         switch: autonomySwitch,
+        finding: findings[0] ?? null,
       };
     },
   };

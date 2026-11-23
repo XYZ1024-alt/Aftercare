@@ -833,13 +833,19 @@ export function createHttpApi(
       return assistantRoutes(auth, method, second, third, request);
     }
     if (area === 'autonomy' && first === undefined && method === 'GET') {
-      const [autonomySwitch, charters] = await Promise.all([
+      const [autonomySwitch, charters, sentinelState, recentFindings] = await Promise.all([
         context.autonomy.readSwitch(),
         context.autonomy.chartersInForce(),
+        context.autonomy.readSentinelState(),
+        context.autonomy.recentSentinelFindings(20),
       ]);
       return json(200, {
         switch: autonomySwitch,
         charters: charters.map(charterSummaryJson),
+        sentinel: {
+          state: sentinelState,
+          recentFindings,
+        },
       });
     }
     if (area === 'environment' && method === 'GET') {

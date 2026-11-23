@@ -12,6 +12,7 @@ import type { OperatorWork } from '@aftercare/storage';
 import { createCaseVerifier } from '@aftercare/verify';
 import { type Autopilot, createAutopilot } from './autonomy/autopilot.ts';
 import { openPromotionStores, promoteUnderCharter } from './autonomy/promote.ts';
+import { createSentinel, openSentinelObserver, type Sentinel } from './autonomy/sentinel.ts';
 import type { ConsoleContext } from './context.ts';
 
 // The worker process body: the one Agent of this deployment. It drives
@@ -56,9 +57,10 @@ export function modelOf(context: ConsoleContext, env: NodeJS.ProcessEnv): ModelA
 export function startDaemon(
   context: ConsoleContext,
   model: ModelAdapter | null,
-  options: { readonly autopilot?: Autopilot } = {},
+  options: { readonly autopilot?: Autopilot; readonly sentinel?: Sentinel } = {},
 ): Daemon {
   const autopilot = options.autopilot ?? createAutopilot(context);
+  const { sentinel } = options;
   const { environment, settings, metrics } = context;
   const { agentStore, operations, executorStore, verifierStore } = environment;
   const workerId = settings.worker.id;
@@ -208,6 +210,8 @@ export function startDaemon(
             }
             // The charter's standing decisions; idle while autonomy is switched off.
             if (!stopping) await autopilot.round();
+            // Last, so a failing scan never holds back the runs already under way.
+            if (!stopping && sentinel !== undefined) await sentinel.round();
           }
           lastError = null;
         } catch (error) {
@@ -250,16 +254,18 @@ export function startAutonomousDaemon(
   options: { readonly workerId?: string } = {},
 ): { readonly daemon: Daemon; readonly close: () => Promise<void> } {
   const stores = openPromotionStores(context, env);
+  const sentinelObserver = openSentinelObserver(context, env);
   const daemon = startDaemon(context, model, {
     autopilot: createAutopilot(context, {
       promote: promoteUnderCharter(stores, options.workerId ?? context.settings.worker.id),
     }),
+    sentinel: createSentinel(context, sentinelObserver.observer),
   });
   return {
     daemon,
     close: async () => {
       await daemon.stop();
-      await stores.close();
+      await Promise.all([stores.close(), sentinelObserver.close()]);
     },
   };
 }

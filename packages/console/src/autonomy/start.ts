@@ -24,6 +24,8 @@ export interface AutonomousStartRequest {
   readonly caseId?: string;
   /** Required with trigger "intake". */
   readonly intakeId?: string;
+  /** Required with trigger "sentinel". */
+  readonly findingId?: string;
   /** Reopens after drift: the enrollment it continues, and why. A new snapshot is taken. */
   readonly reopen?: { readonly of: string; readonly reason: string };
   /** Default: the autopilot of the one charter in force. */
@@ -131,6 +133,7 @@ interface CharteredStart {
   readonly trigger: AutonomyTrigger;
   readonly requestedBy: string;
   readonly intakeId?: string;
+  readonly findingId?: string;
   readonly reopen?: { readonly of: string; readonly reason: string };
   readonly acknowledgeIsolation?: boolean;
 }
@@ -177,6 +180,7 @@ async function startUnderCharter(
     trigger: request.trigger,
     requestedBy: request.requestedBy,
     intakeId: request.intakeId ?? null,
+    findingId: request.findingId ?? null,
     reopenOf: request.reopen?.of ?? null,
     reopenReason: request.reopen?.reason ?? null,
   });

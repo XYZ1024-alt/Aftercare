@@ -90,7 +90,12 @@ async function ensureRoles(client: Client, env: NodeJS.ProcessEnv): Promise<void
     );
   }
 
-  for (const login of [DATABASE_ROLES.executor, DATABASE_ROLES.verifier, DATABASE_ROLES.promoter]) {
+  for (const login of [
+    DATABASE_ROLES.executor,
+    DATABASE_ROLES.verifier,
+    DATABASE_ROLES.promoter,
+    DATABASE_ROLES.sentinel,
+  ]) {
     const role = escapeIdentifier(login.user);
     for (const [setting, value] of Object.entries(EXECUTOR_SESSION_DEFAULTS)) {
       await client.query(

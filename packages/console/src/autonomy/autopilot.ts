@@ -79,7 +79,9 @@ interface Plan {
   readonly action: AutonomyDecisionAction;
   readonly rule: string;
   readonly input: JsonObject;
-  readonly act: () => Promise<{ readonly applied: boolean; readonly outcome: JsonObject }>;
+  readonly act: (
+    decisionId: string,
+  ) => Promise<{ readonly applied: boolean; readonly outcome: JsonObject }>;
   /**
    * The subject of the decision this act needs. When that decision was
    * refused, the act is not carried out: a person is handed this subject
@@ -140,7 +142,7 @@ export function createAutopilot(
     if (decision.status !== 'intent') return null;
     let done: { readonly applied: boolean; readonly outcome: JsonObject };
     try {
-      done = await plan.act();
+      done = await plan.act(decision.decisionId);
     } catch (error) {
       throw new Error(`the autopilot could not carry out "${plan.action}" on ${plan.subject}`, {
         cause: error,
@@ -155,6 +157,8 @@ export function createAutopilot(
   }
 
   const escalation = (
+    enrollment: AutonomyEnrollment,
+    charter: AutonomyCharterRecord,
     subject: string,
     rule: string,
     reason: string,
@@ -164,7 +168,33 @@ export function createAutopilot(
     action: 'escalate',
     rule,
     input: { ...input, reason },
-    act: async () => ({ applied: true, outcome: { handedTo: 'a person', reason } }),
+    act: async (decisionId) => {
+      const { webhookUrl } = charter.body.delivery;
+      const secret = settings.autonomy.deliverySecret;
+      if (webhookUrl === null || secret === null) {
+        return { applied: true, outcome: { handedTo: 'a person', reason } };
+      }
+      const webhook = await sendWebhook({
+        url: webhookUrl,
+        secret,
+        deliveryId: decisionId,
+        payload: {
+          kind: 'escalated',
+          caseId: enrollment.caseId,
+          agentRunId: enrollment.agentRunId,
+          trigger: enrollment.trigger,
+          findingId: enrollment.findingId,
+          subject,
+          rule,
+          reason,
+        },
+        fetch: transport,
+      });
+      return {
+        applied: true,
+        outcome: { handedTo: 'a person', reason, webhook: { ...webhook } },
+      };
+    },
   });
 
   /** Every recorded write of one field of one object, read through the evidence service. */
@@ -243,6 +273,7 @@ export function createAutopilot(
 
   /** What the charter says about one open question. */
   async function planAnswer(
+    enrollment: AutonomyEnrollment,
     charter: AutonomyCharterRecord,
     question: AgentQuestion,
   ): Promise<Plan> {
@@ -349,7 +380,7 @@ export function createAutopilot(
         //              read back. Escalating those would turn every ordinary
         //              movement inside a batch into a question.
         if (verdict.escalated.length > 0) {
-          return escalation(subject, 'incidentRule', reason, input);
+          return escalation(enrollment, charter, subject, 'incidentRule', reason, input);
         }
         if (verdict.confirmed.length > 0) {
           return answering('incidentRule', 'answer', input, {
@@ -365,7 +396,7 @@ export function createAutopilot(
               input,
               `no offered operation matches the incident rule: ${reason}`,
             )
-          : escalation(subject, 'incidentRule', reason, input);
+          : escalation(enrollment, charter, subject, 'incidentRule', reason, input);
       }
       case 'baseline': {
         const snapshotId = body.bound.snapshotId;
@@ -461,17 +492,28 @@ export function createAutopilot(
               acknowledgedUnresolvedDomains: [...body.unresolvedDomains],
               statement: statement('approval'),
             })
-          : escalation(subject, 'approval', verdict.reasons.join('; ').slice(0, 2000), input);
+          : escalation(
+              enrollment,
+              charter,
+              subject,
+              'approval',
+              verdict.reasons.join('; ').slice(0, 2000),
+              input,
+            );
       }
     }
   }
 
-  async function answerQuestions(charter: AutonomyCharterRecord, run: AgentRun): Promise<Plan[]> {
+  async function answerQuestions(
+    enrollment: AutonomyEnrollment,
+    charter: AutonomyCharterRecord,
+    run: AgentRun,
+  ): Promise<Plan[]> {
     const open = (await agentStore.listQuestions(run.agentRunId)).filter(
       (question) => question.state === 'open',
     );
     const plans: Plan[] = [];
-    for (const question of open) plans.push(await planAnswer(charter, question));
+    for (const question of open) plans.push(await planAnswer(enrollment, charter, question));
     return plans;
   }
 
@@ -498,7 +540,7 @@ export function createAutopilot(
     const budget = `budget:${pauseSeq}`;
     const input = { pauseReason: run.statusReason, resumesSoFar: resumes, exhaustedLimit };
     if (verdict.action === 'escalate')
-      return [escalation(pause, 'recovery', verdict.reason, input)];
+      return [escalation(enrollment, charter, pause, 'recovery', verdict.reason, input)];
     const reason = `resumed under the autonomy charter "${charter.body.name}" after "${run.statusReason}"`;
     const resume: Plan = {
       subject: pause,
@@ -584,7 +626,16 @@ export function createAutopilot(
           break;
         case 'refused':
           promotion = { kind: 'refused', reason: step.reason };
-          plans.push(escalation(`promotion:${reportId}`, 'promotion', step.reason, step.detail));
+          plans.push(
+            escalation(
+              enrollment,
+              charter,
+              `promotion:${reportId}`,
+              'promotion',
+              step.reason,
+              step.detail,
+            ),
+          );
           break;
         case 'drift': {
           const reopens = (await autonomy.enrollmentsOfCase(run.caseId)).filter(
@@ -595,6 +646,8 @@ export function createAutopilot(
             promotion = { kind: 'drift', reason: step.reason };
             plans.push(
               escalation(
+                enrollment,
+                charter,
                 `promotion:${reportId}`,
                 'promotion',
                 `${step.reason}; ${verdict.reason}`,
@@ -615,6 +668,7 @@ export function createAutopilot(
                 description: run.description,
                 caseId: run.caseId,
                 ...(enrollment.intakeId === null ? {} : { intakeId: enrollment.intakeId }),
+                ...(enrollment.findingId === null ? {} : { findingId: enrollment.findingId }),
                 reopen: { of: enrollment.enrollmentId, reason: step.reason.slice(0, 2000) },
                 autopilot: charter.autopilotPrincipal,
               });
@@ -635,11 +689,12 @@ export function createAutopilot(
         }
       }
     }
-    plans.push(deliver(charter, run, report, promotion));
+    plans.push(deliver(enrollment, charter, run, report, promotion));
     return plans;
   }
 
   function deliver(
+    enrollment: AutonomyEnrollment,
     charter: AutonomyCharterRecord,
     run: AgentRun,
     report: VerificationReport,
@@ -693,8 +748,11 @@ export function createAutopilot(
           secret,
           deliveryId: report.reportId,
           payload: {
+            kind: 'delivered',
             caseId: run.caseId,
             agentRunId: run.agentRunId,
+            trigger: enrollment.trigger,
+            findingId: enrollment.findingId,
             status: run.status,
             reportId: report.reportId,
             verdict: report.verdict,
@@ -765,7 +823,7 @@ export function createAutopilot(
     charter: AutonomyCharterRecord,
     run: AgentRun,
   ): Promise<Plan[] | null> {
-    if (run.status === 'awaiting_input') return answerQuestions(charter, run);
+    if (run.status === 'awaiting_input') return answerQuestions(enrollment, charter, run);
     if (run.status === 'paused') return recover(enrollment, charter, run);
     if (run.status === 'completed' || run.status === 'partially_resolved') {
       return conclude(enrollment, charter, run);
@@ -773,6 +831,8 @@ export function createAutopilot(
     if (ENDED_WITHOUT_RESULT.has(run.status)) {
       return [
         escalation(
+          enrollment,
+          charter,
           `run:${run.agentRunId}`,
           'run',
           `the run ended as ${run.status} (${run.statusReason ?? 'no reason'}) without a sealed result`,
@@ -816,6 +876,8 @@ export function createAutopilot(
               );
               if (prerequisite?.status === 'refused') {
                 effective = escalation(
+                  enrollment,
+                  charter,
                   plan.subject,
                   plan.rule,
                   `${plan.unlessRefused.reason}: ${refusalText(prerequisite.outcome)}`,

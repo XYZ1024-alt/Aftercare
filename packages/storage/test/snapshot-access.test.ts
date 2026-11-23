@@ -318,6 +318,10 @@ describe('published snapshot: who can do what', () => {
       ['retention_record_file_removal', ['aftercare_runtime']],
       ['retire_autonomy_charter', ['aftercare_authority_admin']],
       ['revoke_confirmation_authority', ['aftercare_authority_admin']],
+      ['sentinel_admit_finding', ['aftercare_runtime']],
+      ['sentinel_advance_cursor', ['aftercare_runtime']],
+      ['sentinel_read_state', ['aftercare_runtime']],
+      ['sentinel_record_block', ['aftercare_runtime']],
       ['set_operator_account', ['aftercare_authority_admin']],
       ['verify_branch_contents', ['aftercare_runtime']],
       ['worker_beat', ['aftercare_runtime']],
@@ -352,6 +356,8 @@ describe('published snapshot: who can do what', () => {
       ['relation_digest', ['aftercare_verifier']],
       ['report_json', ['aftercare_runtime', 'aftercare_verifier']],
       ['run_json', ['aftercare_runtime', 'aftercare_verifier']],
+      ['sentinel_finding_json', ['aftercare_runtime']],
+      ['sentinel_state_json', ['aftercare_runtime']],
       ['snapshot_json', ['aftercare_runtime', 'aftercare_verifier']],
       [
         'source_environment',
@@ -360,6 +366,36 @@ describe('published snapshot: who can do what', () => {
       ['verification_run_json', ['aftercare_runtime', 'aftercare_verifier']],
     ]);
     expect(rows.filter((row) => row.grantees.includes('aftercare_executor'))).toEqual([]);
+  });
+
+  it('lets only the sentinel login observe the source audit, through one pinned definer', async () => {
+    const { rows } = await db.migratorPool.query<{
+      name: string;
+      definer: boolean;
+      config: string[] | null;
+      everyone: boolean;
+      grantees: string[];
+    }>(
+      `SELECT p.proname AS name, p.prosecdef AS definer, p.proconfig AS config,
+              has_function_privilege('public', p.oid, 'EXECUTE') AS everyone,
+              ARRAY(SELECT g.rolname::text FROM pg_roles AS g
+                     WHERE g.rolname LIKE 'aftercare\\_%' AND g.rolname NOT IN ('aftercare_migrator', 'aftercare_test_admin')
+                       AND has_function_privilege(g.oid, p.oid, 'EXECUTE')
+                     ORDER BY g.rolname) AS grantees
+         FROM pg_proc AS p
+        WHERE p.pronamespace = 'aftercare_sentinel'::regnamespace
+        ORDER BY p.proname`,
+    );
+    // The console holds the runtime login: it must not be able to read the source through this.
+    expect(rows).toEqual([
+      {
+        name: 'observe',
+        definer: true,
+        config: ['search_path=pg_catalog, pg_temp'],
+        everyone: false,
+        grantees: ['aftercare_sentinel'],
+      },
+    ]);
   });
 });
 

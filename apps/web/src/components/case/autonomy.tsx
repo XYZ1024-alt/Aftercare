@@ -1,18 +1,21 @@
 'use client';
 
 import type { AutonomyDecision } from '@aftercare/console/client';
-import { Bot } from 'lucide-react';
+import { Bot, Radar } from 'lucide-react';
 import {
   AUTONOMY_ACTION_LABEL,
   AUTONOMY_RULE_LABEL,
   AUTONOMY_STATUS_LABEL,
   AUTONOMY_TRIGGER_LABEL,
+  fieldTitle,
+  fieldValue,
   subjectLabel,
   type Tone,
   when,
   whenShort,
 } from '../../lib/labels.ts';
 import { Card, Empty, Json, Notice, Pill, ROWS_CLASS, Technical } from '../ui.tsx';
+import { UntrustedText } from '../untrusted-text.tsx';
 import { useCase } from './case-context.tsx';
 
 /** A charter that acts for a person: the colour of a pending confirmation. */
@@ -43,6 +46,14 @@ export function AutonomyBadge() {
           {charter === null ? '自主处理' : `自主处理 · ${charter.name} r${charter.revision}`}
         </span>
       </Pill>
+      {enrollment.trigger === 'sentinel' && (
+        <Pill tone="sky" testId="sentinel-badge">
+          <span className="inline-flex items-center gap-1">
+            <Radar aria-hidden className="size-3.5" />
+            哨兵发现
+          </span>
+        </Pill>
+      )}
       {waiting > 0 && (
         <Pill tone="apricot" testId="autonomy-waiting">
           待人工处理 {waiting}
@@ -81,6 +92,35 @@ export function AutonomyDecisions() {
           {when(enrollment.enrolledAt)}
           {enrollment.reopenOf !== null && ` · 重开：${enrollment.reopenReason ?? '未记录原因'}`}
         </p>
+        {autonomy.finding !== null && (
+          <div
+            className="space-y-2 rounded-field border border-line bg-canvas px-3.5 py-3 text-sm"
+            data-testid="sentinel-finding"
+          >
+            <div className="flex flex-wrap items-center gap-2 text-meta text-muted">
+              <Pill tone="sky">哨兵发现</Pill>
+              <span className="font-medium text-ink tabular-nums">
+                提交 #{autonomy.finding.commitSeq}
+              </span>
+              <span>操作人 {autonomy.finding.commitPrincipal}</span>
+              <span className="ml-auto tabular-nums">{when(autonomy.finding.discoveredAt)}</span>
+            </div>
+            <p className="text-ink-soft">
+              <UntrustedText text={autonomy.finding.summary} />
+            </p>
+            <ul className="space-y-1 text-meta text-muted">
+              {autonomy.finding.matchedOperations.map((op) => (
+                <li key={`${op.operationId}-${op.fieldId}`}>
+                  {op.objectType}/{op.objectId} · {fieldTitle(view.registry, op.fieldId)}：
+                  {op.fromValue === null
+                    ? '∅'
+                    : fieldValue(view.registry, op.fieldId, op.fromValue)}{' '}
+                  → {fieldValue(view.registry, op.fieldId, op.toValue)}（{op.operationType}）
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
         {decisions.length === 0 ? (
           <Empty>暂无自主决策记录</Empty>
         ) : (

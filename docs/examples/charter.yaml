@@ -12,7 +12,7 @@
 # approves what it asks for; anything else is handed to a person. The database
 # checks every autopilot record against the charter again (0023_autonomy.sql).
 
-charterFormat: 1
+charterFormat: 2
 name: 定价事故自主处置
 sourceEnvironment: replaced-by-ops
 autopilotPrincipal: autopilot:pricing
@@ -33,13 +33,21 @@ intake:
   acknowledgeDataEgress: true
   limits: {}
 
-# A candidate operation is an incident when every price it wrote moved in this
-# direction by at least this much (basis points: 1500 = 15 %).
-incidentRule:
-  operationTypes: [batch_set_price, set_price]
-  direction: decrease
-  minRelativeChangeBps: 1500
-  onNoMatch: decline # or: escalate
+# Per-field rules: which change is an incident, and what may be approved/promoted.
+fields:
+  product.price_cents:
+    incident:
+      operationTypes: [batch_set_price, set_price]
+      direction: decrease
+      minRelativeChangeBps: 1500
+    approval:
+      maxAbsoluteChange: "20000"
+      maxRelativeChangeBps: 20000
+    promotion:
+      maxAbsoluteChange: "20000"
+      maxRelativeChangeBps: 20000
+
+onNoMatch: decline # or: escalate
 
 baselineRule:
   kind: version_before_first_incident
@@ -54,8 +62,6 @@ clarification:
 # The approval of a sandbox execution, checked against the contract's patch.
 approval:
   maxChangedObjects: 50
-  maxAbsoluteChangeCents: "20000"
-  maxRelativeChangeBps: 20000
   maxUnresolvedDomains: 50
   validForSeconds: 1800
 
@@ -73,11 +79,13 @@ promotion:
   enabled: true
   allowPartial: true
   maxChangedObjects: 50
-  maxAbsoluteChangeCents: "20000"
-  maxRelativeChangeBps: 20000
   maxDriftReopens: 1
 
 delivery:
   produceReport: true
   # Signed with AFTERCARE_DELIVERY_SECRET; null sends nothing.
   webhookUrl: null
+
+sentinel:
+  enabled: true
+  maxConcurrentRuns: 2

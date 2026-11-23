@@ -212,6 +212,7 @@ async function registerCharter(
     },
     promotion,
     delivery: { produceReport: false, webhookUrl: null },
+    sentinel: { enabled: true, maxConcurrentRuns: 2 },
   } satisfies AutonomyCharterInput);
   const text = JSON.stringify(body);
   const digest = createHash('sha256').update(text).digest('hex');

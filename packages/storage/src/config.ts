@@ -68,6 +68,15 @@ export const DATABASE_ROLES = {
     user: 'aftercare_promoter',
     passwordVariable: 'AFTERCARE_PROMOTER_PASSWORD',
   },
+  /**
+   * The sentinel's login: it can call aftercare_sentinel.observe and nothing
+   * else. That entry reads bounded audit commits from the source, excluding
+   * promoter write-backs and already-confirmed incident operations.
+   */
+  sentinel: {
+    user: 'aftercare_sentinel',
+    passwordVariable: 'AFTERCARE_SENTINEL_PASSWORD',
+  },
 } as const satisfies Record<string, LoginRole>;
 
 /**

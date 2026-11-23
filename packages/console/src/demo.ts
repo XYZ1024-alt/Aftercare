@@ -81,7 +81,9 @@ export function demoCharter(sourceEnvironment: string, policyVersionId: string):
       // would never fire on "0 -> N".
       'product.stock_qty': {
         incident: {
-          operationTypes: ['batch_set_stock', 'set_stock'],
+          // Only imports: a single set_stock is a person's recount, which is how
+          // a wrong import gets corrected, and it moves a count just as far.
+          operationTypes: ['batch_set_stock'],
           // A misaligned stocktake moves many counts by a modest amount, so the
           // threshold has to catch a few dozen units: 40 -> 120 (+200%) and
           // 120 -> 85 (-29%, 35 units) are both incidents, while a normal
@@ -122,6 +124,7 @@ export function demoCharter(sourceEnvironment: string, policyVersionId: string):
       maxDriftReopens: 1,
     },
     delivery: { produceReport: true, webhookUrl: null },
+    sentinel: { enabled: true, maxConcurrentRuns: 2 },
   });
 }
 

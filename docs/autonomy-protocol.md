@@ -142,7 +142,7 @@ CodeMode 沙箱与 `run_analysis` 工具见 [packages/agent](../packages/agent/s
 
 ## 4. Autopilot 每一轮
 
-一轮的边界：`workable(limit)` 取出未结算的 enrollment，逐条推进，末尾结算；`startDaemon` 在每轮末尾调用 `autopilot.round()`。
+一轮的边界：`workable(limit)` 取出未结算的 enrollment，逐条推进，末尾结算；`startDaemon` 在每轮末尾调用 `autopilot.round()`，随后（当注入了哨兵观测器时）调用 `sentinel.round()`。
 Autopilot 只处理**已登记**的运行——开案与启动由 `startAutonomousRun` 完成（`trigger` 为 `console` / `intake` / `sentinel`）。
 
 ### 4.1 按运行状态决策
@@ -221,7 +221,7 @@ Autopilot 只处理**已登记**的运行——开案与启动由 `startAutonomo
 
 ## 6. 触发
 
-只有两种入口会把一个案例交给 Autopilot：操作台与告警接入。`sentinel` 在契约枚举、数据库 CHECK 与页面标签里保留，但本阶段没有对应入口——没有调用 `startAutonomousRun({ trigger: 'sentinel' })` 的代码路径。
+三种入口会把一个案例交给 Autopilot：操作台、告警接入与主动巡检（Sentinel）。
 
 ### 6.1 操作台勾选
 
@@ -258,6 +258,17 @@ Autopilot 只处理**已登记**的运行——开案与启动由 `startAutonomo
 | 同键、异摘要 | `key_reused` → 409 `request_key_reused`，不覆盖任何既有 intake                                       |
 
 `dedupeKey` 不按环境或来源分区：`autonomy_intakes.dedupe_key` 在库内 `UNIQUE`，intake 表也没有环境列。格式为 `^[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,199}$`，即 1–200 字符，允许字母、数字与 `_ . : @ / -`，首字符不能是标点。
+
+### 6.3 主动巡检（Sentinel）
+
+worker 在 `startAutonomousDaemon` 中打开专用登录角色 `aftercare_sentinel`（`AFTERCARE_SENTINEL_PASSWORD`，web 进程与 `aftercare_runtime` 不持有该凭证，也不能直接读源库），按章程 `sentinel: { enabled, maxConcurrentRuns }` 自主巡检源库审计流（见 [0027_sentinel.sql](../packages/storage/migrations/0027_sentinel.sql) 与 [sentinel.ts](../packages/console/src/autonomy/sentinel.ts)）：
+
+| 项             | 规则                                                                                                                                                                                                                                                                                                                      |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 检测来源与规则 | `aftercare_sentinel.observe(p_after_commit_seq, p_limit)` 有界读取（最多 200 个提交），在 SQL 中排除 `db_role = 'aftercare_promoter'` 的写回提交及已被未撤销 `incident` 确认覆盖的操作；TS 侧用 `fieldStepsFromAuditImages` + `incidentVerdict(charter.body.fields, candidates)` 确定性判定，不调用模型                   |
+| 游标与去重     | `aftercare_control.sentinel_state` 每环境一行，`last_commit_seq` 从 `0` 单调推进，并记录 `last_scanned_at` 与 `blocked_*`；`aftercare_control.sentinel_findings` 只追加、`commit_seq` 唯一；finding 与案例/运行仅经 `autonomy_enrollments.finding_id` 关联（`CHECK ((trigger = 'sentinel') = (finding_id IS NOT NULL))`） |
+| 限流与停住     | 在途 `trigger = 'sentinel'` 运行数 ≥ 章程 `sentinel.maxConcurrentRuns` 时本轮直接返回、不推进游标；`startAutonomousRun` 被拒时不推进游标并写入 `blockedCode` / `blockedMessage` 供页面展示，下一轮重试成功后清除                                                                                                          |
+| 数据库二次复核 | `autonomy_enroll` 在 `p_trigger = 'sentinel'` 时强制要求 `p_requested_by = 'sentinel'`、`p_finding_id` 非空且章程 `sentinel.enabled = true`，否则以 `AC704`（`outside_charter`）拒绝                                                                                                                                      |
 
 ## 7. 写回源库
 
@@ -354,15 +365,15 @@ Autopilot 只处理**已登记**的运行——开案与启动由 `startAutonomo
 
 交付只发生在写回链路走完（`applied` + 核验非 `mismatch`）之后，或章程关闭写回时发生在报告封存之后。
 
-| 项           | 内容                                                                                                                                                                                                                                                                                                                    |
-| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 报告产物     | `delivery.produceReport` 生成 `verification_report` 产物；内容取自已封存报告（不可变），不是新生成的结论                                                                                                                                                                                                                |
-| 产物状态     | `pending` → `ready` 的既有流程：`register_artefact` 命令登记（`pending`）→ 由封存报告确定性渲染 → 原子写文件（`.partial`、fsync、rename）→ `complete` 命令置 `ready`（记 `contentDigest`、`byteLength`、`fileName`）；写文件失败置 `failed`，崩溃遗留的 `pending` 由 `recover()` 重新结算；下载仍需 `download_artefact` |
-| webhook 触发 | 章程 `deliveryWebhook = true` 且配置了 `AFTERCARE_DELIVERY_SECRET` 时投递                                                                                                                                                                                                                                               |
-| 签名         | `x-aftercare-signature: sha256=<hex(HMAC-SHA256(AFTERCARE_DELIVERY_SECRET, body))>`，`body` 就是发送的 JSON 字符串；另有 `x-aftercare-delivery: <reportId>` 标识一次交付；载荷 `{ caseId, agentRunId, status, reportId, verdict, unresolved[], artefactId, promotion }`                                                 |
-| 重试         | 最多 3 次尝试；每次 10s 超时（`AbortSignal.timeout(10_000)`），非 2xx 与网络错误都算失败；相邻尝试间等 200ms、400ms（`200 × 2^(n-1)`）                                                                                                                                                                                  |
-| 失败语义     | **不阻塞**：交付失败不改变写回结论、不改变运行结束状态；失败不落 `escalate`，只把该 `deliver` 决策结算为 `refused`，原因写进 `outcome`                                                                                                                                                                                  |
-| 记录         | 交付决策记在 `autonomy_decisions`（规则 `delivery`），`outcome` 含产物与投递结果                                                                                                                                                                                                                                        |
+| 项           | 内容                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 报告产物     | `delivery.produceReport` 生成 `verification_report` 产物；内容取自已封存报告（不可变），不是新生成的结论                                                                                                                                                                                                                                                                                                                                                                  |
+| 产物状态     | `pending` → `ready` 的既有流程：`register_artefact` 命令登记（`pending`）→ 由封存报告确定性渲染 → 原子写文件（`.partial`、fsync、rename）→ `complete` 命令置 `ready`（记 `contentDigest`、`byteLength`、`fileName`）；写文件失败置 `failed`，崩溃遗留的 `pending` 由 `recover()` 重新结算；下载仍需 `download_artefact`                                                                                                                                                   |
+| webhook 触发 | 章程 `deliveryWebhook = true` 且配置了 `AFTERCARE_DELIVERY_SECRET` 时投递                                                                                                                                                                                                                                                                                                                                                                                                 |
+| 签名         | `x-aftercare-signature: sha256=<hex(HMAC-SHA256(AFTERCARE_DELIVERY_SECRET, body))>`，`body` 就是发送的 JSON 字符串；另有 `x-aftercare-delivery: <reportId 或 decisionId>` 标识一次交付；`deliver` 载荷 `{ kind: 'delivered', caseId, agentRunId, trigger, findingId, status, reportId, verdict, unresolved[], artefactId, promotion }`；`escalate` 在配置了 webhook 与密钥时亦投递 `{ kind: 'escalated', caseId, agentRunId, trigger, findingId, subject, rule, reason }` |
+| 重试         | 最多 3 次尝试；每次 10s 超时（`AbortSignal.timeout(10_000)`），非 2xx 与网络错误都算失败；相邻尝试间等 200ms、400ms（`200 × 2^(n-1)`）                                                                                                                                                                                                                                                                                                                                    |
+| 失败语义     | **不阻塞**：交付失败不改变写回结论、不改变运行结束状态，也不改变 `escalate` 决策的 `applied` 结论；`deliver` 失败只结算为 `refused` 并记入 `outcome`，`escalate` 失败记录在 `outcome.webhook`                                                                                                                                                                                                                                                                             |
+| 记录         | 交付决策记在 `autonomy_decisions`（规则 `delivery`），`outcome` 含产物与投递结果                                                                                                                                                                                                                                                                                                                                                                                          |
 
 交付不是“业务已完成”的声明：它交付的是一份带摘要的报告与核验结论；未决域与人已批准的范围在报告里逐项列明。
 
@@ -446,11 +457,12 @@ Autopilot 只处理**已登记**的运行——开案与启动由 `startAutonomo
 
 ### 10.3 新增环境变量
 
-| 变量                          | 用途                                        | 缺省时                                  |
-| ----------------------------- | ------------------------------------------- | --------------------------------------- |
-| `AFTERCARE_INTAKE_SECRET`     | `POST /api/intake` 的 HMAC 密钥（≥16 字符） | 端点返回 404                            |
-| `AFTERCARE_DELIVERY_SECRET`   | 交付 webhook 的 HMAC 密钥（≥16 字符）       | 不投递 webhook                          |
-| `AFTERCARE_PROMOTER_PASSWORD` | `aftercare_promoter` 登录角色密码           | worker 无法打开 promoter 池，写回不可用 |
+| 变量                          | 用途                                        | 缺省时                                          |
+| ----------------------------- | ------------------------------------------- | ----------------------------------------------- |
+| `AFTERCARE_INTAKE_SECRET`     | `POST /api/intake` 的 HMAC 密钥（≥16 字符） | 端点返回 404                                    |
+| `AFTERCARE_DELIVERY_SECRET`   | 交付 webhook 的 HMAC 密钥（≥16 字符）       | 不投递 webhook                                  |
+| `AFTERCARE_PROMOTER_PASSWORD` | `aftercare_promoter` 登录角色密码           | worker 无法打开 promoter 池，写回不可用         |
+| `AFTERCARE_SENTINEL_PASSWORD` | `aftercare_sentinel` 登录角色密码           | worker 无法打开 sentinel 观测池，主动巡检不可用 |
 
 ### 10.4 升级步骤
 
@@ -470,24 +482,24 @@ Autopilot 只处理**已登记**的运行——开案与启动由 `startAutonomo
 
 数据库码与拒绝码是两层：数据库码指认“哪条强制拒绝”，拒绝码是 TypeScript 与页面看到的稳定取值。除特别说明外，HTTP 状态均按“其余拒绝”= 409。
 
-| 码            | 含义                                                             | 出现位置                        | 拒绝码 / HTTP                                                         |
-| ------------- | ---------------------------------------------------------------- | ------------------------------- | --------------------------------------------------------------------- |
-| AC201         | 请求或身份绑定不合法（`autopilot:` ⇔ `autonomy-charter`）        | 触发器等入口                    | `invalid_request` / 409                                               |
-| AC202         | 引用不属于该案例（报告、目标、证据）                             | 批准、写回                      | `reference_rejected` / 409                                            |
-| AC301         | 缺能力（如 `promote_repair`）                                    | 批准、写回                      | `not_authorized` / 409                                                |
-| AC513         | 实现内部不一致                                                   | 编译器/守卫                     | `implementation_defect` / 409                                         |
-| AC009         | 源库版本漂移（守卫入口抛出，DETAIL 为漂移 JSON）                 | 写回内部                        | 不在外抛出：捕获为 `drift_refused`                                    |
-| AC701         | 开关关闭                                                         | 二次强制                        | `outside_charter` / 409                                               |
-| AC702         | 无在用章程                                                       | 二次强制                        | `outside_charter` / 409                                               |
-| AC703         | 能力未被委托                                                     | 二次强制                        | `outside_charter` / 409                                               |
-| AC704         | 执行批准越出包络，或确认/声明/追加预算越出章程                   | 二次强制触发器                  | `outside_charter` / 409                                               |
-| AC705         | 写回越出章程包络                                                 | `approve_promotion` / `promote` | 写回入口 `outside_charter_envelope`，其他入口 `outside_charter` / 409 |
-| AC731         | 报告不可写回（失效、未封存、摘要不符、结论不允许、未决域不一致） | 写回                            | `report_not_promotable` / 409                                         |
-| AC732         | 批准无效（过期、撤销、目标不符）                                 | 写回                            | `approval_not_valid` / 409                                            |
-| AC733         | 已写回                                                           | 写回                            | `already_promoted` / 409                                              |
-| AC734         | `promotionId` 或 `approvalId` 已属于另一条记录                   | 批准、写回                      | `promotion_conflict` / 409                                            |
-| AC735         | 部署保持                                                         | 写回                            | `deployment_on_hold` / 409                                            |
-| 55P03 / 57014 | 锁等待或语句超时                                                 | 写回                            | `timeout` / 409                                                       |
+| 码            | 含义                                                             | 出现位置                           | 拒绝码 / HTTP                                                         |
+| ------------- | ---------------------------------------------------------------- | ---------------------------------- | --------------------------------------------------------------------- |
+| AC201         | 请求或身份绑定不合法（`autopilot:` ⇔ `autonomy-charter`）        | 触发器等入口                       | `invalid_request` / 409                                               |
+| AC202         | 引用不属于该案例（报告、目标、证据）                             | 批准、写回                         | `reference_rejected` / 409                                            |
+| AC301         | 缺能力（如 `promote_repair`）                                    | 批准、写回                         | `not_authorized` / 409                                                |
+| AC513         | 实现内部不一致                                                   | 编译器/守卫                        | `implementation_defect` / 409                                         |
+| AC009         | 源库版本漂移（守卫入口抛出，DETAIL 为漂移 JSON）                 | 写回内部                           | 不在外抛出：捕获为 `drift_refused`                                    |
+| AC701         | 开关关闭                                                         | 二次强制                           | `outside_charter` / 409                                               |
+| AC702         | 无在用章程                                                       | 二次强制                           | `outside_charter` / 409                                               |
+| AC703         | 能力未被委托                                                     | 二次强制                           | `outside_charter` / 409                                               |
+| AC704         | 执行批准越出包络，或确认/声明/追加预算/哨兵登记越出章程          | 二次强制触发器 / `autonomy_enroll` | `outside_charter` / 409                                               |
+| AC705         | 写回越出章程包络                                                 | `approve_promotion` / `promote`    | 写回入口 `outside_charter_envelope`，其他入口 `outside_charter` / 409 |
+| AC731         | 报告不可写回（失效、未封存、摘要不符、结论不允许、未决域不一致） | 写回                               | `report_not_promotable` / 409                                         |
+| AC732         | 批准无效（过期、撤销、目标不符）                                 | 写回                               | `approval_not_valid` / 409                                            |
+| AC733         | 已写回                                                           | 写回                               | `already_promoted` / 409                                              |
+| AC734         | `promotionId` 或 `approvalId` 已属于另一条记录                   | 批准、写回                         | `promotion_conflict` / 409                                            |
+| AC735         | 部署保持                                                         | 写回                               | `deployment_on_hold` / 409                                            |
+| 55P03 / 57014 | 锁等待或语句超时                                                 | 写回                               | `timeout` / 409                                                       |
 
 写回入口（`approve_promotion` / `promote`）把 AC701 / AC702 / AC703 / AC705 分别映射为
 `autonomy_switched_off` / `no_charter_in_force` / `capability_not_delegated` / `outside_charter_envelope`（见 7.6）；其余入口映射为 `outside_charter`。
@@ -522,4 +534,5 @@ Autopilot 只处理**已登记**的运行——开案与启动由 `startAutonomo
 - **仅本地单库单租户。** 没有多租户隔离、没有生产连接、没有跨库写回；“源库”就是本地同一套环境里的源 schema。
 - **写回不自动撤销。** `applied` 之后不会自动回滚；撤销需人工走 Stage 6 的受控撤销路径，并重新验证、重新封存。
 - **评测样本小。** 自主运行的端到端评测样例数量有限，一次运行成功不代表稳定性；判定靠重复运行与逐条决策记录，而非单次结果。
-- **交付是通知，不是结论。** 报告产物与 webhook 只是把已封存报告送到人手上，不改变任何状态。
+- **交付是通知，不是结论。** 报告产物与 webhook 只是把已封存报告或升级通知送到人手上，不改变任何状态。
+- **检测精度取决于章程阈值。** 哨兵只按章程事故规则确定性触发；人工纠正若使用同一规则范围内的操作类型且同样越过阈值，也会被当成事故触发巡检。

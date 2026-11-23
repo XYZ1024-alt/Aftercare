@@ -16,6 +16,7 @@ import {
 import Link from 'next/link';
 import type { ReactNode } from 'react';
 import { HBars, Legend, type Slot, StackedBars } from '../../components/charts.tsx';
+import { SentinelCard } from '../../components/sentinel-card.tsx';
 import {
   ButtonLink,
   Card,
@@ -346,9 +347,15 @@ export default function OverviewPage() {
               />
             </Card>
           </div>
-          <div style={stagger(5)} className="t-enter grid grid-cols-2 gap-5 max-lg:grid-cols-1">
+          <div
+            style={stagger(5)}
+            className="t-enter mb-5 grid grid-cols-2 gap-5 max-lg:grid-cols-1"
+          >
             <Tasks rows={rows} />
             <Recent rows={rows} />
+          </div>
+          <div style={stagger(6)} className="t-enter">
+            <SentinelCard />
           </div>
         </>
       )}

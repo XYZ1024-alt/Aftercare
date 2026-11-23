@@ -79,7 +79,15 @@ const listCasesTool = defineAssistantTool({
       .describe('Maximum number of cases to return, newest first.'),
   }),
   run: async (args, scope) => {
-    const rows = await scope.context.environment.operations.listCases(CASE_LIST_LIMIT);
+    const [rows, recentFindings] = await Promise.all([
+      scope.context.environment.operations.listCases(CASE_LIST_LIMIT),
+      scope.context.autonomy.recentSentinelFindings(30),
+    ]);
+    const findingByCaseId = new Map(
+      recentFindings.flatMap((entry) =>
+        entry.caseId === null ? [] : [[entry.caseId, entry.finding] as const],
+      ),
+    );
     const matches = (row: CaseOverview): boolean => {
       if (args.filter === 'all') {
         return true;
@@ -91,20 +99,25 @@ const listCasesTool = defineAssistantTool({
     };
     const matched = rows.filter(matches);
     const shown = matched.slice(0, args.limit);
-    const view = (row: CaseOverview): JsonObject => ({
-      caseId: row.caseId,
-      title: titleOf(row),
-      stage: overviewStage(row),
-      openQuestions: row.openQuestions,
-      openedAt: row.openedAt,
-      updatedAt: row.agentRun?.updatedAt ?? row.lastEvent?.recordedAt ?? row.openedAt,
-      runStatus: row.agentRun?.status ?? null,
-      statusReason: row.agentRun?.statusReason ?? null,
-      latestReport:
-        row.latestReport === null
-          ? null
-          : { verdict: row.latestReport.verdict, validity: row.latestReport.validity },
-    });
+    const view = (row: CaseOverview): JsonObject => {
+      const finding = findingByCaseId.get(row.caseId);
+      return {
+        caseId: row.caseId,
+        title: titleOf(row),
+        stage: overviewStage(row),
+        openQuestions: row.openQuestions,
+        openedAt: row.openedAt,
+        updatedAt: row.agentRun?.updatedAt ?? row.lastEvent?.recordedAt ?? row.openedAt,
+        runStatus: row.agentRun?.status ?? null,
+        statusReason: row.agentRun?.statusReason ?? null,
+        // Set only for a case the sentinel opened; read_case gives the trigger of any case.
+        sentinelFinding: finding?.summary ?? null,
+        latestReport:
+          row.latestReport === null
+            ? null
+            : { verdict: row.latestReport.verdict, validity: row.latestReport.validity },
+      };
+    };
     return {
       ok: true,
       result: { total: matched.length, shown: shown.length, cases: shown.map(view) },
@@ -130,6 +143,8 @@ const readCaseTool = defineAssistantTool({
       });
     }
     const { overview } = view;
+    const latestEnrollment = view.autonomy.enrollments.at(-1) ?? null;
+    const finding = view.autonomy.finding;
     return {
       ok: true,
       result: {
@@ -144,6 +159,26 @@ const readCaseTool = defineAssistantTool({
           appliedUnverified: view.stage.appliedUnverified,
         },
         autonomous: view.autonomy.enrollments.length > 0,
+        trigger: latestEnrollment?.trigger ?? null,
+        finding:
+          finding === null
+            ? null
+            : {
+                findingId: finding.findingId,
+                commitSeq: finding.commitSeq,
+                commitPrincipal: finding.commitPrincipal,
+                summary: finding.summary,
+                matchedOperations: finding.matchedOperations.map((op) => ({
+                  operationId: op.operationId,
+                  operationType: op.operationType,
+                  objectType: op.objectType,
+                  objectId: op.objectId,
+                  fieldId: op.fieldId,
+                  fromValue: op.fromValue,
+                  toValue: op.toValue,
+                })),
+                discoveredAt: finding.discoveredAt,
+              },
         run:
           view.run === null
             ? null

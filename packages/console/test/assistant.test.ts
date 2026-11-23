@@ -1,7 +1,11 @@
 import { createServer, type Server } from 'node:http';
 import { type FiveProducts, fiveProducts } from '@aftercare/agent/testing';
+import { CONSOLE_IDENTITY_SOURCE, type OperatorSession } from '@aftercare/contracts';
 import { recreateTestDatabase } from '@aftercare/storage/testing';
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { z } from 'zod';
+import type { AssistantScope } from '../src/assistant/registry.ts';
+import { assistantTools } from '../src/assistant/tools.ts';
 import { extractAssistantUi } from '../src/assistant/ui-parser.ts';
 import type {
   AssistantConversation,
@@ -10,7 +14,7 @@ import type {
   AssistantMessage,
   AssistantStreamEvent,
 } from '../src/index.ts';
-import { CSRF_HEADER } from '../src/index.ts';
+import { CSRF_HEADER, createActions, startAutonomousRun } from '../src/index.ts';
 import {
   type ConsoleClient,
   type ConsoleHarness,
@@ -543,6 +547,99 @@ describe('the stored conversations of the console assistant', () => {
       await live?.close();
       await new Promise<void>((resolve, reject) => {
         catalogServer.close((error) => (error === undefined ? resolve() : reject(error)));
+      });
+    }
+  });
+
+  it('exposes sentinel trigger and finding on read_case and list_cases', async () => {
+    const charter = await registerCharter(c, scenario.policy.policyVersionId);
+    const firstIncidentOp = scenario.incident.a;
+    if (firstIncidentOp === undefined) throw new Error('missing scenario incident op');
+    const admitted = await c.context.autonomy.admitSentinelFinding({
+      commitSeq: '6',
+      commitPrincipal: 'sim:import-job',
+      committedAt: new Date().toISOString(),
+      charterId: charter.charterId,
+      charterRevision: charter.revision,
+      summary: '哨兵巡检在提交 #6 发现异常降价',
+      matchedOperations: [
+        {
+          operationId: firstIncidentOp,
+          operationType: 'batch_set_price',
+          objectType: 'product',
+          objectId: 'a',
+          fieldId: 'product.price_cents',
+          fromValue: '10000',
+          toValue: '8000',
+        },
+      ],
+    });
+    const started = await startAutonomousRun(c.context, {
+      trigger: 'sentinel',
+      requestedBy: 'sentinel',
+      description: admitted.finding.summary,
+      findingId: admitted.finding.findingId,
+      autopilot: charter.autopilotPrincipal,
+    });
+    if (!started.ok) throw new Error(started.refusal.message);
+
+    const operator = await c.signIn(OPERATOR.principal);
+    const operatorSession: OperatorSession = {
+      sessionId: crypto.randomUUID(),
+      principal: operator.session.session.principal,
+      displayName: operator.session.session.displayName,
+      identitySource: CONSOLE_IDENTITY_SOURCE,
+      createdAt: new Date().toISOString(),
+      expiresAt: operator.session.session.expiresAt,
+      capabilities: operator.session.session.capabilities,
+    };
+    const scope: AssistantScope = {
+      context: c.context,
+      env: process.env,
+      session: operatorSession,
+      actions: createActions(c.context, operatorSession),
+      acknowledgeDataEgress: true,
+      turnId: crypto.randomUUID(),
+      signal: new AbortController().signal,
+    };
+
+    const listTool = assistantTools.find((tool) => tool.name === 'list_cases');
+    const readTool = assistantTools.find((tool) => tool.name === 'read_case');
+    if (listTool === undefined || readTool === undefined) {
+      throw new Error('missing list_cases or read_case tool');
+    }
+
+    const listed = await listTool.call(
+      JSON.stringify({ filter: 'all', limit: 10 }),
+      scope,
+      'call-1',
+    );
+    expect(listed.ok).toBe(true);
+    if (listed.ok) {
+      const cases = z
+        .array(
+          z.looseObject({
+            caseId: z.string(),
+            sentinelFinding: z.string().nullable(),
+          }),
+        )
+        .parse(listed.result.cases);
+      const match = cases.find((item) => item.caseId === started.value.caseId);
+      expect(match?.sentinelFinding).toBe(admitted.finding.summary);
+    }
+
+    const read = await readTool.call(
+      JSON.stringify({ caseId: started.value.caseId }),
+      scope,
+      'call-2',
+    );
+    expect(read.ok).toBe(true);
+    if (read.ok) {
+      expect(read.result.trigger).toBe('sentinel');
+      expect(read.result.finding).toMatchObject({
+        findingId: admitted.finding.findingId,
+        commitSeq: '6',
+        summary: admitted.finding.summary,
       });
     }
   });

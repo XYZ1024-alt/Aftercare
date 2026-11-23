@@ -4,5 +4,6 @@ export * from './delivery.ts';
 export * from './promote.ts';
 export * from './promotion.ts';
 export * from './rules.ts';
+export * from './sentinel.ts';
 export * from './signature.ts';
 export * from './start.ts';

@@ -19,6 +19,7 @@
     "demo:case": "pnpm --filter @aftercare/repair run demo:case",
     "demo:execution": "pnpm --filter @aftercare/execution run demo",
     "demo:autonomous": "pnpm --filter @aftercare/console run demo:autonomous",
+    "demo:sentinel": "pnpm --filter @aftercare/console run demo:sentinel",
     "dev:web": "pnpm --filter @aftercare/web run dev",
     "dev:worker": "pnpm --filter @aftercare/worker run start",
     "typecheck": "tsc -p tsconfig.json && pnpm -r run typecheck",

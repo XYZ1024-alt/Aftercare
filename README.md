@@ -17,9 +17,9 @@
 | 6    | 独立验证、原子封存、受控产物与 SQL 导出、后继分支与受保护撤销                                                                  | [verification-protocol.md](docs/verification-protocol.md)                            |
 | 7    | 单 Agent 自主调查循环：OpenAI 兼容模型适配器、类型化工具、持久化运行、问题与回答、反例驱动的重新规划                           | [agent-protocol.md](docs/agent-protocol.md)                                          |
 | 8    | Next.js 操作台、本地账号与会话、CSRF 与请求幂等、SSE 增量更新、worker 守护进程、健康检查与指标、备份与隔离恢复演练、保留与清理 | [console-protocol.md](docs/console-protocol.md)、[operations.md](docs/operations.md) |
-| 9    | 自主章程与确定性 Autopilot、签名告警接入、写回源库、交付、CodeMode（模型在 QuickJS 沙箱中编排只读取证）                        | [autonomy-protocol.md](docs/autonomy-protocol.md)                                    |
+| 9    | 自主章程与确定性 Autopilot、签名告警接入、主动巡检（Sentinel）、写回源库、交付、CodeMode（模型在 QuickJS 沙箱中编排只读取证） | [autonomy-protocol.md](docs/autonomy-protocol.md)                                    |
 
-**尚未实现**：生产连接（写回只针对本地单库的源业务表）、写回的自动撤销、任意 SQL 修复、任意数据库恢复、通用补偿引擎、第二个业务域、主动巡检（sentinel）入口、外部身份源与多因素认证、WAL 归档与跨机器恢复。
+**尚未实现**：生产连接（写回只针对本地单库的源业务表）、写回的自动撤销、任意 SQL 修复、任意数据库恢复、通用补偿引擎、第二个业务域、外部身份源与多因素认证、WAL 归档与跨机器恢复。
 
 - `verified` / `sealed` 只表示确定性修复在沙箱分支上的执行符合契约与强制不变量，并由独立验证器在封存事务内重核；业务适当性只依赖有权人的批准，验证器不替人判断。
 - 运行能否以 `completed` / `partially_resolved` 结束，由数据库依据封存报告判定，不由模型决定。
@@ -62,7 +62,7 @@
 需要 Node.js ≥ 22.12、pnpm、Docker（含 Compose）。
 
 ```bash
-cp .env.example .env        # 然后修改其中的密码
+cp .env.example .env        # 然后修改其中的密码（含 AFTERCARE_SENTINEL_PASSWORD 等角色密码）
 pnpm install
 pnpm db:up                  # 启动 PostgreSQL 17（127.0.0.1:55432）
 pnpm db:bootstrap           # 用超级用户创建非特权角色与 dev/test 两个库（可重复运行）
@@ -72,6 +72,7 @@ pnpm ops account:set <principal> --name <名字> --grant <能力,...>   # 操作
 pnpm dev:web                # http://127.0.0.1:3100 ；存活 /api/health/live ，就绪 /api/health/ready
 pnpm dev:worker             # 需要 AFTERCARE_MODEL_*；或 AFTERCARE_MODEL_MODE=scripted_test（测试替身，页面会标注）
 pnpm demo:autonomous        # 第九阶段：一条签名告警从开案走到写回与交付（只作用于登记过的演示库）
+pnpm demo:sentinel          # 第九阶段：业务写入 → 哨兵自主发现 → 修复写回与交付（只作用于登记过的演示库）
 ```
 
 演示环境（只作用于登记过的本地开发库）：`pnpm ops demo:register --confirm aftercare_dev && pnpm ops demo:init`，输出账号与一次性密码。
@@ -111,6 +112,7 @@ pnpm test:e2e               # 首次需 pnpm exec playwright install chromium
 | `pnpm demo:verify`     | 独立验证 → 封存 → 受控产物 → 后继分支与撤销 → 证据变化使报告失效                |
 | `pnpm demo:agent`      | 模糊事故 → 自主取证 → 业务澄清 → 明确批准 → 沙箱执行 → 独立验证                 |
 | `pnpm demo:autonomous` | 签名告警 → Autopilot 按章程代答与批准 → 写回源库与核验 → 交付（需先登记演示库） |
+| `pnpm demo:sentinel`   | 业务写入 → 哨兵巡检发现 → 自主开案修复 → 写回源库与核验 → 交付（需先登记演示库） |
 
 ## 保证与前提
 

@@ -186,6 +186,10 @@ export const autonomyCharterSchema = z
       /** Signed with AFTERCARE_DELIVERY_SECRET; the secret is never part of a charter. */
       webhookUrl: z.url({ protocol: /^https?$/ }).nullable(),
     }),
+    sentinel: z.strictObject({
+      enabled: z.boolean(),
+      maxConcurrentRuns: z.number().int().min(1).max(20),
+    }),
   })
   .superRefine((charter, issues) => {
     const delegated = new Set<string>(charter.delegated);
@@ -257,11 +261,59 @@ export const autonomyEnrollmentSchema = z.strictObject({
   requestedBy: principalSchema,
   identitySource: z.string(),
   intakeId: z.uuid().nullable(),
+  findingId: z.uuid().nullable(),
   reopenOf: z.uuid().nullable(),
   reopenReason: z.string().nullable(),
   enrolledAt: instantSchema,
 });
 export type AutonomyEnrollment = z.output<typeof autonomyEnrollmentSchema>;
+
+export const sentinelMatchedOperationSchema = z.strictObject({
+  operationId: z.uuid(),
+  operationType: z.string(),
+  objectType: z.string(),
+  objectId: z.string(),
+  fieldId: fieldIdSchema,
+  fromValue: int64TextSchema.nullable(),
+  toValue: int64TextSchema,
+});
+export type SentinelMatchedOperation = z.output<typeof sentinelMatchedOperationSchema>;
+
+export const sentinelFindingSchema = z.strictObject({
+  findingId: z.uuid(),
+  commitSeq: int64TextSchema,
+  commitPrincipal: z.string(),
+  committedAt: instantSchema,
+  charterId: z.uuid(),
+  charterRevision: z.number().int().min(1),
+  summary: z.string(),
+  matchedOperations: z.array(sentinelMatchedOperationSchema).min(1),
+  discoveredAt: instantSchema,
+});
+export type SentinelFinding = z.output<typeof sentinelFindingSchema>;
+
+export const sentinelStateSchema = z.strictObject({
+  lastCommitSeq: int64TextSchema,
+  lastScannedAt: instantSchema.nullable(),
+  blockedCode: z.string().nullable(),
+  blockedMessage: z.string().nullable(),
+  blockedAt: instantSchema.nullable(),
+});
+export type SentinelState = z.output<typeof sentinelStateSchema>;
+
+export const sentinelFindingViewSchema = z.strictObject({
+  finding: sentinelFindingSchema,
+  caseId: z.uuid().nullable(),
+  agentRunId: z.uuid().nullable(),
+  runStatus: z.string().nullable(),
+});
+export type SentinelFindingView = z.output<typeof sentinelFindingViewSchema>;
+
+export const sentinelStatusSchema = z.strictObject({
+  state: sentinelStateSchema,
+  recentFindings: z.array(sentinelFindingViewSchema),
+});
+export type SentinelStatus = z.output<typeof sentinelStatusSchema>;
 
 /** What one autopilot decision did. "escalate" hands the subject to a person. */
 export const AUTONOMY_DECISION_ACTIONS = [
@@ -321,6 +373,7 @@ export const autonomyCharterSummarySchema = z.strictObject({
   approval: autonomyCharterSchema.shape.approval,
   promotion: z.strictObject({ enabled: z.boolean(), allowPartial: z.boolean() }),
   deliveryWebhook: z.boolean(),
+  sentinel: autonomyCharterSchema.shape.sentinel,
 });
 export type AutonomyCharterSummary = z.output<typeof autonomyCharterSummarySchema>;
 
@@ -328,6 +381,7 @@ export const autonomyStatusSchema = z.strictObject({
   switch: autonomySwitchSchema,
   /** The charters in force in this environment (one per autopilot principal). */
   charters: z.array(autonomyCharterSummarySchema),
+  sentinel: sentinelStatusSchema,
 });
 export type AutonomyStatus = z.output<typeof autonomyStatusSchema>;
 
@@ -341,6 +395,7 @@ export const autonomyCaseViewSchema = z.strictObject({
     z.strictObject({ decision: autonomyDecisionSchema, open: z.boolean(), reason: z.string() }),
   ),
   switch: autonomySwitchSchema,
+  finding: sentinelFindingSchema.nullable(),
 });
 export type AutonomyCaseView = z.output<typeof autonomyCaseViewSchema>;
 
@@ -359,5 +414,6 @@ export function charterSummary(record: AutonomyCharterRecord): AutonomyCharterSu
     approval: body.approval,
     promotion: { enabled: body.promotion.enabled, allowPartial: body.promotion.allowPartial },
     deliveryWebhook: body.delivery.webhookUrl !== null,
+    sentinel: body.sentinel,
   };
 }

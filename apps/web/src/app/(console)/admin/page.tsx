@@ -27,6 +27,7 @@ import { type ReactNode, useState } from 'react';
 import useSWR from 'swr';
 import { HBars } from '../../../components/charts.tsx';
 import { ConfirmDialog } from '../../../components/overlay.tsx';
+import { SentinelCard } from '../../../components/sentinel-card.tsx';
 import {
   Button,
   Card,
@@ -384,6 +385,7 @@ export default function AdminPage() {
         </div>
 
         <AutonomyCard />
+        <SentinelCard limit={10} />
 
         <div className="grid grid-cols-2 gap-4 max-lg:grid-cols-1">
           <Card title="Worker" icon={HeartPulse} tone="mint">

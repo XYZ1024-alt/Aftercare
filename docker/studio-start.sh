@@ -46,7 +46,8 @@ for variable in \
   AFTERCARE_TEST_ADMIN_PASSWORD \
   AFTERCARE_EXECUTOR_PASSWORD \
   AFTERCARE_VERIFIER_PASSWORD \
-  AFTERCARE_PROMOTER_PASSWORD
+  AFTERCARE_PROMOTER_PASSWORD \
+  AFTERCARE_SENTINEL_PASSWORD
 do
   if [ -z "$(printenv "$variable" || true)" ]; then
     fail "missing required variable $variable (set it in the Studio settings)"

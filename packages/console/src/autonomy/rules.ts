@@ -1,4 +1,10 @@
 import type { AgentLimits, AutonomyCharter } from '@aftercare/contracts';
+import {
+  DEFAULT_REGISTRY,
+  type DomainRegistry,
+  type JsonObject,
+  parseFieldValue,
+} from '@aftercare/domain';
 
 // The charter's rules as pure functions over observed values. They decide;
 // they do not read or write anything. Every verdict carries the reasons a
@@ -366,6 +372,57 @@ export function recoveryVerdict(
     };
   }
   return { action: 'top_up', limits: next };
+}
+
+export interface AuditOperationWrite {
+  readonly objectType: string;
+  readonly objectId: string;
+  readonly field: string;
+}
+
+export interface AuditOperationImages {
+  readonly operationType: string;
+  readonly beforeState: JsonObject | null;
+  readonly afterState: JsonObject;
+  readonly writes: readonly AuditOperationWrite[];
+}
+
+export interface AuditFieldStep extends FieldStep {
+  readonly objectType: string;
+  readonly objectId: string;
+}
+
+/**
+ * Turns the before/after object images of one audited operation into typed
+ * FieldSteps using the domain registry, so sentinel and tests share the same
+ * value decoding and column-to-fieldId mapping as incidentVerdict.
+ */
+export function fieldStepsFromAuditImages(
+  operation: AuditOperationImages,
+  registry: DomainRegistry = DEFAULT_REGISTRY,
+): AuditFieldStep[] {
+  const steps: AuditFieldStep[] = [];
+  for (const write of operation.writes) {
+    const field = registry.fields.find(
+      (entry) => entry.objectType === write.objectType && entry.column === write.field,
+    );
+    if (field === undefined) continue;
+    const afterRaw = operation.afterState[field.column];
+    if (typeof afterRaw !== 'string') continue;
+    const parsedAfter = parseFieldValue(field, afterRaw);
+    if (!parsedAfter.ok) continue;
+    const beforeRaw = operation.beforeState?.[field.column];
+    const parsedBefore = typeof beforeRaw === 'string' ? parseFieldValue(field, beforeRaw) : null;
+    steps.push({
+      objectType: write.objectType,
+      objectId: write.objectId,
+      fieldId: field.fieldId,
+      operationType: operation.operationType,
+      fromValue: parsedBefore?.ok === true ? parsedBefore.value : null,
+      toValue: parsedAfter.value,
+    });
+  }
+  return steps;
 }
 
 /** Whether a promotion refused because the source moved on may reopen the investigation on a new snapshot. */

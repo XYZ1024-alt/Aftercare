@@ -139,7 +139,10 @@ pnpm db:up && pnpm db:bootstrap
 pnpm ops demo:register --confirm aftercare_dev                          # 首次
 pnpm ops demo:reset --confirm aftercare_dev && pnpm ops demo:init      # 账号、策略、演示章程、业务活动
 pnpm demo:autonomous                     # 真实模型；--scripted 用测试替身（输出中标明）
+pnpm demo:sentinel                       # 主动巡检：正常业务零误报 → 事故自主发现修复写回
 ```
+
+`demo:sentinel` 在演示库上先写入正常业务活动（`seasonal-markdown`，零误报推进游标），再写入事故场景（默认 `price-yuan-as-cents`，可用 `--scenario` 指定），不调用任何开案 API 或 `/api/intake`；启动 `startAutonomousDaemon` 后按时间线打印哨兵巡检、发现、自主开案、Autopilot 决策、写回核验与交付，并在末尾打印写回前后对比表。
 
 脚本在演示库上写入新一批业务活动，以签名告警（`POST /api/intake`）开案，在进程内启动与 worker 相同的组装（Autopilot、写回与核验），
 逐行打印模型事件、Autopilot 决策、写回与核验，最后打印总结：问题由谁回答、决策计数、升级、报告结论与未决域、写回目标表、用量。全程没有人作答。

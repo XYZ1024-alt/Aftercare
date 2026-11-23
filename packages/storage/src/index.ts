@@ -11,6 +11,7 @@ export * from './operations-store.ts';
 export * from './pool.ts';
 export * from './promotion-store.ts';
 export * from './repair-store.ts';
+export * from './sentinel-store.ts';
 export * from './snapshot-manager.ts';
 export * from './snapshot-reader.ts';
 export * from './transaction.ts';

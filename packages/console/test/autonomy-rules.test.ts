@@ -5,6 +5,7 @@ import {
   approvalVerdict,
   baselineVerdict,
   driftReopenDecision,
+  fieldStepsFromAuditImages,
   incidentVerdict,
   promotionVerdict,
   recoveryVerdict,
@@ -299,5 +300,48 @@ describe('drift reopen', () => {
       reopen: false,
       reason: 'the case was reopened 1 times after drift; the charter allows 1',
     });
+  });
+});
+
+describe('fieldStepsFromAuditImages', () => {
+  it('maps column writes via DEFAULT_REGISTRY and parses before/after values', () => {
+    const steps = fieldStepsFromAuditImages({
+      operationType: 'batch_set_price',
+      beforeState: { product_id: 'p1', price_cents: '10000', stock_qty: '40', version: '1' },
+      afterState: { product_id: 'p1', price_cents: '100', stock_qty: '40', version: '2' },
+      writes: [{ objectType: 'product', objectId: 'p1', field: 'price_cents' }],
+    });
+    expect(steps).toEqual([
+      {
+        objectType: 'product',
+        objectId: 'p1',
+        fieldId: 'product.price_cents',
+        operationType: 'batch_set_price',
+        fromValue: 10000n,
+        toValue: 100n,
+      },
+    ]);
+  });
+
+  it('handles creation with null beforeState and ignores unregistered columns', () => {
+    const steps = fieldStepsFromAuditImages({
+      operationType: 'create_product',
+      beforeState: null,
+      afterState: { product_id: 'p2', price_cents: '5000', stock_qty: '10', version: '1' },
+      writes: [
+        { objectType: 'product', objectId: 'p2', field: 'price_cents' },
+        { objectType: 'product', objectId: 'p2', field: 'name' },
+      ],
+    });
+    expect(steps).toEqual([
+      {
+        objectType: 'product',
+        objectId: 'p2',
+        fieldId: 'product.price_cents',
+        operationType: 'create_product',
+        fromValue: null,
+        toValue: 5000n,
+      },
+    ]);
   });
 });
