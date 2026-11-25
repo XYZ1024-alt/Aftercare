@@ -15,11 +15,12 @@ import {
   PenLine,
   ShieldCheck,
 } from 'lucide-react';
-import { type ReactNode, useState } from 'react';
+import { type ReactNode, useEffect, useRef, useState } from 'react';
 import useSWR from 'swr';
 import { getJson } from '../../lib/api.ts';
 import {
   APPLICABILITY_LABEL,
+  BASIS_NODE_TYPE_LABEL,
   REVOKE_CONFIRMATION_REASONS,
   reasonLabel,
   reasonOptions,
@@ -36,8 +37,10 @@ import {
   Empty,
   Field,
   INPUT_CLASS,
+  Inset,
   Json,
   Loading,
+  MonoId,
   Notice,
   Pill,
   RefusalNote,
@@ -64,7 +67,7 @@ function Status({ status }: { readonly status: StatusOfRecord }) {
     <span className="inline-flex flex-wrap items-center gap-2">
       <Pill tone={usable ? 'mint' : 'apricot'}>{label}</Pill>
       {status.reason !== null && (
-        <span className="text-xs text-apricot-ink">
+        <span className="text-meta text-apricot-ink">
           原因：{reasonLabel(status.reason)}
           {status.sinceRevision === null ? '' : `，自修订 ${status.sinceRevision}`}
         </span>
@@ -77,7 +80,7 @@ function Status({ status }: { readonly status: StatusOfRecord }) {
 function Basis({ nodeId }: { readonly nodeId: string }) {
   const { caseId } = useCase();
   const { data } = useSWR<NodeDependencies>(`/api/cases/${caseId}/nodes/${nodeId}`, getJson);
-  if (data === undefined) return <p className="mt-2 text-xs text-muted">读取依据…</p>;
+  if (data === undefined) return <p className="mt-2 text-meta text-muted">读取依据…</p>;
   const line = (entry: NodeDependencies['dependsOn'][number]) => (
     <li key={`${entry.role}:${entry.node.nodeId}`}>
       {entry.node.nodeType} {shortId(entry.node.nodeKey)}（{entry.role}）
@@ -98,10 +101,10 @@ function Basis({ nodeId }: { readonly nodeId: string }) {
     </div>
   );
   return (
-    <div className="mt-2 grid grid-cols-2 gap-4 rounded-field bg-canvas p-4 text-xs text-ink-soft max-md:grid-cols-1">
+    <Inset className="mt-2 grid grid-cols-1 gap-4 p-4 text-meta text-ink-soft @md/card:grid-cols-2">
       {column('上游依据', data.dependsOn)}
       {column('下游影响', data.dependents)}
-    </div>
+    </Inset>
   );
 }
 
@@ -110,7 +113,7 @@ function BasisToggle({ nodeId }: { readonly nodeId: string | null }) {
   return (
     <Disclosure
       summary="依据与影响"
-      className="mt-1.5 text-xs"
+      className="mt-1.5 text-meta"
       summaryClassName="font-medium text-ink-soft hover:text-ink"
     >
       <Basis nodeId={nodeId} />
@@ -121,8 +124,8 @@ function BasisToggle({ nodeId }: { readonly nodeId: string | null }) {
 function Fact({ label, children }: { readonly label: string; readonly children: ReactNode }) {
   return (
     <div>
-      <dt className="text-xs text-muted">{label}</dt>
-      <dd className="mt-0.5 text-sm text-ink">{children}</dd>
+      <dt className="text-meta text-muted">{label}</dt>
+      <dd className="mt-0.5 text-body text-ink">{children}</dd>
     </div>
   );
 }
@@ -146,7 +149,7 @@ function EvidenceDetail({ evidenceId }: { readonly evidenceId: string }) {
   };
   return (
     <div data-testid="evidence-detail" className="space-y-4">
-      <dl className="space-y-3 rounded-field bg-canvas p-4">
+      <dl className="space-y-3 rounded-field border border-line-subtle bg-subtle p-4">
         <Fact label="记录时间">{when(data.recordedAt)}</Fact>
         <Fact label="来源">冻结快照（非当前源库），水位 {source.baseWatermark}</Fact>
         <Fact label="完整性">校验通过（记录摘要与重算结果一致）</Fact>
@@ -167,7 +170,7 @@ function EvidenceDetail({ evidenceId }: { readonly evidenceId: string }) {
         </Fact>
       </dl>
       <div>
-        <p className="mb-2 text-xs text-muted">快照原始记录（操作者已替换为假名）</p>
+        <p className="mb-2 text-meta text-muted">快照原始记录（操作者已替换为假名）</p>
         <Json value={data.observations} />
       </div>
       <Technical>
@@ -189,6 +192,13 @@ function Evidence() {
   const [operationId, setOperationId] = useState('');
   const [batchId, setBatchId] = useState('');
   const [open, setOpen] = useState<EvidenceOverview | null>(null);
+  const [inDrawer, setInDrawer] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    setInDrawer(rootRef.current?.closest('[data-testid="case-drawer"], dialog') !== null);
+  }, []);
+
   const query = new URLSearchParams({
     ...(object === '' ? {} : { object }),
     ...(operationId === '' ? {} : { operationId }),
@@ -206,13 +216,13 @@ function Evidence() {
     ['filter-batch', '按批次 ID 定位', batchId, setBatchId],
   ] as const;
   return (
-    <>
+    <div ref={rootRef}>
       <Disclosure
         summary={query === '' ? '筛选' : '筛选（已启用）'}
         className="mb-4"
         summaryClassName="text-meta font-medium text-ink-soft hover:text-ink"
       >
-        <div className="mt-3 grid grid-cols-3 gap-2.5 max-md:grid-cols-1">
+        <div className="mt-3 grid grid-cols-1 gap-2.5 @lg/card:grid-cols-3">
           {filters.map(([name, placeholder, value, set]) => (
             <input
               key={name}
@@ -235,54 +245,70 @@ function Evidence() {
         <Empty>没有符合条件的证据。</Empty>
       ) : (
         <ul className={ROWS_CLASS}>
-          {rows.map((row) => (
-            <li key={row.evidenceId} data-testid="evidence-row">
-              <button
-                type="button"
-                onClick={() => setOpen(row)}
-                className="group flex w-full items-start gap-3 rounded-input text-left"
-              >
-                <Dot tone="sky" className="mt-1.5" />
-                <span className="min-w-0 flex-1">
-                  <span className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
-                    <code className="font-mono text-meta font-medium group-hover:underline">
-                      {row.tool}
-                    </code>
-                    <span className="font-mono text-xs text-muted">{shortId(row.evidenceId)}</span>
-                    <span className="text-xs text-muted tabular-nums">{when(row.recordedAt)}</span>
-                  </span>
-                  <span className="mt-1.5 flex flex-wrap items-center gap-2">
-                    <Status
-                      status={{
-                        applicability: row.applicability,
-                        validity: null,
-                        reason: row.statusReason,
-                        sinceRevision: row.statusReason === null ? null : row.statusRevision,
-                        nodeId: null,
-                      }}
-                    />
-                    {row.snapshotId !== current && (
-                      <span className="text-xs text-muted">
-                        采自较早快照 {shortId(row.snapshotId)}（对该快照仍有效）
+          {rows.map((row) => {
+            const expanded = inDrawer && open?.evidenceId === row.evidenceId;
+            return (
+              <li key={row.evidenceId} data-testid="evidence-row">
+                <button
+                  type="button"
+                  aria-expanded={inDrawer ? expanded : undefined}
+                  onClick={() => setOpen(expanded ? null : row)}
+                  className="group flex w-full items-start gap-3 rounded-input text-left"
+                >
+                  <Dot tone="sky" className="mt-1.5" />
+                  <span className="min-w-0 flex-1">
+                    <span className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+                      <MonoId className="font-medium group-hover:underline">{row.tool}</MonoId>
+                      <span className="font-mono text-code text-muted">
+                        {shortId(row.evidenceId)}
                       </span>
-                    )}
+                      <span className="text-meta text-muted tabular-nums">
+                        {when(row.recordedAt)}
+                      </span>
+                    </span>
+                    <span className="mt-1.5 flex flex-wrap items-center gap-2">
+                      <Status
+                        status={{
+                          applicability: row.applicability,
+                          validity: null,
+                          reason: row.statusReason,
+                          sinceRevision: row.statusReason === null ? null : row.statusRevision,
+                          nodeId: null,
+                        }}
+                      />
+                      {row.snapshotId !== current && (
+                        <span className="text-meta text-muted">
+                          采自较早快照 {shortId(row.snapshotId)}（对该快照仍有效）
+                        </span>
+                      )}
+                    </span>
                   </span>
-                </span>
-                <ChevronRight aria-hidden className="mt-1 size-4 shrink-0 text-muted" />
-              </button>
-            </li>
-          ))}
+                  <ChevronRight
+                    aria-hidden
+                    className={`mt-1 size-4 shrink-0 text-muted transition-transform duration-(--duration-quick) ${expanded ? 'rotate-90' : ''}`}
+                  />
+                </button>
+                {expanded && (
+                  <Inset className="mt-3 p-4">
+                    <EvidenceDetail evidenceId={row.evidenceId} />
+                  </Inset>
+                )}
+              </li>
+            );
+          })}
         </ul>
       )}
-      <Drawer
-        open={open !== null}
-        onClose={() => setOpen(null)}
-        kicker={<Pill tone="sky">证据</Pill>}
-        title={open?.tool ?? ''}
-      >
-        {open !== null && <EvidenceDetail evidenceId={open.evidenceId} />}
-      </Drawer>
-    </>
+      {!inDrawer && (
+        <Drawer
+          open={open !== null}
+          onClose={() => setOpen(null)}
+          kicker={<Pill tone="sky">证据</Pill>}
+          title={open?.tool ?? ''}
+        >
+          {open !== null && <EvidenceDetail evidenceId={open.evidenceId} />}
+        </Drawer>
+      )}
+    </div>
   );
 }
 
@@ -315,7 +341,7 @@ function Confirmations() {
                     ? `基线 ${record.body.entries.length} 项`
                     : '回放策略'}
               </span>
-              <span className="text-xs text-muted">
+              <span className="text-meta text-muted">
                 {record.confirmedBy}，{when(record.confirmedAt)}
               </span>
               {record.revocation === null ? (
@@ -345,7 +371,7 @@ function Confirmations() {
               <BasisToggle nodeId={status.nodeId} />
             </div>
             {revoking === record.confirmationId && (
-              <div className="mt-3 ml-5.5 space-y-3 rounded-field bg-canvas p-4">
+              <Inset className="mt-3 ml-5.5 space-y-3 p-4">
                 <p className="text-meta text-apricot-ink">
                   撤回会使依赖它的计划、契约和报告失效，需要重新确认后才能继续；原确认记录将保留为历史。
                 </p>
@@ -375,7 +401,7 @@ function Confirmations() {
                     取消
                   </Button>
                 </div>
-              </div>
+              </Inset>
             )}
           </li>
         ))}
@@ -394,7 +420,7 @@ export function Knowledge() {
         {certificate === null ? (
           <Empty>当前快照暂无完整性凭证</Empty>
         ) : (
-          <div className="space-y-4 text-sm">
+          <div className="space-y-4 text-body">
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-meta text-muted">快照状态</span>
               <Pill tone={certificate.failedChecks.length === 0 ? 'mint' : 'apricot'}>
@@ -474,7 +500,7 @@ export function Knowledge() {
             {knowledge.declarations.map(({ record, status }) => (
               <li key={record.declarationId}>
                 <div className="flex flex-wrap items-center gap-2.5">
-                  <span className="text-xs text-muted">
+                  <span className="text-meta text-muted">
                     {record.declaredBy}，{when(record.declaredAt)}
                   </span>
                   {record.withdrawal === null ? (
@@ -506,9 +532,9 @@ export function Knowledge() {
         ) : (
           <ul className={ROWS_CLASS}>
             {invalidated.map((node) => (
-              <li key={node.nodeId} data-testid="invalidated-item" className="text-sm">
-                <span className="font-medium">{node.nodeType}</span>{' '}
-                <code className="font-mono text-xs text-muted">{shortId(node.nodeKey)}</code>：
+              <li key={node.nodeId} data-testid="invalidated-item" className="text-body">
+                <span className="font-medium">{BASIS_NODE_TYPE_LABEL[node.nodeType]}</span>{' '}
+                <MonoId>{shortId(node.nodeKey)}</MonoId>：
                 {node.validity === 'stale'
                   ? '已失效'
                   : (APPLICABILITY_LABEL[node.applicability ?? ''] ?? '不再适用')}

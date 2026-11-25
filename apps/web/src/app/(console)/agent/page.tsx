@@ -27,11 +27,6 @@ const CONVERSATION_ID = z.uuid();
 
 const FOLLOWED_GROUP = '本对话';
 const OTHERS_GROUP = '全部案例';
-/** A case is named in a select by what the operator would call it, cut where it stops distinguishing. */
-const TITLE_LIMIT = 60;
-
-const shortTitle = (title: string): string =>
-  title.length > TITLE_LIMIT ? `${title.slice(0, TITLE_LIMIT)}…` : title;
 
 const caseHint = (row: CaseRow): string => {
   const stage = STAGE_LABEL[row.stage];
@@ -50,14 +45,14 @@ const caseOptions = (
     const row = known.get(caseId);
     return row === undefined
       ? { value: caseId, label: shortId(caseId), hint: '读取中…', group: FOLLOWED_GROUP }
-      : { value: caseId, label: shortTitle(row.title), hint: caseHint(row), group: FOLLOWED_GROUP };
+      : { value: caseId, label: row.title, hint: caseHint(row), group: FOLLOWED_GROUP };
   });
   const others = (rows ?? [])
     .filter((row) => !followed.includes(row.overview.caseId))
     .map(
       (row): SelectOption<string> => ({
         value: row.overview.caseId,
-        label: shortTitle(row.title),
+        label: row.title,
         hint: caseHint(row),
         group: OTHERS_GROUP,
       }),
@@ -104,25 +99,29 @@ function AgentLayout() {
   return (
     <>
       <div className="flex gap-5 max-lg:flex-col lg:min-h-[600px] lg:flex-1">
-        <aside className="hidden w-64 shrink-0 flex-col rounded-panel bg-card p-4 shadow-soft xl:flex xl:min-h-0">
+        <aside className="hidden w-64 shrink-0 flex-col rounded-panel border border-line-subtle bg-card p-4 shadow-soft xl:flex xl:min-h-0">
           <ConversationHistory />
         </aside>
-        <section className="flex min-w-0 flex-1 flex-col rounded-panel bg-card p-5 shadow-soft lg:min-h-0">
+        <section className="flex min-w-0 flex-1 flex-col rounded-panel border border-line-subtle bg-card p-5 shadow-soft lg:min-h-0">
           <div className="mx-auto flex min-h-0 w-full max-w-[920px] flex-1 flex-col">
             <header className="mb-3 flex flex-wrap items-center justify-between gap-3">
-              <h1 className="line-clamp-1 min-w-0 flex-1 text-[17px] leading-6 font-medium">
+              <h1 className="min-w-0 flex-1 truncate text-heading font-medium">
                 <UntrustedText text={title} />
               </h1>
               <div className="flex shrink-0 items-center gap-2">
                 <CasePicker />
-                <Button size="sm" className="xl:hidden" onClick={() => setHistoryOpen(true)}>
+                <Button
+                  size="sm"
+                  className="xl:hidden max-sm:min-w-8 max-sm:px-2 pointer-coarse:max-sm:min-h-11 pointer-coarse:max-sm:min-w-11"
+                  onClick={() => setHistoryOpen(true)}
+                >
                   <History aria-hidden className="size-3.5" />
                   <span className="max-sm:sr-only">历史对话</span>
                 </Button>
                 {/* From xl on, the history column beside the conversation has this button. */}
                 <Button
                   size="sm"
-                  className="xl:hidden"
+                  className="xl:hidden max-sm:min-w-8 max-sm:px-2 pointer-coarse:max-sm:min-h-11 pointer-coarse:max-sm:min-w-11"
                   disabled={pending}
                   onClick={() => select(null)}
                 >
@@ -173,7 +172,7 @@ export default function AgentPage() {
   return (
     <Suspense
       fallback={
-        <div className="rounded-panel bg-card p-5 shadow-soft">
+        <div className="rounded-panel border border-line-subtle bg-card p-5 shadow-soft">
           <Loading label="正在读取对话…" />
         </div>
       }

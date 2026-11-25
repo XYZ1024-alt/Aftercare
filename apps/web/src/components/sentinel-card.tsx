@@ -35,7 +35,7 @@ function FindingRow({ entry }: { readonly entry: SentinelFindingView }) {
           <span className="font-medium text-ink tabular-nums">提交 #{finding.commitSeq}</span>
           <span className="text-muted tabular-nums">{whenShort(finding.discoveredAt)}</span>
         </div>
-        <p className="mt-1.5 line-clamp-2 text-sm text-ink-soft">
+        <p className="mt-1.5 line-clamp-2 text-body text-ink-soft">
           <UntrustedText text={finding.summary} />
         </p>
       </div>
@@ -59,7 +59,7 @@ function FindingRow({ entry }: { readonly entry: SentinelFindingView }) {
     <li data-testid="sentinel-finding-row">
       <Link
         href={`/cases/${caseId}`}
-        className="group -mx-3 block rounded-field px-3 py-2.5 transition-colors duration-(--duration-quick) ease-smooth-out hover:bg-canvas"
+        className="group -mx-3 block rounded-field px-3 py-2.5 transition-colors duration-(--duration-quick) ease-smooth-out hover:bg-subtle"
       >
         {content}
       </Link>

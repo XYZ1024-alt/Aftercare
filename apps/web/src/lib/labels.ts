@@ -1,9 +1,12 @@
 import type {
   AutonomyDecisionAction,
+  CaseOverview,
+  CaseView,
   RegistryView,
   Stage,
   TurnEventKind,
   TurnStateMode,
+  VerificationReport,
 } from '@aftercare/console/client';
 
 // Display wording. Codes of the records stay as they are recorded; these
@@ -231,12 +234,102 @@ export const CASE_EVENT_LABEL: Readonly<Record<string, string>> = {
 export const eventLabel = (origin: 'agent' | 'case', eventType: string): string =>
   (origin === 'agent' ? EVENT_LABEL[eventType] : CASE_EVENT_LABEL[eventType]) ?? eventType;
 
-export const VERDICT_LABEL: Readonly<Record<string, string>> = {
+export const VERDICT_LABEL: Readonly<Record<VerificationReport['verdict'], string>> = {
   verified: '已验证',
   partially_resolved: '部分解决',
   failed: '验证失败',
   blocked: '无法判定',
 };
+
+type VerificationLayer = VerificationReport['body']['findings'][number]['layer'];
+export const VERIFICATION_LAYER_LABEL: Readonly<Record<VerificationLayer, string>> = {
+  input_sufficiency: '输入充分性',
+  compiled_semantics: '语义编译',
+  execution_conformance: '执行一致性',
+  business_appropriateness: '业务合理性',
+};
+
+type ObligationStatus = VerificationReport['body']['findings'][number]['status'];
+export const OBLIGATION_STATUS_LABEL: Readonly<Record<ObligationStatus, string>> = {
+  passed: '通过',
+  failed: '未通过',
+  blocked: '无法判定',
+  unknown: '未知',
+  error: '检查异常',
+};
+
+type CaseRunPhase = CaseOverview['casePhase'];
+export const RUN_PHASE_LABEL: Readonly<Record<CaseRunPhase, string>> = {
+  created: '已创建',
+  investigating: '调查中',
+  awaiting_input: '等待业务确认',
+  planning: '生成方案中',
+  executing: '执行中',
+  validating: '独立验证中',
+  completed: '已完成',
+  partially_resolved: '部分解决',
+  paused: '已暂停',
+  cancelled: '已取消',
+  failed: '失败',
+};
+
+type AgentRunStatus = CaseView['agentRuns'][number]['status'];
+export const AGENT_RUN_STATUS_LABEL: Readonly<Record<AgentRunStatus, string>> = {
+  queued: '排队中',
+  running: '运行中',
+  awaiting_input: '等待输入',
+  paused: '已暂停',
+  completed: '已完成',
+  partially_resolved: '部分解决',
+  unresolved: '未解决',
+  failed: '失败',
+  cancelled: '已取消',
+};
+
+export type PlanLifecycle = 'draft' | 'compiled' | 'approved' | 'applied' | 'verified';
+export const PLAN_LIFECYCLE_LABEL: Readonly<Record<PlanLifecycle, string>> = {
+  draft: '草稿',
+  compiled: '已编译',
+  approved: '已批准',
+  applied: '已应用',
+  verified: '已验证',
+};
+
+export const planLifecycleLabel = (lifecycle: string): string =>
+  (PLAN_LIFECYCLE_LABEL as Readonly<Record<string, string>>)[lifecycle] ?? lifecycle;
+
+type BasisNodeType = CaseView['invalidated'][number]['nodeType'];
+export const BASIS_NODE_TYPE_LABEL: Readonly<Record<BasisNodeType, string>> = {
+  snapshot: '快照',
+  certificate: '完整性凭证',
+  evidence: '证据',
+  declaration: '人工声明',
+  confirmation: '业务确认',
+  policy_version: '策略版本',
+  incident_set: '事故集合',
+  semantics_version: '语义版本',
+  hypothesis: '候选假设',
+  plan: '修复计划',
+  plan_candidate: '候选方案',
+  plan_unresolved: '未决项',
+  plan_isolation: '隔离项',
+  integrity: '完整性锚点',
+  confirmation_set: '确认集合',
+  domain_statements: '域声明',
+  impact_scope: '影响范围',
+};
+
+export const DECISION_LABEL: Readonly<Record<string, string>> = {
+  confirm_operations: '确认事故操作',
+  confirm_baseline: '确认可信基线',
+  select_policy: '选择回放策略',
+  clarify: '业务澄清',
+  approve: '批准执行',
+  decline: '拒绝执行',
+  remark: '备注说明',
+};
+
+export const decisionLabel = (decision: string): string => DECISION_LABEL[decision] ?? decision;
 
 export const QUESTION_KIND_LABEL: Readonly<Record<string, string>> = {
   incident_scope: '事故范围',

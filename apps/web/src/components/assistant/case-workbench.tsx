@@ -54,7 +54,7 @@ function Workbench({
     <section aria-label="案例工作台" className="min-w-0 space-y-4">
       <header className="space-y-3">
         <div className="flex items-start gap-3">
-          <h3 className="min-w-0 flex-1 text-[17px] leading-6 font-medium tracking-[-0.01em]">
+          <h3 className="min-w-0 flex-1 text-heading font-medium">
             <UntrustedText text={title} />
           </h3>
           <Link
@@ -62,7 +62,7 @@ function Workbench({
             aria-label="在案例页打开"
             title="在案例页打开"
             data-testid="open-case-page"
-            className="inline-grid size-9 shrink-0 place-items-center rounded-full bg-canvas text-ink-soft transition-[background-color,color,scale] duration-(--duration-quick) ease-smooth-out hover:bg-canvas-2 hover:text-ink active:scale-[0.97] motion-reduce:transition-none"
+            className="inline-grid size-9 shrink-0 place-items-center rounded-full border border-line-subtle bg-subtle text-ink-soft transition-[background-color,color,scale] duration-(--duration-quick) ease-smooth-out hover:bg-sunken hover:text-ink active:scale-[0.97] motion-reduce:transition-none pointer-coarse:min-h-11 pointer-coarse:min-w-11"
           >
             <ArrowUpRight aria-hidden className="size-4" />
           </Link>

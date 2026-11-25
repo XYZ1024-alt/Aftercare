@@ -8,9 +8,21 @@ import {
   reasonLabel,
   shortId,
   type Tone,
+  VERDICT_LABEL,
   when,
 } from '../../lib/labels.ts';
-import { Card, Dot, Empty, Json, Pill, ROWS_CLASS, Table, Technical } from '../ui.tsx';
+import {
+  Card,
+  Dot,
+  Empty,
+  Inset,
+  Json,
+  MonoId,
+  Pill,
+  ROWS_CLASS,
+  Table,
+  Technical,
+} from '../ui.tsx';
 import { useCase } from './case-context.tsx';
 
 const BRANCH_STATUS: Readonly<Record<string, readonly [Tone, string]>> = {
@@ -60,18 +72,16 @@ export function Execution() {
               return (
                 <li key={branch.branchId} data-testid="branch" data-status={branch.status}>
                   <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
-                    <code className="font-mono text-meta font-medium">
-                      {shortId(branch.branchId)}
-                    </code>
+                    <MonoId className="font-medium">{shortId(branch.branchId)}</MonoId>
                     <Pill tone={tone}>{label}</Pill>
                     {branch.statusReason !== null && (
-                      <span className="text-xs text-ink-soft">
+                      <span className="text-meta text-ink-soft">
                         {reasonLabel(branch.statusReason)}
                       </span>
                     )}
                   </div>
                   {(branch.predecessorBranchId !== null || branch.dataRemoved) && (
-                    <p className="mt-1 text-xs text-muted">
+                    <p className="mt-1 text-meta text-muted">
                       {branch.predecessorBranchId !== null &&
                         `后继分支，源自封存分支 ${shortId(branch.predecessorBranchId)}。`}
                       {branch.dataRemoved && '数据已按保留策略清理，登记保留。'}
@@ -104,7 +114,7 @@ export function Execution() {
               <li
                 key={application.applicationId}
                 data-testid="application"
-                className="rounded-field bg-canvas p-4"
+                className="rounded-field border border-line-subtle bg-subtle p-4"
               >
                 <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1.5">
                   <Dot tone="mint" />
@@ -112,14 +122,14 @@ export function Execution() {
                     {application.kind === 'undo' ? '撤销' : '修复'}已应用到分支{' '}
                     {shortId(application.branchId)}
                   </span>
-                  <span className="text-xs text-muted tabular-nums">
+                  <span className="text-meta text-muted tabular-nums">
                     {when(application.appliedAt)}
                   </span>
                   {!application.stillCurrent && (
                     <Pill tone="apricot">契约状态：{application.contractStatus}</Pill>
                   )}
                 </div>
-                <Table>
+                <Table label="补丁应用明细">
                   <thead>
                     <tr>
                       <th>对象</th>
@@ -131,7 +141,7 @@ export function Execution() {
                   <tbody>
                     {application.written.map((entry) => (
                       <tr key={fieldKey(entry)}>
-                        <td>
+                        <td className="break-all">
                           {entry.objectType}/{entry.objectId}
                         </td>
                         <td>{fieldTitle(registry, entry.fieldId)}</td>
@@ -161,19 +171,17 @@ export function Execution() {
         ) : (
           <div className="space-y-4">
             {attempts.length > 0 && (
-              <div className="rounded-field bg-canvas p-4">
+              <Inset className="p-4">
                 <h3 className="mb-2.5 text-meta font-medium text-muted">执行尝试</h3>
                 <ul className={ROWS_CLASS}>
                   {attempts.map((attempt) => {
                     const [tone, label] = statusOf(ATTEMPT_STATUS, attempt.status);
                     return (
-                      <li key={attempt.attemptId} className="flex items-start gap-3 text-sm">
+                      <li key={attempt.attemptId} className="flex items-start gap-3 text-body">
                         <Dot tone={tone} className="mt-1.5" />
                         <div className="min-w-0">
                           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                            <span className="font-mono font-medium">
-                              {shortId(attempt.attemptId)}
-                            </span>
+                            <MonoId className="font-medium">{shortId(attempt.attemptId)}</MonoId>
                             <Pill tone={tone}>{label}</Pill>
                           </div>
                           {attempt.failure !== null && (
@@ -181,7 +189,7 @@ export function Execution() {
                               {attempt.failure.code}：{attempt.failure.message}
                             </p>
                           )}
-                          <p className="mt-1 text-xs text-muted">
+                          <p className="mt-1 text-meta text-muted">
                             {when(attempt.startedAt)} · 执行节点 {attempt.executorId} · 租约代次{' '}
                             {attempt.fencingToken}
                           </p>
@@ -190,10 +198,10 @@ export function Execution() {
                     );
                   })}
                 </ul>
-              </div>
+              </Inset>
             )}
             {verificationRuns.length > 0 && (
-              <div className="rounded-field bg-canvas p-4">
+              <Inset className="p-4">
                 <h3 className="mb-2.5 text-meta font-medium text-muted">独立验证</h3>
                 <ul className={ROWS_CLASS}>
                   {verificationRuns.map((run) => {
@@ -203,29 +211,31 @@ export function Execution() {
                         key={run.verificationId}
                         data-testid="verification-run"
                         data-status={run.status}
-                        className="flex items-start gap-3 text-sm"
+                        className="flex items-start gap-3 text-body"
                       >
                         <Dot tone={tone} className="mt-1.5" />
                         <div className="min-w-0">
                           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                            <span className="font-mono font-medium">
-                              {shortId(run.verificationId)}
-                            </span>
+                            <MonoId className="font-medium">{shortId(run.verificationId)}</MonoId>
                             <Pill tone={tone}>{label}</Pill>
                           </div>
                           {run.verdict !== null && (
-                            <p className="mt-1 text-xs text-ink-soft">结论：{run.verdict}</p>
+                            <p className="mt-1 text-meta text-ink-soft">
+                              结论：{VERDICT_LABEL[run.verdict]}
+                            </p>
                           )}
                           {run.statusReason !== null && (
-                            <p className="mt-1 text-xs text-muted">{run.statusReason}</p>
+                            <p className="mt-1 text-meta text-muted">
+                              {reasonLabel(run.statusReason)}
+                            </p>
                           )}
-                          <p className="mt-1 text-xs text-muted">{when(run.startedAt)}</p>
+                          <p className="mt-1 text-meta text-muted">{when(run.startedAt)}</p>
                         </div>
                       </li>
                     );
                   })}
                 </ul>
-              </div>
+              </Inset>
             )}
           </div>
         )}

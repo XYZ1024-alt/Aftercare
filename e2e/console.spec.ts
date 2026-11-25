@@ -70,10 +70,6 @@ test('from a vague report to a sealed partial result: real events, business answ
   await approverPage.goto(`/cases/${caseId}`);
   await approverPage.getByTestId('tab-plan').click();
   // Approving needs every unresolved domain acknowledged.
-  await approverPage
-    .getByTestId('approval')
-    .locator('textarea[name=approval-statement]')
-    .fill('审核');
   await expect(approverPage.getByTestId('approve-button')).toBeDisabled();
   await approveInBrowser(approverPage);
   await approverContext.close();
@@ -148,13 +144,9 @@ test('a case is done without leaving the agent page: the GenUI turn, answers in 
   await untilStage(page, 'awaiting_answer');
 
   // What waits on the person is offered in the state bar; the drawer opens it
-  // without leaving the conversation, and the source is picked in the custom dropdown.
+  // without leaving the conversation.
   await page.locator('[data-testid=state-attention-pill][data-tab=questions]').click();
   const drawer = page.getByTestId('case-drawer');
-  const first = drawer.locator('[data-testid=question][data-state=open]').first();
-  await first.getByRole('combobox').click();
-  await drawer.getByRole('option', { name: '业务决策记录' }).click();
-  await expect(first.locator('input[name=source-kind]')).toHaveValue('business_decision_record');
   const kinds = await answerUntilApproval(drawer);
   expect(kinds).toEqual(['incident_scope', 'baseline', 'replay_policy', 'clarification']);
 
@@ -254,8 +246,6 @@ test('a double click on send opens one case, and an answer whose response is los
   });
   await page.getByTestId('tab-questions').click();
   const question = page.locator('[data-testid=question][data-kind=incident_scope]');
-  await question.locator('textarea[name=statement]').fill('确认。');
-  await question.locator('input[name=source-reference]').fill('复核记录');
   for (const box of await question.locator('input[name=operation]').all()) await box.check();
   await question.getByRole('button', { name: /确认所选/ }).click();
   await expect(page.getByTestId('refusal')).toHaveAttribute('data-code', 'network_error');
@@ -290,7 +280,6 @@ test('an approval from a page that is out of date is refused, and the page asks 
   await approverPage.getByTestId('tab-plan').click();
   const approval = approverPage.getByTestId('approval');
   for (const box of await approval.locator('input[name=acknowledge]').all()) await box.check();
-  await approval.locator('textarea[name=approval-statement]').fill('已审核。');
   await expect(approverPage.getByTestId('approve-button')).toBeEnabled();
 
   // The page stops receiving updates (as on a stalled connection) while the case changes underneath it.

@@ -57,7 +57,7 @@ function PromotionEntry({
           {when(promotion.recordedAt)}
         </span>
       </div>
-      <Table>
+      <Table label="写回源库明细">
         <thead>
           <tr>
             <th>对象</th>
@@ -70,7 +70,7 @@ function PromotionEntry({
         <tbody>
           {promotion.targets.map((target) => (
             <tr key={fieldKey(target)}>
-              <td>
+              <td className="break-all">
                 {target.objectType}/{target.objectId}
               </td>
               <td>{fieldTitle(registry, target.fieldId)}</td>
@@ -152,7 +152,7 @@ export function Promotions() {
   );
   return (
     <Card title="写回源库" icon={DatabaseZap} tone="mint" testId="promotion">
-      <div className="space-y-5 text-sm">
+      <div className="space-y-5 text-body">
         {writes.length > 0 && (
           <section className="space-y-3" data-testid="promotion-writes">
             <h3 className="font-medium">写回</h3>

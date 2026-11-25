@@ -105,12 +105,12 @@ export function AgentStateBar() {
     <section
       data-testid="agent-state-bar"
       aria-label="助手状态"
-      className="rounded-panel bg-card p-4 shadow-soft"
+      className="rounded-field border border-line-subtle bg-subtle p-4"
     >
       <div className="flex flex-wrap items-start gap-x-3 gap-y-2">
         <Pill tone={TURN_MODE_TONE[latestState.mode]}>{TURN_MODE_LABEL[latestState.mode]}</Pill>
         <div className="min-w-0 flex-1">
-          <p className="text-sm leading-[22px]">
+          <p className="text-body">
             <UntrustedText text={latestState.headline} />
           </p>
           {latestState.nextStep !== null && (
@@ -131,10 +131,10 @@ export function AgentStateBar() {
                 data-case-id={item.caseId}
                 data-tab={item.tab}
                 onClick={() => openCase(item.caseId, item.tab)}
-                className="inline-flex max-w-72 items-center gap-2 rounded-full bg-canvas py-1.5 pr-3 pl-2.5 text-meta text-ink-soft transition-[background-color,color,scale] duration-(--duration-quick) ease-smooth-out hover:bg-canvas-2 hover:text-ink active:scale-[0.97] motion-reduce:transition-none"
+                className="inline-flex min-h-8 max-w-72 items-center gap-2 rounded-full border border-line-subtle bg-card py-1.5 pr-3 pl-2.5 text-meta text-ink-soft transition-[background-color,border-color,color,scale] duration-(--duration-quick) ease-smooth-out hover:border-line hover:text-ink active:scale-[0.97] motion-reduce:transition-none"
               >
                 <Dot tone={item.tone} />
-                <span className="line-clamp-1 min-w-0">
+                <span className="min-w-0 truncate">
                   <UntrustedText text={item.title} />
                 </span>
                 <span className={`shrink-0 ${INK_CLASS[item.tone]}`}>{item.status}</span>

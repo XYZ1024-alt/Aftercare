@@ -30,7 +30,9 @@ import {
   Empty,
   Field,
   INPUT_CLASS,
+  Inset,
   Json,
+  MonoId,
   Notice,
   OPTION_CLASS,
   Pill,
@@ -115,7 +117,7 @@ function Subject({ question }: { readonly question: QuestionView }) {
       return null;
     case 'baseline':
       return (
-        <Table>
+        <Table label="基线条目">
           <thead>
             <tr>
               <th>对象</th>
@@ -127,7 +129,7 @@ function Subject({ question }: { readonly question: QuestionView }) {
           <tbody>
             {body.entries.map((entry) => (
               <tr key={fieldKey(entry)}>
-                <td>
+                <td className="break-all">
                   {entry.objectType}/{entry.objectId}
                 </td>
                 <td>{fieldTitle(registry, entry.fieldId)}</td>
@@ -206,10 +208,8 @@ function AnswerForm({ question }: { readonly question: QuestionView }) {
               />
               <span className="min-w-0">
                 <span className="font-medium">{candidate.objects.join('，')}</span>
-                <code className="ml-2 font-mono text-xs text-ink-soft">
-                  {candidate.operationType}
-                </code>
-                <span className="block text-xs text-muted">
+                <MonoId className="ml-2">{candidate.operationType}</MonoId>
+                <span className="block text-meta text-muted">
                   提交序号 {candidate.commitSeq}
                   {candidate.batchId === null ? '' : `，批次 ${shortId(candidate.batchId)}`}
                 </span>
@@ -222,20 +222,22 @@ function AnswerForm({ question }: { readonly question: QuestionView }) {
         <fieldset className="space-y-2">
           <legend className="mb-2 text-meta font-medium text-ink-soft">选择适用的策略版本</legend>
           {body.options.map((option) => (
-            <label key={option.policyVersionId} className={OPTION_CLASS}>
-              <Radio
-                name="policy"
-                value={option.policyVersionId}
-                checked={policy === option.policyVersionId}
-                onChange={() => setPolicy(option.policyVersionId)}
-              />
-              <span className="min-w-0 flex-1">
-                <span className="font-medium">策略修订 {option.revision}</span>
+            <div key={option.policyVersionId} className="space-y-1.5">
+              <label className={OPTION_CLASS}>
+                <Radio
+                  name="policy"
+                  value={option.policyVersionId}
+                  checked={policy === option.policyVersionId}
+                  onChange={() => setPolicy(option.policyVersionId)}
+                />
+                <span className="min-w-0 flex-1 font-medium">策略修订 {option.revision}</span>
+              </label>
+              <div className="px-3.5">
                 <Technical label="规则摘要">
                   <Json value={option.summary} />
                 </Technical>
-              </span>
-            </label>
+              </div>
+            </div>
           ))}
         </fieldset>
       )}
@@ -322,11 +324,11 @@ function AnswerForm({ question }: { readonly question: QuestionView }) {
       {body.kind !== 'clarification' && (
         <Disclosure
           summary="仅留言或不予确认"
-          className="rounded-field bg-canvas px-4 py-3"
+          className="rounded-field border border-line-subtle bg-subtle px-4 py-3"
           summaryClassName="text-meta font-medium text-ink-soft hover:text-ink"
         >
           <div className="mt-3 space-y-3">
-            <p className="text-xs text-muted">只记录理由，不构成确认，也不产生授权。</p>
+            <p className="text-meta text-muted">只记录理由，不构成确认，也不产生授权。</p>
             <Field label="留言或拒绝理由（必填）">
               <input
                 name="note"
@@ -388,7 +390,7 @@ function Question({
         aside={
           <div className="flex items-center gap-3">
             <Pill tone={tone}>{state}</Pill>
-            <span className="text-xs text-muted tabular-nums">
+            <span className="text-meta text-muted tabular-nums">
               提问于 {when(question.createdAt)}
             </span>
           </div>
@@ -416,18 +418,12 @@ function Question({
             </Notice>
           )}
           {question.state === 'answered' && answer !== null && (
-            <div
-              className={
-                declined
-                  ? 'rounded-field bg-canvas px-4 py-3'
-                  : 'rounded-field bg-mint-soft px-4 py-3'
-              }
-            >
+            <Inset className={declined ? 'px-4 py-3' : 'border-mint-line bg-mint-soft px-4 py-3'}>
               <p
                 className={
                   declined
-                    ? 'text-sm font-medium text-ink-soft'
-                    : 'text-sm font-medium text-mint-ink'
+                    ? 'text-body font-medium text-ink-soft'
+                    : 'text-body font-medium text-mint-ink'
                 }
               >
                 {DECISION[answer.decision ?? ''] ?? answer.decision}
@@ -437,11 +433,11 @@ function Question({
                 {answer.by} 于 <span className="tabular-nums">{when(answer.at)}</span> 作答
               </p>
               {answer.text !== null && (
-                <p className="mt-2 text-sm text-ink">
+                <p className="mt-2 text-body text-ink">
                   <UntrustedText text={answer.text} />
                 </p>
               )}
-            </div>
+            </Inset>
           )}
           {question.state === 'open' && question.kind !== 'execution_approval' && (
             <AnswerForm question={question} />

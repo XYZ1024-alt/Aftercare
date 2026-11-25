@@ -3,6 +3,7 @@
 import { FileText, Gauge, Power } from 'lucide-react';
 import { useState } from 'react';
 import {
+  AGENT_RUN_STATUS_LABEL,
   BUDGET_AMEND_REASON,
   EVENT_LABEL,
   OPERATOR_REQUEST_REASON,
@@ -105,9 +106,9 @@ export function Controls() {
           取消运行
         </Button>
       </div>
-      <p className="mt-3 text-xs text-muted">暂停或取消将在当前步骤完成后生效。</p>
+      <p className="mt-3 text-meta text-muted">暂停或取消将在当前步骤完成后生效。</p>
       {!manage && (
-        <p className="mt-1 text-xs text-muted">当前账号缺少案例管理权限（manage_case）</p>
+        <p className="mt-1 text-meta text-muted">当前账号缺少案例管理权限（manage_case）</p>
       )}
       <RefusalNote refusal={control.refusal} />
       <ConfirmDialog
@@ -126,19 +127,17 @@ export function Controls() {
   );
 }
 
-/** What the run is doing now: a live, shimmering line. */
+/** What the run is doing now: a live status line. */
 function CurrentAction({ text, at }: { readonly text: string; readonly at: string }) {
   return (
     <p
-      className="mb-4 flex items-start gap-2.5 rounded-field bg-canvas px-3.5 py-3 text-meta"
+      className="mb-4 flex items-start gap-2.5 rounded-field border border-line-subtle bg-subtle px-3.5 py-3 text-meta"
       data-testid="current-action"
     >
       <Dot tone="sky" className="mt-1 size-2 motion-safe:animate-pulse" />
       <span className="min-w-0">
-        <span className="t-shimmer font-medium" data-text={text}>
-          {text}
-        </span>
-        <span className="mt-0.5 block text-xs text-muted">{at}</span>
+        <span className="font-medium text-ink-soft">{text}</span>
+        <span className="mt-0.5 block text-meta text-muted">{at}</span>
       </span>
     </p>
   );
@@ -165,7 +164,7 @@ function Usage({
           {text}
         </span>
       </div>
-      <div className="mt-1.5 h-2 overflow-hidden rounded-full bg-track">
+      <div className="mt-1.5 h-2 overflow-hidden rounded-full bg-sunken">
         {used > 0 && (
           <div
             className={`h-full min-w-2 rounded-full transition-[width,background-color] duration-(--duration-slow) ease-smooth-out motion-reduce:transition-none ${SOLID_CLASS[tone]}`}
@@ -296,7 +295,7 @@ export function Budget() {
         </div>
       </dl>
       {run.budgetAmendments.length > 0 && (
-        <ul className="mt-3 space-y-1 text-xs text-muted">
+        <ul className="mt-3 space-y-1 text-meta text-muted">
           {run.budgetAmendments.map((amendment) => (
             <li key={amendment.amendmentId}>
               {when(amendment.amendedAt)} {amendment.principal} 调整预算：
@@ -356,7 +355,7 @@ export function Budget() {
               </div>
             )}
             {preset === 'custom' && !customValid && (
-              <p className="text-xs text-apricot-ink">
+              <p className="text-meta text-apricot-ink">
                 模型轮次上限取 1–{BUDGET_CAPS.modelRequests}，工具调用上限取 1–
                 {BUDGET_CAPS.toolCalls} 的整数。
               </p>
@@ -415,7 +414,8 @@ export function CaseFacts() {
         </p>
         {run !== null && (
           <p>
-            运行 {run.agentRunId}，状态 {run.status}，事件序号 {run.eventSeq}
+            运行 {run.agentRunId}，状态 {AGENT_RUN_STATUS_LABEL[run.status]}，事件序号{' '}
+            {run.eventSeq}
           </p>
         )}
         {snapshot !== null && (
@@ -445,7 +445,7 @@ function Figure({
     <div
       className={`min-w-24 rounded-field px-4 py-3 max-sm:min-w-0 max-sm:px-3 ${SOFT_CLASS[tone]}`}
     >
-      <dt className="text-xs font-medium">{label}</dt>
+      <dt className="text-meta font-medium">{label}</dt>
       <dd className="mt-1 flex items-baseline gap-1 text-ink">
         <span className="text-figure font-semibold tabular-nums lining-nums">{value}</span>
         <span className="text-meta text-muted">{unit}</span>
@@ -474,7 +474,7 @@ export function CaseHeader() {
               <span className="text-meta text-muted">{reasonLabel(stage.reason)}</span>
             )}
           </div>
-          <h1 className="mt-3 max-w-[46em] text-title font-semibold max-sm:text-[24px] max-sm:leading-[30px]">
+          <h1 className="mt-3 max-w-[46em] text-title font-semibold max-sm:text-figure">
             <UntrustedText text={run?.description ?? overview.title} />
           </h1>
           <p className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-meta text-muted">

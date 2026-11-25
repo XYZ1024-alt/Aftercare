@@ -14,7 +14,7 @@ import {
   when,
   whenShort,
 } from '../../lib/labels.ts';
-import { Card, Empty, Json, Notice, Pill, ROWS_CLASS, Technical } from '../ui.tsx';
+import { Card, Empty, Inset, Json, Notice, Pill, ROWS_CLASS, Technical } from '../ui.tsx';
 import { UntrustedText } from '../untrusted-text.tsx';
 import { useCase } from './case-context.tsx';
 
@@ -93,10 +93,7 @@ export function AutonomyDecisions() {
           {enrollment.reopenOf !== null && ` · 重开：${enrollment.reopenReason ?? '未记录原因'}`}
         </p>
         {autonomy.finding !== null && (
-          <div
-            className="space-y-2 rounded-field border border-line bg-canvas px-3.5 py-3 text-sm"
-            data-testid="sentinel-finding"
-          >
+          <Inset data-testid="sentinel-finding" className="space-y-2 text-body">
             <div className="flex flex-wrap items-center gap-2 text-meta text-muted">
               <Pill tone="sky">哨兵发现</Pill>
               <span className="font-medium text-ink tabular-nums">
@@ -110,8 +107,11 @@ export function AutonomyDecisions() {
             </p>
             <ul className="space-y-1 text-meta text-muted">
               {autonomy.finding.matchedOperations.map((op) => (
-                <li key={`${op.operationId}-${op.fieldId}`}>
-                  {op.objectType}/{op.objectId} · {fieldTitle(view.registry, op.fieldId)}：
+                <li key={`${op.operationId}-${op.fieldId}`} className="break-words">
+                  <span className="break-all">
+                    {op.objectType}/{op.objectId}
+                  </span>{' '}
+                  · {fieldTitle(view.registry, op.fieldId)}：
                   {op.fromValue === null
                     ? '∅'
                     : fieldValue(view.registry, op.fieldId, op.fromValue)}{' '}
@@ -119,7 +119,7 @@ export function AutonomyDecisions() {
                 </li>
               ))}
             </ul>
-          </div>
+          </Inset>
         )}
         {decisions.length === 0 ? (
           <Empty>暂无自主决策记录</Empty>
@@ -133,7 +133,7 @@ export function AutonomyDecisions() {
                   data-testid="autonomy-decision"
                   data-action={decision.action}
                   data-status={decision.status}
-                  className="text-sm"
+                  className="text-body"
                 >
                   <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
                     <Pill tone={decisionTone(decision)}>

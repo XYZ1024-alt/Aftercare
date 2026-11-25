@@ -146,7 +146,7 @@ const caseHref = (row: CaseRow, tab?: string) =>
 
 /** A row of a list card: the whole row is the link, the arrow leans in on hover. */
 const LINK_ROW =
-  'group -mx-3 flex items-center gap-3.5 rounded-field px-3 py-3 transition-colors duration-(--duration-quick) ease-smooth-out hover:bg-canvas';
+  'group -mx-3 flex items-center gap-3.5 rounded-field px-3 py-3 transition-colors duration-(--duration-quick) ease-smooth-out hover:bg-subtle';
 
 function RowArrow() {
   return (

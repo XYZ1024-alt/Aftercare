@@ -3,6 +3,7 @@
 import type { FeedItem } from '@aftercare/console/client';
 import { History } from 'lucide-react';
 import {
+  decisionLabel,
   eventLabel,
   QUESTION_KIND_LABEL,
   reasonLabel,
@@ -10,7 +11,7 @@ import {
   type Tone,
   when,
 } from '../../lib/labels.ts';
-import { Card, Dot, Empty, Json, Notice, Pill, Technical } from '../ui.tsx';
+import { Card, Dot, Empty, Inset, Json, MonoId, Notice, Pill, Technical } from '../ui.tsx';
 import { UntrustedMarkdown, UntrustedText } from '../untrusted-text.tsx';
 import { AutonomyDecisions } from './autonomy.tsx';
 import { useCase } from './case-context.tsx';
@@ -69,61 +70,64 @@ function Item({ item }: { readonly item: FeedItem }) {
       data-event={item.eventType}
       data-origin={item.origin}
       data-seq={item.seq}
-      className="t-enter relative pb-5 last:pb-0"
+      className="t-enter group grid grid-cols-[1rem_minmax(0,1fr)] gap-x-3"
     >
       {/* A neutral rail with one coloured dot per event; the tone never frames a block. */}
-      <Dot tone={tone} className="absolute top-1.5 -left-[25px]" />
-      <p className="text-xs text-muted tabular-nums">
-        {when(item.recordedAt)} · {item.origin === 'agent' ? `Agent 步骤 #${item.seq}` : '案例记录'}
-      </p>
-      <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1.5">
-        <span className="font-medium">{eventLabel(item.origin, item.eventType)}</span>
-        {typeof detail.tool === 'string' && (
-          <code className="rounded-bar bg-track px-1.5 py-0.5 font-mono text-xs text-ink-soft">
-            {detail.tool}
-          </code>
-        )}
-        {typeof detail.code === 'string' && <Pill tone="rose">拒绝原因：{detail.code}</Pill>}
-        {typeof detail.kind === 'string' && item.eventType.startsWith('question_') && (
-          <span className="text-xs text-ink-soft">
-            {QUESTION_KIND_LABEL[detail.kind] ?? detail.kind}
-          </span>
-        )}
-        {typeof detail.decision === 'string' && (
-          <span className="text-xs text-ink-soft">决定：{detail.decision}</span>
-        )}
-        {typeof detail.by === 'string' && <span className="text-xs text-muted">{detail.by}</span>}
-        {typeof detail.reason === 'string' && (
-          <span className="text-xs text-ink-soft">{reasonLabel(detail.reason)}</span>
-        )}
-        {detail.repeated === true && <Pill tone="apricot">重复请求</Pill>}
-        {invalidated > 0 && <Pill tone="apricot">使 {invalidated} 项结论失效</Pill>}
+      <div className="flex flex-col items-center">
+        <Dot tone={tone} className="mt-1.5" />
+        <span aria-hidden className="mt-1.5 w-0.5 flex-1 rounded-full bg-line group-last:hidden" />
       </div>
-      {typeof detail.note === 'string' && detail.note !== '' && (
-        <div className="mt-2.5 rounded-field bg-canvas p-4">
-          <p className="mb-1.5 text-meta text-muted">行动说明（模型所写，不是执行结果）</p>
-          <UntrustedMarkdown text={detail.note} />
-        </div>
-      )}
-      {typeof detail.proposition === 'string' && (
-        <p className="mt-2 text-sm text-ink-soft">
-          <UntrustedText text={detail.proposition} />
+      <div className="min-w-0 pb-5 group-last:pb-0">
+        <p className="text-meta text-muted tabular-nums">
+          {when(item.recordedAt)} ·{' '}
+          {item.origin === 'agent' ? `Agent 步骤 #${item.seq}` : '案例记录'}
         </p>
-      )}
-      {refs.length > 0 && (
-        <p className="mt-2 text-meta break-words text-muted">引用：{refs.join('，')}</p>
-      )}
-      <Technical label="原始记录">
-        <Json value={detail} />
-      </Technical>
+        <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1.5">
+          <span className="font-medium">{eventLabel(item.origin, item.eventType)}</span>
+          {typeof detail.tool === 'string' && <MonoId>{detail.tool}</MonoId>}
+          {typeof detail.code === 'string' && <Pill tone="rose">拒绝原因：{detail.code}</Pill>}
+          {typeof detail.kind === 'string' && item.eventType.startsWith('question_') && (
+            <span className="text-meta text-ink-soft">
+              {QUESTION_KIND_LABEL[detail.kind] ?? detail.kind}
+            </span>
+          )}
+          {typeof detail.decision === 'string' && (
+            <span className="text-meta text-ink-soft">决定：{decisionLabel(detail.decision)}</span>
+          )}
+          {typeof detail.by === 'string' && (
+            <span className="text-meta text-muted">{detail.by}</span>
+          )}
+          {typeof detail.reason === 'string' && (
+            <span className="text-meta text-ink-soft">{reasonLabel(detail.reason)}</span>
+          )}
+          {detail.repeated === true && <Pill tone="apricot">重复请求</Pill>}
+          {invalidated > 0 && <Pill tone="apricot">使 {invalidated} 项结论失效</Pill>}
+        </div>
+        {typeof detail.note === 'string' && detail.note !== '' && (
+          <Inset className="mt-2.5">
+            <p className="mb-1.5 text-meta text-muted">行动说明（模型所写，不是执行结果）</p>
+            <UntrustedMarkdown text={detail.note} />
+          </Inset>
+        )}
+        {typeof detail.proposition === 'string' && (
+          <p className="mt-2 text-body text-ink-soft">
+            <UntrustedText text={detail.proposition} />
+          </p>
+        )}
+        {refs.length > 0 && (
+          <p className="mt-2 text-meta break-words text-muted">引用：{refs.join('，')}</p>
+        )}
+        <Technical label="原始记录">
+          <Json value={detail} />
+        </Technical>
+      </div>
     </li>
   );
 }
 
 export function Timeline() {
   const { feed, view } = useCase();
-  const waiting =
-    view.run !== null && ['queued', 'running'].includes(view.run.status) && feed.items.length > 0;
+  const waiting = view.run !== null && ['queued', 'running'].includes(view.run.status);
   return (
     <>
       <AutonomyDecisions />
@@ -147,7 +151,7 @@ export function Timeline() {
           {feed.items.length === 0 ? (
             <Empty>暂无事件记录</Empty>
           ) : (
-            <ol className="relative pl-6 before:absolute before:top-2 before:bottom-2 before:left-[3px] before:w-0.5 before:rounded-full before:bg-line">
+            <ol>
               {feed.items.map((item) => (
                 <Item key={`${item.origin}:${item.agentRunId ?? ''}:${item.seq}`} item={item} />
               ))}

@@ -120,8 +120,8 @@ export function ConversationHistory({
         <ul className="min-h-0 flex-1 overflow-y-auto">
           {groups.map((group) => (
             <li key={group.id}>
-              <p className="px-2 pt-2 pb-1 text-xs text-muted">{group.label}</p>
-              <ul>
+              <p className="px-2 pt-2 pb-1 text-meta text-muted">{group.label}</p>
+              <ul className="[&>li:not(:last-child)]:border-b [&>li:not(:last-child)]:border-line-subtle">
                 {group.conversations.map((conversation) => {
                   const active = conversation.conversationId === conversationId;
                   return (
@@ -130,7 +130,7 @@ export function ConversationHistory({
                       data-testid="conversation-item"
                       data-conversation={conversation.conversationId}
                       data-active={active}
-                      className="group relative"
+                      className="group relative min-w-0"
                     >
                       <button
                         type="button"
@@ -140,16 +140,14 @@ export function ConversationHistory({
                           select(conversation.conversationId);
                           onPicked?.();
                         }}
-                        className={`w-full rounded-field px-3 py-2.5 pr-11 text-left transition-colors duration-(--duration-quick) ease-smooth-out hover:bg-canvas disabled:cursor-not-allowed disabled:opacity-60 ${active ? 'bg-canvas' : ''}`}
+                        className={`w-full min-w-0 rounded-field px-3 py-2.5 pr-11 text-left text-body transition-colors duration-(--duration-quick) ease-smooth-out hover:bg-subtle disabled:cursor-not-allowed disabled:opacity-60 ${active ? 'bg-subtle' : ''}`}
                       >
-                        <span className={`line-clamp-1 ${active ? 'font-medium' : ''}`}>
+                        <span className={`block truncate ${active ? 'font-medium' : ''}`}>
                           <UntrustedText text={conversation.title} />
                         </span>
-                        <span className="mt-0.5 block text-xs text-muted">
+                        <span className="mt-0.5 block text-meta text-muted">
                           {conversation.running ? (
-                            <span className="t-shimmer" data-text="进行中">
-                              进行中
-                            </span>
+                            <span className="text-ink-soft">进行中</span>
                           ) : (
                             whenShort(conversation.updatedAt)
                           )}
@@ -160,7 +158,7 @@ export function ConversationHistory({
                         aria-label="删除对话"
                         disabled={deleting === conversation.conversationId}
                         onClick={() => setConfirming(conversation)}
-                        className="absolute top-1/2 right-2 grid size-8 -translate-y-1/2 place-items-center rounded-full bg-card text-muted opacity-0 transition-[opacity,background-color,color] duration-(--duration-quick) ease-smooth-out group-hover:opacity-100 group-focus-within:opacity-100 hover:bg-canvas hover:text-rose-ink disabled:cursor-not-allowed"
+                        className="absolute top-1/2 right-2 grid size-8 -translate-y-1/2 place-items-center rounded-full border border-line-subtle bg-card text-muted opacity-0 transition-[opacity,background-color,color] duration-(--duration-quick) ease-smooth-out group-hover:opacity-100 group-focus-within:opacity-100 hover:bg-subtle hover:text-rose-ink disabled:cursor-not-allowed pointer-coarse:min-h-11 pointer-coarse:min-w-11"
                       >
                         <Trash2 aria-hidden className="size-4" />
                       </button>

@@ -8,6 +8,7 @@ import {
   fieldKey,
   fieldTitle,
   fieldValue,
+  planLifecycleLabel,
   REVOKE_APPROVAL_REASONS,
   reasonLabel,
   reasonOptions,
@@ -23,7 +24,9 @@ import {
   Dot,
   Empty,
   Field,
+  Inset,
   Json,
+  MonoId,
   Notice,
   OPTION_CLASS,
   Pill,
@@ -53,13 +56,13 @@ function Group({
   readonly children: ReactNode;
 }) {
   return (
-    <section className="min-w-0 rounded-field bg-canvas p-4 [&_li]:break-words [&_p]:break-words">
+    <section className="min-w-0 rounded-field border border-line-subtle bg-subtle p-4 [&_li]:break-words [&_p]:break-words">
       <h3 className="mb-2 flex items-center gap-2 font-medium">
         <Dot tone={tone} />
         {title}
         <span className="text-meta text-muted tabular-nums">{count}</span>
       </h3>
-      {count === 0 ? <p className="text-sm text-muted">暂无</p> : children}
+      {count === 0 ? <p className="text-body text-muted">暂无</p> : children}
     </section>
   );
 }
@@ -70,7 +73,7 @@ function PlanPreview({ plan }: { readonly plan: PlanSummaryView }) {
   const content = plan.content;
   if (content === null) return <Empty>历史计划（未加载详情）</Empty>;
   return (
-    <div className="space-y-4 text-sm" data-testid="plan-preview">
+    <div className="space-y-4 text-body" data-testid="plan-preview">
       <section>
         <h3 className="mb-2 flex items-center gap-2 font-medium">
           <Dot tone="mint" />
@@ -80,7 +83,7 @@ function PlanPreview({ plan }: { readonly plan: PlanSummaryView }) {
         {content.patch.length === 0 ? (
           <Empty>无需修改任何字段</Empty>
         ) : (
-          <Table>
+          <Table label="修复补丁明细">
             <thead>
               <tr>
                 <th>对象</th>
@@ -93,7 +96,7 @@ function PlanPreview({ plan }: { readonly plan: PlanSummaryView }) {
             <tbody>
               {content.patch.map((entry) => (
                 <tr key={fieldKey(entry)} data-testid="patch-row" data-object={entry.objectId}>
-                  <td>
+                  <td className="break-all">
                     {entry.objectType}/{entry.objectId}
                   </td>
                   <td>{fieldTitle(registry, entry.fieldId)}</td>
@@ -110,7 +113,7 @@ function PlanPreview({ plan }: { readonly plan: PlanSummaryView }) {
           </Table>
         )}
       </section>
-      <div className="grid grid-cols-3 gap-4 max-xl:grid-cols-1">
+      <div className="grid grid-cols-1 gap-4 @xl/card:grid-cols-3">
         <Group tone="sky" title="保留的后续合法变更" count={content.preserved.length}>
           <ul className="space-y-2">
             {content.preserved.map((entry) => (
@@ -128,7 +131,7 @@ function PlanPreview({ plan }: { readonly plan: PlanSummaryView }) {
                 </span>{' '}
                 — {TREATMENT[entry.treatment] ?? entry.treatment}
                 {entry.ruleIds.length > 0 && (
-                  <span className="text-xs text-muted">（规则 {entry.ruleIds.join('，')}）</span>
+                  <span className="text-meta text-muted">（规则 {entry.ruleIds.join('，')}）</span>
                 )}
               </li>
             ))}
@@ -184,7 +187,7 @@ function PlanPreview({ plan }: { readonly plan: PlanSummaryView }) {
             })}
           </ul>
           {content.isolation !== null && (
-            <p className="mt-2 text-xs text-ink-soft">
+            <p className="mt-2 text-meta text-ink-soft">
               部分解决前提：已修复字段与未决项相互隔离（
               {content.isolation.checks.map((check) => check.check).join('，')}
               ）；批准前需逐项确认未决项。
@@ -192,7 +195,7 @@ function PlanPreview({ plan }: { readonly plan: PlanSummaryView }) {
           )}
         </Group>
       </div>
-      <section className="rounded-field bg-canvas p-4">
+      <section className="rounded-field border border-line-subtle bg-subtle p-4">
         <h3 className="mb-2 font-medium">基线与事故范围</h3>
         <p className="text-meta text-ink-soft">
           基线：可信水位 {content.baseline.trustedWatermark}，
@@ -263,15 +266,15 @@ function Approval({ contract }: { readonly contract: ContractView }) {
   };
 
   return (
-    <div className="space-y-4 text-sm" data-testid="approval" data-contract={contract.contractId}>
-      <div className="space-y-4 rounded-field bg-canvas p-4">
+    <div className="space-y-4 text-body" data-testid="approval" data-contract={contract.contractId}>
+      <Inset className="space-y-4 p-4">
         <Notice tone="mint" testId="sandbox-only">
           仅修改沙箱，不修改生产库。目标是本案例专属的沙箱分支 {shortId(contract.branchId)}
           ；源业务库和快照都不会被写入。
         </Notice>
         <section>
           <h3 className="mb-2 font-medium">待批变更明细</h3>
-          <Table>
+          <Table label="待批变更明细">
             <thead>
               <tr>
                 <th>对象</th>
@@ -284,7 +287,7 @@ function Approval({ contract }: { readonly contract: ContractView }) {
             <tbody>
               {contract.changes.map((change) => (
                 <tr key={fieldKey(change)}>
-                  <td>
+                  <td className="break-all">
                     {change.objectType}/{change.objectId}
                   </td>
                   <td>{fieldTitle(registry, change.fieldId)}</td>
@@ -300,14 +303,14 @@ function Approval({ contract }: { readonly contract: ContractView }) {
             </tbody>
           </Table>
         </section>
-        <div className="grid grid-cols-2 gap-4 max-md:grid-cols-1">
+        <div className="grid grid-cols-1 gap-4 @md/card:grid-cols-2">
           <Checks title="执行前事务内检查" checks={contract.checks.inTransaction} />
           <Checks title="执行后独立验证项" checks={contract.checks.afterwards} />
         </div>
         <p className="text-meta text-muted">
           策略修订 {contract.policy.revision}；基于依赖修订 {contract.dependencyRevision} 的输入。
         </p>
-      </div>
+      </Inset>
       {active !== undefined ? (
         <div className="space-y-3">
           <Notice tone="mint">
@@ -326,7 +329,7 @@ function Approval({ contract }: { readonly contract: ContractView }) {
             </Button>
           )}
           {asking === 'revoke' && active !== undefined && (
-            <section className="space-y-3 rounded-field bg-canvas p-4">
+            <Inset className="space-y-3 p-4">
               <p className="text-meta text-apricot-ink">
                 尚未执行的补丁将无法继续应用；已写入沙箱的内容不会自动回滚。
               </p>
@@ -356,7 +359,7 @@ function Approval({ contract }: { readonly contract: ContractView }) {
                   取消
                 </Button>
               </div>
-            </section>
+            </Inset>
           )}
           <RefusalNote refusal={revoke.refusal} />
         </div>
@@ -372,9 +375,9 @@ function Approval({ contract }: { readonly contract: ContractView }) {
               <p className="text-meta font-medium text-ink-soft">
                 以下 {contract.untouched.length} 项未决域不会被修改
               </p>
-              <ul className="space-y-1.5 rounded-field bg-canvas p-3.5">
+              <ul className="space-y-1.5 rounded-field border border-line-subtle bg-subtle p-3.5">
                 {contract.untouched.map((domain) => (
-                  <li key={domain} className="flex items-start gap-2 text-sm">
+                  <li key={domain} className="flex items-start gap-2 text-body">
                     <Check aria-hidden className="mt-0.5 size-4 shrink-0 text-mint-ink" />
                     <span className="min-w-0 break-words">{domain}</span>
                   </li>
@@ -425,7 +428,7 @@ function Approval({ contract }: { readonly contract: ContractView }) {
             )}
           </div>
           {asking === 'decline' && approvalQuestionId !== null && (
-            <section className="space-y-3 rounded-field bg-canvas p-4">
+            <Inset className="space-y-3 p-4">
               <p className="text-meta text-apricot-ink">
                 拒绝后不会修改沙箱，系统会将理由反馈给调查流程；如需继续，需重新生成契约并再次审核。
               </p>
@@ -455,7 +458,7 @@ function Approval({ contract }: { readonly contract: ContractView }) {
                   取消
                 </Button>
               </div>
-            </section>
+            </Inset>
           )}
           <RefusalNote refusal={approve.refusal ?? decline.refusal} />
         </div>
@@ -490,7 +493,8 @@ export function Plans() {
         aside={
           current === undefined ? undefined : (
             <Pill tone={current.result === 'partial' ? 'violet' : 'mint'}>
-              {current.result === 'partial' ? '部分方案' : '完整方案'}，状态 {current.lifecycle}
+              {current.result === 'partial' ? '部分方案' : '完整方案'}，状态{' '}
+              {planLifecycleLabel(current.lifecycle)}
             </Pill>
           )
         }
@@ -524,12 +528,11 @@ export function Plans() {
         <Card title="历史与失效计划" icon={History} tone="neutral" testId="stale-plans">
           <ul className={ROWS_CLASS}>
             {stale.map((plan) => (
-              <li key={plan.planId} data-testid="stale-plan" className="text-sm text-ink-soft">
-                计划 <span className="font-mono text-xs">{shortId(plan.planId)}</span>（
-                {when(plan.compiledAt)}）：
+              <li key={plan.planId} data-testid="stale-plan" className="text-body text-ink-soft">
+                计划 <MonoId>{shortId(plan.planId)}</MonoId>（{when(plan.compiledAt)}）：
                 {plan.status.validity === 'stale'
                   ? `已失效，原因：${reasonLabel(plan.status.reason)}，自修订 ${plan.status.sinceRevision}`
-                  : `状态 ${plan.lifecycle}`}
+                  : `状态 ${planLifecycleLabel(plan.lifecycle)}`}
               </li>
             ))}
           </ul>

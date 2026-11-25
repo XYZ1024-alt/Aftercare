@@ -31,17 +31,17 @@ function TopNav({ wide }: { readonly wide: boolean }) {
     window.location.assign('/login');
   };
   return (
-    <header className="sticky top-0 z-20 bg-canvas/70 backdrop-blur-xl">
+    <header className="sticky top-0 z-30 border-b border-line-subtle bg-canvas/70 backdrop-blur-xl">
       <div
         className={`mx-auto grid min-h-16 ${wide ? 'max-w-[1600px]' : 'max-w-[1240px]'} grid-cols-[1fr_auto_1fr] items-center gap-x-5 gap-y-2 px-6 max-md:grid-cols-[1fr_auto] max-md:px-4 max-md:py-2.5`}
       >
         <Link
           href="/"
-          className="inline-flex items-center gap-2.5 justify-self-start text-base font-semibold tracking-[-0.02em]"
+          className="inline-flex items-center gap-2.5 justify-self-start text-heading font-semibold tracking-tight"
         >
           <span
             aria-hidden
-            className="grid size-8 place-items-center rounded-[10px] bg-ink text-white"
+            className="grid size-8 place-items-center rounded-field bg-ink text-white"
           >
             <Activity className="size-4" strokeWidth={2.4} />
           </span>
@@ -52,7 +52,7 @@ function TopNav({ wide }: { readonly wide: boolean }) {
           aria-label="主要页面"
           className="relative flex gap-0.5 rounded-full bg-card p-1 shadow-soft max-md:col-span-2 max-md:row-start-2 max-md:overflow-x-auto"
         >
-          <SlidingPill pill={pill} className="top-1 h-8 bg-ink" />
+          <SlidingPill pill={pill} className="top-1 bottom-1 bg-ink forced-colors:hidden" />
           {links.map((link) => {
             const current = link.href === active;
             return (
@@ -61,7 +61,7 @@ function TopNav({ wide }: { readonly wide: boolean }) {
                 href={link.href}
                 data-active={current}
                 aria-current={current ? 'page' : undefined}
-                className={`relative z-1 inline-flex h-8 shrink-0 items-center rounded-full px-4 text-sm font-medium transition-colors duration-(--duration-fast) ease-smooth-out ${current ? 'text-white' : 'text-ink-soft hover:text-ink'}`}
+                className={`relative z-1 inline-flex min-h-8 shrink-0 items-center rounded-full px-4 py-1 text-meta font-medium transition-colors duration-(--duration-fast) ease-smooth-out aria-[current=page]:forced-colors:outline-2 aria-[current=page]:forced-colors:outline-offset-1 aria-[current=page]:forced-colors:outline-[Highlight] ${current ? 'text-white' : 'text-ink-soft hover:text-ink'}`}
               >
                 {link.label}
               </Link>
@@ -70,7 +70,7 @@ function TopNav({ wide }: { readonly wide: boolean }) {
         </nav>
         <div className="flex items-center gap-1.5 justify-self-end">
           <span
-            className="grid size-8 shrink-0 place-items-center rounded-full bg-violet-wash text-sm font-semibold text-violet-ink uppercase"
+            className="grid size-8 shrink-0 place-items-center rounded-full bg-violet-wash text-meta font-semibold text-violet-ink uppercase"
             title={`${session.displayName}（${session.principal}）`}
             data-testid="principal"
           >
@@ -82,7 +82,7 @@ function TopNav({ wide }: { readonly wide: boolean }) {
           <button
             type="button"
             onClick={() => void signOut()}
-            className="inline-flex h-9 items-center gap-1.5 rounded-full px-3 text-sm font-medium text-ink-soft transition-colors duration-(--duration-quick) hover:bg-card hover:text-ink"
+            className="inline-flex min-h-9 items-center gap-1.5 rounded-full px-3 py-1.5 text-meta font-medium text-ink-soft transition-colors duration-(--duration-quick) hover:bg-card hover:text-ink"
           >
             <LogOut aria-hidden className="size-4" />
             退出
@@ -99,7 +99,7 @@ function ModeBanner() {
     return (
       <p
         data-testid="test-mode-banner"
-        className="mb-6 flex w-fit items-center gap-2 rounded-full bg-apricot-soft max-sm:rounded-2xl px-4 py-2 text-meta font-medium text-apricot-ink"
+        className="mb-6 flex w-fit items-center gap-2 rounded-full border border-apricot-line bg-apricot-soft px-4 py-2 text-meta font-medium text-apricot-ink max-sm:rounded-field"
       >
         <FlaskConical aria-hidden className="size-4 shrink-0" />
         测试模式：当前由脚本化测试替身驱动，非真实模型自主调查
@@ -108,7 +108,7 @@ function ModeBanner() {
   }
   if (modelMode === 'unconfigured') {
     return (
-      <p className="mb-6 flex w-fit items-center gap-2 rounded-full bg-card px-4 py-2 text-meta text-ink-soft shadow-soft">
+      <p className="mb-6 flex w-fit items-center gap-2 rounded-full border border-line-subtle bg-subtle px-4 py-2 text-meta text-ink-soft max-sm:rounded-field">
         <PlugZap aria-hidden className="size-4 shrink-0" />
         尚未配置模型服务：当前仅支持查看案例，无法发起新调查
       </p>

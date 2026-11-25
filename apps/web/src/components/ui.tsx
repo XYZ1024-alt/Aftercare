@@ -7,6 +7,7 @@ import {
   Check,
   CheckCircle2,
   ChevronDown,
+  ChevronRight,
   Info,
   Loader2,
   type LucideIcon,
@@ -17,6 +18,7 @@ import Link from 'next/link';
 import {
   type ButtonHTMLAttributes,
   type ComponentProps,
+  type ComponentPropsWithoutRef,
   type CSSProperties,
   Fragment,
   type InputHTMLAttributes,
@@ -35,7 +37,7 @@ import type { Tone } from '../lib/labels.ts';
 
 /** Soft background and dark text of a tone: pills, notices. */
 export const SOFT_CLASS: Readonly<Record<Tone, string>> = {
-  neutral: 'bg-track text-ink-soft',
+  neutral: 'bg-sunken text-ink-soft',
   sky: 'bg-sky-soft text-sky-ink',
   violet: 'bg-violet-soft text-violet-ink',
   apricot: 'bg-apricot-soft text-apricot-ink',
@@ -45,7 +47,7 @@ export const SOFT_CLASS: Readonly<Record<Tone, string>> = {
 
 /** The stronger tint of a tone with its dark text: icon tiles, tinted cards. */
 export const WASH_CLASS: Readonly<Record<Tone, string>> = {
-  neutral: 'bg-canvas-2 text-ink-soft',
+  neutral: 'bg-subtle text-ink-soft',
   sky: 'bg-sky-wash text-sky-ink',
   violet: 'bg-violet-wash text-violet-ink',
   apricot: 'bg-apricot-wash text-apricot-ink',
@@ -73,6 +75,15 @@ export const INK_CLASS: Readonly<Record<Tone, string>> = {
   rose: 'text-rose-ink',
 };
 
+const LINE_CLASS: Readonly<Record<Tone, string>> = {
+  neutral: 'border-line',
+  sky: 'border-sky-line',
+  violet: 'border-violet-line',
+  apricot: 'border-apricot-line',
+  mint: 'border-mint-line',
+  rose: 'border-rose-line',
+};
+
 const SELECTED_CLASS: Readonly<Record<Tone, string>> = {
   neutral: 'bg-ink text-white',
   sky: 'bg-sky-ink text-white',
@@ -98,6 +109,60 @@ const MOTION = 'duration-(--duration-quick) ease-smooth-out motion-reduce:transi
 export const stagger = (index: number): CSSProperties =>
   ({ '--enter-index': index }) as CSSProperties;
 
+const TOP_LAYER_CLOSE_TIMEOUT_MS = 2000;
+let supportsDisplayTransition: boolean | undefined;
+
+/** Probe discrete `display` transition support; Firefox 129+ parses allow-discrete without transitioning display. */
+function canTransitionDisplay(): boolean {
+  if (supportsDisplayTransition !== undefined) return supportsDisplayTransition;
+  if (
+    typeof window === 'undefined' ||
+    !window.CSS?.supports?.('transition-behavior', 'allow-discrete') ||
+    !document.body
+  ) {
+    return false;
+  }
+  const probe = document.createElement('div');
+  probe.style.cssText = 'transition: display 1s allow-discrete !important; display: block;';
+  document.body.appendChild(probe);
+  void getComputedStyle(probe).display;
+  probe.style.display = 'none';
+  supportsDisplayTransition = getComputedStyle(probe).display === 'block';
+  probe.remove();
+  return supportsDisplayTransition;
+}
+
+function supportsTopLayerExit(): boolean {
+  return (
+    typeof window !== 'undefined' &&
+    Boolean(window.CSS?.supports?.('overlay', 'auto')) &&
+    canTransitionDisplay()
+  );
+}
+
+/** Resolves once all running CSS animations/transitions on `element` settle (bounded by timeout). */
+export async function waitForAnimations(element: Element): Promise<void> {
+  const animations = element.getAnimations({ subtree: true });
+  if (animations.length === 0) return;
+  await Promise.race([
+    Promise.allSettled(animations.map((animation) => animation.finished)),
+    new Promise<void>((resolve) => {
+      setTimeout(resolve, TOP_LAYER_CLOSE_TIMEOUT_MS);
+    }),
+  ]);
+}
+
+/** Keeps a top-layer element visible while its exit transition runs when native discrete overlay exit is unsupported. */
+export async function closeTopLayer(element: Element, close: () => void): Promise<void> {
+  if (!supportsTopLayerExit()) {
+    element.setAttribute('data-closing', '');
+    await waitForAnimations(element);
+    if (!element.hasAttribute('data-closing')) return;
+    element.removeAttribute('data-closing');
+  }
+  close();
+}
+
 /** A status, in words, on the soft colour of its tone. */
 export function Pill({
   tone,
@@ -111,9 +176,9 @@ export function Pill({
   return (
     <span
       data-testid={testId}
-      className={`inline-block w-max max-w-full rounded-full px-2.5 py-[3px] text-xs font-medium ${SOFT_CLASS[tone]}`}
+      className={`inline-flex max-w-full items-center gap-1 rounded-full border px-2.5 py-0.5 text-meta font-medium ${SOFT_CLASS[tone]} ${LINE_CLASS[tone]}`}
     >
-      {children}
+      <span className="min-w-0 truncate">{children}</span>
     </span>
   );
 }
@@ -133,6 +198,26 @@ export function Dot({
   );
 }
 
+/** A coloured dot paired with its status label so colour is never the only signal. */
+export function StatusDot({
+  tone,
+  label,
+  className = '',
+}: {
+  readonly tone: Tone;
+  readonly label: string;
+  readonly className?: string;
+}) {
+  return (
+    <span
+      className={`inline-flex shrink-0 items-center gap-1.5 text-meta text-ink-soft ${className}`}
+    >
+      <Dot tone={tone} className="size-2" />
+      <span>{label}</span>
+    </span>
+  );
+}
+
 /** A rounded square holding an icon, tinted by its tone. */
 export function IconTile({
   icon: Icon,
@@ -148,7 +233,7 @@ export function IconTile({
       aria-hidden
       className={`grid shrink-0 place-items-center ${size === 'md' ? 'size-9 rounded-xl' : 'size-7 rounded-lg'} ${WASH_CLASS[tone]}`}
     >
-      <Icon className={size === 'md' ? 'size-[18px]' : 'size-4'} strokeWidth={2} />
+      <Icon className={size === 'md' ? 'size-4.5' : 'size-4'} strokeWidth={2} />
     </span>
   );
 }
@@ -176,16 +261,14 @@ export function Card({
   return (
     <section
       data-testid={testId}
-      className={`min-w-0 rounded-panel bg-card p-6 shadow-soft max-sm:p-4 ${className}`}
+      className={`@container/card min-w-0 rounded-panel border border-line-subtle bg-card p-5 shadow-soft max-sm:p-4 ${className}`}
     >
       {(title !== undefined || aside !== undefined) && (
         <header className="mb-5 flex flex-wrap items-start justify-between gap-x-3 gap-y-2">
           <div className="flex min-w-0 items-center gap-3">
             {icon !== undefined && <IconTile icon={icon} tone={tone} />}
             <div className="min-w-0">
-              {title !== undefined && (
-                <h2 className="text-[17px] leading-6 font-medium tracking-[-0.01em]">{title}</h2>
-              )}
+              {title !== undefined && <h2 className="text-heading font-medium">{title}</h2>}
               {description !== undefined && (
                 <p className="mt-0.5 text-meta text-muted">{description}</p>
               )}
@@ -199,9 +282,38 @@ export function Card({
   );
 }
 
+/** L2 inset surface inside a card or panel. */
+export function Inset({ children, className = '', ...props }: ComponentPropsWithoutRef<'div'>) {
+  return (
+    <div
+      {...props}
+      className={`rounded-field border border-line-subtle bg-subtle p-3.5 ${className}`}
+    >
+      {children}
+    </div>
+  );
+}
+
+/** Monospace chip for ids, digests, and tool names. */
+export function MonoId({
+  children,
+  className = '',
+}: {
+  readonly children: ReactNode;
+  readonly className?: string;
+}) {
+  return (
+    <code
+      className={`rounded bg-sunken px-1.5 py-0.5 font-mono text-code text-ink-soft ${className}`}
+    >
+      {children}
+    </code>
+  );
+}
+
 /** A heading for a group of cards. */
 export function SectionHeading({ children }: { readonly children: ReactNode }) {
-  return <h2 className="mb-3 px-1 text-[17px] leading-6 font-medium">{children}</h2>;
+  return <h2 className="mb-3 px-1 text-heading font-medium">{children}</h2>;
 }
 
 export function PageHead({
@@ -216,8 +328,8 @@ export function PageHead({
   return (
     <div className="t-enter mb-7 flex flex-wrap items-end justify-between gap-4 max-sm:mb-5">
       <div className="min-w-0">
-        <h1 className="text-title font-semibold max-sm:text-[26px] max-sm:leading-8">{title}</h1>
-        {description !== undefined && <p className="mt-1.5 text-sm text-muted">{description}</p>}
+        <h1 className="text-title font-semibold">{title}</h1>
+        {description !== undefined && <p className="mt-1.5 text-body text-muted">{description}</p>}
       </div>
       {actions !== undefined && <div className="flex flex-wrap gap-2">{actions}</div>}
     </div>
@@ -231,18 +343,22 @@ export function PageHead({
 export type ButtonTone = 'primary' | 'secondary' | 'sandbox' | 'approval' | 'danger';
 const BUTTON_TONE: Readonly<Record<ButtonTone, string>> = {
   primary: 'bg-ink text-white shadow-soft enabled:hover:bg-ink-soft',
-  secondary: 'bg-card text-ink shadow-soft ring-1 ring-ink/10 enabled:hover:bg-canvas',
+  secondary:
+    'border border-line-control bg-card text-ink shadow-soft enabled:hover:border-line-control-hover enabled:hover:bg-canvas',
   sandbox: 'bg-mint-ink text-white shadow-soft enabled:hover:bg-mint-ink/88',
   approval: 'bg-apricot-ink text-white shadow-soft enabled:hover:bg-apricot-ink/88',
   danger: 'bg-rose-soft text-rose-ink enabled:hover:bg-rose-wash',
 };
-const BUTTON_SIZE = { md: 'h-10 px-[18px] text-sm', sm: 'h-8 px-3.5 text-meta' } as const;
+const BUTTON_SIZE = {
+  md: 'min-h-10 px-4.5 py-2 text-body',
+  sm: 'min-h-8 px-3.5 py-1.5 text-meta',
+} as const;
 
 export const buttonClass = (
   tone: ButtonTone = 'secondary',
   size: keyof typeof BUTTON_SIZE = 'md',
 ) =>
-  `inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-full font-medium transition-[background-color,color,scale] ${MOTION} enabled:active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-45 ${BUTTON_TONE[tone]} ${BUTTON_SIZE[size]}`;
+  `inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-input font-medium transition-[background-color,border-color,color,scale] ${MOTION} enabled:active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-45 ${BUTTON_TONE[tone]} ${BUTTON_SIZE[size]}`;
 
 export function Button({
   tone = 'secondary',
@@ -297,7 +413,7 @@ export function Chip({
     <button
       type="button"
       {...rest}
-      className={`inline-flex h-9 shrink-0 items-center gap-2 rounded-full px-3.5 text-meta font-medium transition-[background-color,color,scale] ${MOTION} active:scale-[0.97] ${active ? SELECTED_CLASS[tone] : 'bg-card text-ink-soft shadow-soft hover:text-ink'}`}
+      className={`inline-flex min-h-9 shrink-0 items-center gap-2 rounded-full border border-transparent px-3.5 py-1.5 text-meta font-medium transition-[background-color,color,scale] ${MOTION} active:scale-[0.97] ${active ? `${SELECTED_CLASS[tone]} forced-colors:outline-2 forced-colors:outline-offset-1 forced-colors:outline-[Highlight]` : 'bg-card text-ink-soft shadow-soft hover:text-ink'}`}
     >
       {tone !== 'neutral' && !active && <Dot tone={tone} className="size-2" />}
       {children}
@@ -321,9 +437,11 @@ export function useSlidingPill<T extends HTMLElement>(active: string | null) {
     const element = pill.current;
     const container = bar.current;
     if (element === null || container === null) return;
+    let cancelled = false;
+    const getTarget = () =>
+      active === null ? null : container.querySelector<HTMLElement>('[data-active="true"]');
     const place = (animate: boolean) => {
-      const target =
-        active === null ? null : container.querySelector<HTMLElement>('[data-active="true"]');
+      const target = getTarget();
       if (target === null) {
         element.style.opacity = '0';
         shown.current = false;
@@ -343,7 +461,19 @@ export function useSlidingPill<T extends HTMLElement>(active: string | null) {
     place(true);
     const observer = new ResizeObserver(() => place(false));
     observer.observe(container);
-    return () => observer.disconnect();
+    const activeTarget = getTarget();
+    if (activeTarget !== null) observer.observe(activeTarget);
+    const onFonts = () => {
+      if (!cancelled) place(false);
+    };
+    const fonts = document.fonts;
+    fonts?.addEventListener?.('loadingdone', onFonts);
+    void fonts?.ready.then(onFonts);
+    return () => {
+      cancelled = true;
+      observer.disconnect();
+      fonts?.removeEventListener?.('loadingdone', onFonts);
+    };
   }, [active]);
   return { bar, pill };
 }
@@ -360,7 +490,7 @@ export function SlidingPill({
     <span
       ref={pill}
       aria-hidden
-      className={`pointer-events-none absolute left-0 w-0 rounded-full opacity-0 transition-[transform,width] duration-(--duration-fast) ease-smooth-out will-change-[transform,width] motion-reduce:transition-none ${className}`}
+      className={`pointer-events-none absolute left-0 w-0 rounded-full opacity-0 transition-[transform,width] duration-(--duration-fast) ease-smooth-out motion-reduce:transition-none ${className}`}
     />
   );
 }
@@ -387,21 +517,19 @@ export function MetricCard({
       className={`flex min-h-40 min-w-0 flex-col rounded-panel px-5 pt-5 pb-4 max-sm:min-h-36 max-sm:px-4 ${SOFT_CLASS[tone]}`}
     >
       <div className="flex items-center justify-between gap-3">
-        <p className="text-sm font-medium">{label}</p>
+        <p className="text-meta font-medium">{label}</p>
         <span
           aria-hidden
           className={`grid size-9 place-items-center rounded-full text-white ${SOLID_CLASS[tone]}`}
         >
-          <Icon className="size-[18px]" strokeWidth={2.2} />
+          <Icon className="size-4.5" strokeWidth={2.2} />
         </span>
       </div>
       <p className="mt-3 flex items-baseline gap-1.5 text-ink">
-        <span className="text-display font-semibold tabular-nums lining-nums max-sm:text-[38px]">
-          {value}
-        </span>
-        {unit !== undefined && <span className="text-sm font-medium text-muted">{unit}</span>}
+        <span className="text-display font-semibold tabular-nums lining-nums">{value}</span>
+        {unit !== undefined && <span className="text-meta font-medium text-muted">{unit}</span>}
       </p>
-      {foot !== undefined && <p className="mt-auto pt-3 text-meta opacity-85">{foot}</p>}
+      {foot !== undefined && <p className="mt-auto pt-3 text-meta text-muted">{foot}</p>}
     </div>
   );
 }
@@ -416,7 +544,7 @@ export function RefusalNote({ refusal }: { readonly refusal: Refusal | null }) {
       role="alert"
       data-testid="refusal"
       data-code={refusal.code}
-      className="t-enter mt-3 flex items-start gap-2.5 rounded-input bg-rose-soft px-3.5 py-2.5 text-sm text-rose-ink"
+      className="t-enter mt-3 flex items-start gap-2.5 rounded-input border border-rose-line bg-rose-soft px-3.5 py-2.5 text-body text-rose-ink"
     >
       <Ban aria-hidden className="mt-0.5 size-4 shrink-0" />
       <span>
@@ -441,7 +569,7 @@ export function Notice({
   return (
     <div
       data-testid={testId}
-      className={`flex items-start gap-2.5 rounded-field px-4 py-3 text-sm ${SOFT_CLASS[tone]}`}
+      className={`flex items-start gap-2.5 rounded-field border px-4 py-3 text-body ${SOFT_CLASS[tone]} ${LINE_CLASS[tone]}`}
     >
       <Icon aria-hidden className="mt-0.5 size-4 shrink-0" />
       <div className="min-w-0">{children}</div>
@@ -449,7 +577,7 @@ export function Notice({
   );
 }
 
-/** A header that opens a body below it (accordion expand, transitions.dev). */
+/** A native `<details>` disclosure with progressive-enhancement `::details-content` animation. */
 export function Disclosure({
   summary,
   children,
@@ -461,26 +589,19 @@ export function Disclosure({
   readonly className?: string;
   readonly summaryClassName?: string;
 }) {
-  const [open, setOpen] = useState(false);
-  const panel = useId();
   return (
-    <div className={`t-acc ${className}`} data-open={open}>
-      <button
-        type="button"
-        aria-expanded={open}
-        aria-controls={panel}
-        onClick={() => setOpen(!open)}
-        className={`inline-flex cursor-pointer select-none items-center gap-1 rounded-full transition-colors ${MOTION} ${summaryClassName}`}
+    <details className={`group ${className}`}>
+      <summary
+        className={`inline-flex cursor-pointer list-none select-none items-center gap-1 rounded-full transition-colors duration-(--duration-quick) ease-smooth-out [&::-webkit-details-marker]:hidden ${summaryClassName}`}
       >
+        <ChevronRight
+          aria-hidden
+          className="size-3.5 shrink-0 motion-safe:transition-transform motion-safe:duration-(--duration-fast) motion-safe:ease-smooth-out group-open:rotate-90"
+        />
         {summary}
-        <span className="t-acc-chevron">
-          <ChevronDown aria-hidden className="size-3.5" />
-        </span>
-      </button>
-      <div id={panel} className="t-acc-panel" inert={!open}>
-        <div className="t-acc-panel-inner">{children}</div>
-      </div>
-    </div>
+      </summary>
+      {children}
+    </details>
   );
 }
 
@@ -495,10 +616,10 @@ export function Technical({
   return (
     <Disclosure
       summary={label}
-      className="mt-3 text-xs text-muted"
+      className="mt-3 text-meta text-muted"
       summaryClassName="text-left hover:text-ink-soft"
     >
-      <div className="mt-2 space-y-1 break-all rounded-input bg-canvas px-3 py-2.5 font-mono text-ink-soft">
+      <div className="mt-2 space-y-1 break-all rounded-input border border-line-subtle bg-subtle px-3 py-2.5 font-mono text-code text-ink-soft">
         {children}
       </div>
     </Disclosure>
@@ -519,25 +640,25 @@ export function Field({
     <label className="block min-w-0">
       <span className="mb-1.5 block text-meta font-medium text-ink-soft">{label}</span>
       {children}
-      {hint !== undefined && <span className="mt-1.5 block text-xs text-muted">{hint}</span>}
+      {hint !== undefined && <span className="mt-1.5 block text-meta text-muted">{hint}</span>}
     </label>
   );
 }
 
 /** The face every typed control shares: surface, hover, focus ring, disabled state. */
-const CONTROL_FACE = `rounded-input border border-transparent bg-canvas text-ink transition-[background-color,border-color,box-shadow] ${MOTION} hover:bg-canvas-2/60 in-[.bg-canvas]:bg-card focus-visible:border-sky/60 focus-visible:bg-card focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-sky/15 disabled:bg-track disabled:text-muted`;
+const CONTROL_FACE = `rounded-input border border-line-control bg-canvas text-ink transition-[background-color,border-color,box-shadow] ${MOTION} hover:border-line-control-hover hover:bg-subtle in-[.bg-canvas]:bg-card focus-visible:border-sky/60 focus-visible:bg-card focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-sky/15 disabled:bg-sunken disabled:text-muted`;
 
-export const INPUT_CLASS = `w-full ${CONTROL_FACE} px-3.5 py-2.5 text-body placeholder:text-muted/70 [&:-webkit-autofill]:shadow-[inset_0_0_0_1000px_var(--color-card)] [&:-webkit-autofill]:[-webkit-text-fill-color:var(--color-ink)]`;
+export const INPUT_CLASS = `w-full ${CONTROL_FACE} px-3.5 py-2.5 text-body placeholder:text-muted [&:-webkit-autofill]:shadow-[inset_0_0_0_1000px_var(--color-card)] [&:-webkit-autofill]:[-webkit-text-fill-color:var(--color-ink)]`;
 
 /** A textarea keeps the input face, grows with its content and never shows the native resize grip. */
 export const TEXTAREA_CLASS = `${INPUT_CLASS} resize-none field-sizing-content max-h-72 min-h-[4.5rem]`;
 
-const CHECKBOX_INPUT = `peer absolute inset-0 size-full cursor-pointer appearance-none rounded-[6px] bg-card ring-1 ring-ink/20 ring-inset transition-[background-color,box-shadow] ${MOTION} hover:ring-ink/35 checked:bg-ink checked:ring-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky disabled:cursor-not-allowed disabled:opacity-45`;
+const CHECKBOX_INPUT = `peer absolute inset-0 size-full cursor-pointer appearance-none rounded-bar border border-line-control bg-card transition-[background-color,border-color,box-shadow] ${MOTION} hover:border-line-control-hover checked:border-ink checked:bg-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky disabled:cursor-not-allowed disabled:opacity-45 forced-colors:appearance-auto`;
 const CHECKBOX_ICON =
-  'pointer-events-none relative size-3 scale-75 text-white opacity-0 transition-[opacity,scale] duration-(--duration-quick) ease-bounce motion-reduce:transition-none peer-checked:scale-100 peer-checked:opacity-100 peer-disabled:opacity-45';
-const RADIO_INPUT = `peer absolute inset-0 size-full cursor-pointer appearance-none rounded-full bg-card ring-1 ring-ink/20 ring-inset transition-[background-color,box-shadow] ${MOTION} hover:ring-ink/35 checked:bg-ink checked:ring-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky disabled:cursor-not-allowed disabled:opacity-45`;
+  'pointer-events-none relative size-3 scale-75 text-white opacity-0 transition-[opacity,scale] duration-(--duration-quick) ease-bounce motion-reduce:transition-none peer-checked:scale-100 peer-checked:opacity-100 peer-disabled:opacity-45 forced-colors:hidden';
+const RADIO_INPUT = `peer absolute inset-0 size-full cursor-pointer appearance-none rounded-full border border-line-control bg-card transition-[background-color,border-color,box-shadow] ${MOTION} hover:border-line-control-hover checked:border-ink checked:bg-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky disabled:cursor-not-allowed disabled:opacity-45 forced-colors:appearance-auto`;
 const RADIO_DOT =
-  'pointer-events-none relative size-2 scale-0 rounded-full bg-white transition-transform duration-(--duration-quick) ease-bounce motion-reduce:transition-none peer-checked:scale-100 peer-disabled:opacity-45';
+  'pointer-events-none relative size-2 scale-0 rounded-full bg-white transition-transform duration-(--duration-quick) ease-bounce motion-reduce:transition-none peer-checked:scale-100 peer-disabled:opacity-45 forced-colors:hidden';
 
 /**
  * A checkbox keeps the native input (keyboard, forms, Playwright's check()) and
@@ -545,7 +666,7 @@ const RADIO_DOT =
  */
 export function Checkbox(props: Omit<InputHTMLAttributes<HTMLInputElement>, 'type' | 'className'>) {
   return (
-    <span className="relative mt-0.5 grid size-[18px] shrink-0 place-items-center">
+    <span className="relative mt-0.5 grid size-4.5 shrink-0 place-items-center">
       <input type="checkbox" {...props} className={CHECKBOX_INPUT} />
       <Check aria-hidden strokeWidth={3} className={CHECKBOX_ICON} />
     </span>
@@ -555,7 +676,7 @@ export function Checkbox(props: Omit<InputHTMLAttributes<HTMLInputElement>, 'typ
 /** A radio, styled like Checkbox: the native input stays, a white dot fills the checked circle. */
 export function Radio(props: Omit<InputHTMLAttributes<HTMLInputElement>, 'type' | 'className'>) {
   return (
-    <span className="relative mt-0.5 grid size-[18px] shrink-0 place-items-center">
+    <span className="relative mt-0.5 grid size-4.5 shrink-0 place-items-center">
       <input type="radio" {...props} className={RADIO_INPUT} />
       <span aria-hidden className={RADIO_DOT} />
     </span>
@@ -566,7 +687,7 @@ type SelectSize = 'md' | 'sm';
 
 const SELECT_TRIGGER_SIZE: Readonly<Record<SelectSize, string>> = {
   md: 'px-3.5 py-2.5 text-body',
-  sm: 'h-9 px-3 text-meta',
+  sm: 'min-h-9 px-3 py-1.5 text-meta',
 };
 const SELECT_TRIGGER_CLASS = `flex w-full cursor-pointer items-center justify-between gap-2 text-left ${CONTROL_FACE}`;
 const SELECT_CHEVRON =
@@ -650,12 +771,17 @@ export function Select<T extends string>({
       const rect = anchor.getBoundingClientRect();
       const side = window.innerHeight - rect.bottom < DROPDOWN_MIN_BELOW ? 'top' : 'bottom';
       menu.dataset.side = side;
-      menu.style.left = `${rect.left}px`;
-      menu.style.width = `${rect.width}px`;
+      menu.style.minWidth = `${rect.width}px`;
+      menu.style.maxWidth = 'min(420px, calc(100vw - 24px))';
+      menu.removeAttribute('data-closing');
       if (!menu.matches(':popover-open')) {
+        menu.style.left = `${rect.left}px`;
         menu.style.top = `${side === 'bottom' ? rect.bottom + DROPDOWN_OFFSET : rect.top}px`;
         menu.showPopover();
       }
+      const maxLeft = Math.max(12, window.innerWidth - menu.offsetWidth - 12);
+      const clampedLeft = Math.min(Math.max(12, rect.left), maxLeft);
+      menu.style.left = `${clampedLeft}px`;
       // The height is known only once the list is displayed: an upward list hangs from its bottom edge.
       menu.style.top =
         side === 'bottom'
@@ -673,7 +799,11 @@ export function Select<T extends string>({
       window.removeEventListener('scroll', schedule, true);
       window.removeEventListener('resize', schedule);
       if (frame !== 0) cancelAnimationFrame(frame);
-      if (menu.matches(':popover-open')) menu.hidePopover();
+      if (menu.isConnected && menu.matches(':popover-open')) {
+        void closeTopLayer(menu, () => {
+          if (menu.matches(':popover-open')) menu.hidePopover();
+        });
+      }
     };
   }, [open]);
 
@@ -794,7 +924,7 @@ export function Select<T extends string>({
           return (
             <Fragment key={option.value}>
               {option.group !== undefined && option.group !== previous?.group && (
-                <li role="presentation" className="px-3 pt-2 pb-1 text-xs text-muted">
+                <li role="presentation" className="px-3 pt-2 pb-1 text-meta text-muted">
                   {option.group}
                 </li>
               )}
@@ -812,14 +942,14 @@ export function Select<T extends string>({
                   event.preventDefault();
                   choose(option.value);
                 }}
-                className={`flex cursor-pointer items-start gap-2 rounded-input px-3 py-2 text-sm ${index === activeIndex ? 'bg-canvas' : ''}`}
+                className={`flex cursor-pointer items-start gap-2 rounded-input px-3 py-2 text-body ${index === activeIndex ? 'bg-canvas' : ''}`}
               >
                 <span className="min-w-0 flex-1">
                   <span className={`block truncate ${isSelected ? 'font-medium' : ''}`}>
                     {option.label}
                   </span>
                   {option.hint !== undefined && (
-                    <span className="block text-xs text-muted">{option.hint}</span>
+                    <span className="block text-meta text-muted">{option.hint}</span>
                   )}
                 </span>
                 {isSelected && (
@@ -836,25 +966,40 @@ export function Select<T extends string>({
 }
 
 /** A choice among several, as a whole clickable row (a label around a checkbox or radio). */
-export const OPTION_CLASS = `flex cursor-pointer items-start gap-3 rounded-input bg-canvas px-3.5 py-3 text-sm transition-colors ${MOTION} hover:bg-canvas-2/70 in-[.bg-canvas]:bg-card has-checked:bg-sky-soft`;
+export const OPTION_CLASS = `flex cursor-pointer items-start gap-3 rounded-input border-2 border-transparent bg-canvas px-3.5 py-3 text-body transition-colors ${MOTION} hover:bg-subtle in-[.bg-canvas]:bg-card has-checked:border-sky has-checked:bg-sky-soft`;
 
 /** Rows separated by a hairline, inside a card. */
 export const ROWS_CLASS =
   'divide-y divide-line [&>li]:py-3.5 [&>li:first-child]:pt-0 [&>li:last-child]:pb-0';
 
-export function Table({ children }: { readonly children: ReactNode }) {
+export function Table({
+  children,
+  label = '数据表',
+}: {
+  readonly children: ReactNode;
+  readonly label?: string;
+}) {
   return (
-    <div className="max-w-full overflow-x-auto">
-      <table className="w-full min-w-[480px] border-collapse text-sm [&_.num]:text-right [&_.num]:tabular-nums [&_td]:border-line [&_td]:border-b [&_td]:py-3 [&_td]:pr-4 [&_td]:align-top [&_th]:border-line [&_th]:border-b [&_th]:pr-4 [&_th]:pb-2.5 [&_th]:text-left [&_th]:font-medium [&_th]:text-muted [&_th]:text-xs [&_tr:last-child_td]:border-b-0 [&_td:last-child]:pr-0 [&_th:last-child]:pr-0">
-        {children}
-      </table>
-    </div>
+    <>
+      {/* biome-ignore-start lint/a11y/noNoninteractiveTabindex lint/a11y/useSemanticElements: scrollable table region must be keyboard-focusable with explicit region role */}
+      <div
+        tabIndex={0}
+        role="region"
+        aria-label={label}
+        className="@container/table max-w-full overflow-x-auto focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky"
+      >
+        <table className="w-full min-w-[24rem] border-collapse text-body [&_.num]:text-right [&_.num]:tabular-nums [&_td]:border-line-subtle [&_td]:py-3 [&_td]:pr-4 [&_td]:align-top [&_th]:border-line-subtle [&_th]:border-b [&_th]:pr-4 [&_th]:pb-2.5 [&_th]:text-left [&_th]:font-medium [&_th]:text-muted [&_th]:text-meta [&_thead_th]:sticky [&_thead_th]:top-0 [&_thead_th]:bg-card [&_tr:not(:last-child)_td]:border-b [&_td:last-child]:pr-0 [&_th:last-child]:pr-0">
+          {children}
+        </table>
+      </div>
+      {/* biome-ignore-end lint/a11y/noNoninteractiveTabindex lint/a11y/useSemanticElements: end scrollable table region */}
+    </>
   );
 }
 
 export function Empty({ children }: { readonly children: ReactNode }) {
   return (
-    <div className="rounded-field bg-canvas px-5 py-8 text-center text-sm text-muted">
+    <div className="rounded-field border border-line-subtle bg-subtle px-5 py-8 text-center text-body text-muted">
       {children}
     </div>
   );
@@ -863,13 +1008,11 @@ export function Empty({ children }: { readonly children: ReactNode }) {
 export function Loading({ label = '加载中…' }: { readonly label?: string }) {
   return (
     <div role="status" className="space-y-3 py-2">
-      <span className="t-shimmer text-meta" data-text={label}>
-        {label}
-      </span>
+      <span className="text-meta text-ink-soft">{label}</span>
       {['w-3/5', 'w-11/12', 'w-3/4'].map((width) => (
         <div
           key={width}
-          className={`h-3.5 rounded-full bg-track motion-safe:animate-pulse ${width}`}
+          className={`h-3.5 rounded-full bg-sunken motion-safe:animate-pulse ${width}`}
         />
       ))}
     </div>
@@ -878,7 +1021,7 @@ export function Loading({ label = '加载中…' }: { readonly label?: string })
 
 export function Json({ value }: { readonly value: object | string | number | boolean | null }) {
   return (
-    <pre className="max-h-96 overflow-auto rounded-input bg-canvas p-3.5 font-mono text-xs leading-5 text-ink-soft">
+    <pre className="max-h-96 overflow-auto rounded-input border border-line-subtle bg-sunken p-3.5 font-mono text-code text-ink-soft">
       {JSON.stringify(value, null, 2)}
     </pre>
   );

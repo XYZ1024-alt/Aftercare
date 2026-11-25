@@ -43,10 +43,10 @@ export function StackedBars({
             <div
               key={slot.label}
               title={describe(slot)}
-              className="flex h-full flex-1 items-end justify-center rounded-bar transition-colors duration-(--duration-quick) hover:bg-canvas"
+              className="flex h-full flex-1 items-end justify-center rounded-bar transition-colors duration-(--duration-quick) hover:bg-subtle"
             >
               {total === 0 ? (
-                <div className="h-1.5 w-full max-w-6 rounded-full bg-track" />
+                <div className="h-1.5 w-full max-w-6 rounded-full bg-sunken" />
               ) : (
                 <div
                   className={`flex w-full max-w-6 origin-bottom flex-col-reverse gap-[3px] starting:scale-y-0 ${GROW}`}
@@ -67,7 +67,7 @@ export function StackedBars({
           );
         })}
       </div>
-      <div aria-hidden className="mt-2 flex gap-1.5 text-[11px] text-muted tabular-nums">
+      <div aria-hidden className="mt-2 flex gap-1.5 text-meta text-muted tabular-nums">
         {slots.map((slot, index) => (
           <span key={slot.label} className="flex-1 text-center">
             {ticks.has(index) ? slot.label : ''}
@@ -84,7 +84,7 @@ export function Legend({
   readonly items: readonly { readonly tone: Tone; readonly label: string }[];
 }) {
   return (
-    <ul className="mt-4 flex flex-wrap gap-x-4 gap-y-2 text-xs text-ink-soft">
+    <ul className="mt-4 flex flex-wrap gap-x-4 gap-y-2 text-meta text-ink-soft">
       {items.map((item) => (
         <li key={item.label} className="inline-flex items-center gap-1.5">
           <span aria-hidden className={`size-2.5 rounded-full ${SOLID_CLASS[item.tone]}`} />
@@ -115,7 +115,7 @@ export function HBars({
             <span aria-hidden className={`size-2 shrink-0 rounded-full ${SOLID_CLASS[row.tone]}`} />
             <span className="truncate">{row.label}</span>
           </span>
-          <span className="h-3 overflow-hidden rounded-full bg-track">
+          <span className="h-3 overflow-hidden rounded-full bg-sunken">
             {row.value > 0 && (
               <span
                 className={`block h-full min-w-3 origin-left rounded-full starting:scale-x-0 ${GROW} ${SOLID_CLASS[row.tone]}`}

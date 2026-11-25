@@ -1,8 +1,7 @@
 'use client';
 
 import type { CaseTabId, CaseView } from '@aftercare/console/client';
-import type { ComponentType, ReactNode } from 'react';
-import { SlidingPill, useSlidingPill } from '../ui.tsx';
+import { type ComponentType, type ReactNode, useEffect, useRef } from 'react';
 import { useCase, useCaseTabScope } from './case-context.tsx';
 import { Execution } from './execution.tsx';
 import { Knowledge } from './knowledge.tsx';
@@ -82,7 +81,7 @@ export function useUrgentTab(): CaseTab {
   return 'process';
 }
 
-/** The tabs of a case: a pill slides under the open one; the compact bar names them shorter. */
+/** The tabs of a case: an underline marks the open one; the compact bar names them shorter. */
 export function CaseTabBar({
   tab,
   onSelect,
@@ -94,16 +93,27 @@ export function CaseTabBar({
 }) {
   const badges = useCaseBadges();
   const scope = useCaseTabScope();
-  const { bar, pill } = useSlidingPill<HTMLDivElement>(tab);
+  const barRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const active = barRef.current?.querySelector<HTMLElement>(
+      `#${CSS.escape(`${scope}-tab-${tab}`)}`,
+    );
+    active?.scrollIntoView({
+      block: 'nearest',
+      inline: 'nearest',
+      container: 'nearest',
+    } as ScrollIntoViewOptions);
+  }, [scope, tab]);
+
   return (
     <div className="overflow-x-auto pb-1">
       <div
-        ref={bar}
+        ref={barRef}
         role="tablist"
         aria-label="案例内容"
-        className={`relative inline-flex gap-0.5 rounded-full p-1 shadow-soft ${compact ? 'bg-canvas' : 'bg-card'}`}
+        className="inline-flex min-w-full gap-1 border-b border-line-subtle"
       >
-        <SlidingPill pill={pill} className={`top-1 bg-ink ${compact ? 'h-8' : 'h-9'}`} />
         {CASE_TABS.map(({ id, label, short }) => {
           const selected = tab === id;
           return (
@@ -115,17 +125,14 @@ export function CaseTabBar({
               data-testid={`tab-${id}`}
               data-active={selected}
               aria-selected={selected}
-              aria-controls={`${scope}-panel`}
               onClick={() => onSelect(id)}
-              className={`relative z-1 inline-flex shrink-0 items-center gap-1.5 rounded-full font-medium transition-colors duration-(--duration-fast) ease-smooth-out ${
-                compact ? 'h-8 px-2.5 text-meta' : 'h-9 px-4 text-sm'
-              } ${selected ? 'text-white' : 'text-ink-soft hover:text-ink'}`}
+              className={`relative inline-flex shrink-0 items-center gap-1.5 font-medium whitespace-nowrap transition-colors duration-(--duration-fast) ease-smooth-out motion-reduce:transition-none after:pointer-events-none after:absolute after:inset-x-2 after:bottom-0 after:h-0.5 after:scale-x-50 after:rounded-full after:bg-ink after:opacity-0 after:transition-[opacity,transform] after:duration-(--duration-fast) after:ease-smooth-out motion-reduce:after:transition-none aria-selected:text-ink aria-selected:after:scale-x-100 aria-selected:after:opacity-100 forced-colors:aria-selected:after:bg-[Highlight] ${
+                compact ? 'min-h-8 px-2.5 py-1 text-meta' : 'min-h-9 px-3.5 py-1.5 text-body'
+              } ${selected ? 'text-ink' : 'text-ink-soft hover:text-ink'}`}
             >
               {compact ? short : label}
               {badges[id] !== undefined && (
-                <span
-                  className={`rounded-full px-1.5 text-xs leading-5 transition-colors duration-(--duration-fast) ${selected ? 'bg-white/15 text-white' : 'bg-apricot-wash text-apricot-ink'}`}
-                >
+                <span className="rounded-full bg-apricot-wash px-1.5 py-0.5 text-code leading-none text-apricot-ink tabular-nums">
                   {badges[id]}
                 </span>
               )}

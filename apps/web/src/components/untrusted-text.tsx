@@ -16,7 +16,7 @@ export function UntrustedText({ text }: { readonly text: string }) {
 
 export function UntrustedMarkdown({ text }: { readonly text: string }) {
   return (
-    <div className="space-y-1 break-words text-sm leading-[22px] [&_code]:rounded [&_code]:bg-track [&_code]:px-1 [&_code]:font-mono [&_ol]:list-decimal [&_ol]:pl-5 [&_ul]:list-disc [&_ul]:pl-5">
+    <div className="space-y-2 break-words text-body [&_blockquote]:border-l-2 [&_blockquote]:border-line-strong [&_blockquote]:pl-3 [&_blockquote]:text-muted [&_code]:rounded [&_code]:bg-sunken [&_code]:px-1 [&_code]:py-0.5 [&_code]:font-mono [&_code]:text-code [&_ol]:list-decimal [&_ol]:pl-5 [&_pre]:overflow-x-auto [&_pre]:rounded-input [&_pre]:border [&_pre]:border-line-subtle [&_pre]:bg-sunken [&_pre]:p-3 [&_pre]:font-mono [&_pre]:text-code [&_pre_code]:bg-transparent [&_pre_code]:p-0 [&_ul]:list-disc [&_ul]:pl-5">
       <Markdown allowedElements={ALLOWED} unwrapDisallowed skipHtml>
         {text}
       </Markdown>

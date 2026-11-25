@@ -121,12 +121,12 @@ function StatusRow({
   readonly detail?: ReactNode;
 }) {
   return (
-    <li className="flex items-start gap-3 text-sm">
+    <li className="flex items-start gap-3 text-body">
       <Dot tone={value[0]} className="mt-1.5" />
       <span className="w-20 shrink-0 text-ink-soft">{label}</span>
       <span className="min-w-0">
         <span data-testid={testId}>{value[1]}</span>
-        {detail !== undefined && <span className="block text-xs text-muted">{detail}</span>}
+        {detail !== undefined && <span className="block text-meta text-muted">{detail}</span>}
       </span>
     </li>
   );
@@ -165,7 +165,7 @@ function AutonomyCard() {
   return (
     <Card title="自主模式" icon={Bot} tone={enabled ? 'mint' : 'neutral'} testId="autonomy-admin">
       <div className="space-y-5">
-        <div className="space-y-2 text-sm">
+        <div className="space-y-2 text-body">
           <div className="flex flex-wrap items-center gap-3">
             <Pill tone={enabled ? 'mint' : 'rose'}>{enabled ? '已开启' : '已关闭'}</Pill>
             {autonomy.changedBy !== null && (
@@ -186,10 +186,10 @@ function AutonomyCard() {
         ) : (
           <ul className={ROWS_CLASS}>
             {charters.map((charter) => (
-              <li key={charter.charterId} className="text-sm">
+              <li key={charter.charterId} className="text-body">
                 <div className="flex flex-wrap items-baseline gap-x-2">
                   <span className="font-medium">{charter.name}</span>
-                  <span className="text-xs text-muted">r{charter.revision}</span>
+                  <span className="text-meta text-muted">r{charter.revision}</span>
                 </div>
                 <p className="mt-1 break-all text-meta text-ink-soft">
                   {charter.autopilotPrincipal}
@@ -351,7 +351,7 @@ export default function AdminPage() {
             icon={Cpu}
             tone="violet"
           >
-            <dl className="space-y-2 rounded-field bg-canvas p-4 text-sm">
+            <dl className="space-y-2 rounded-field border border-line-subtle bg-subtle p-4 text-body">
               <div className="flex gap-3">
                 <dt className="w-16 shrink-0 text-ink-soft">模式</dt>
                 <dd>
@@ -394,14 +394,14 @@ export default function AdminPage() {
             ) : (
               <ul className={ROWS_CLASS}>
                 {workers.map((worker) => (
-                  <li key={worker.workerId} className="flex items-start gap-3 text-sm">
+                  <li key={worker.workerId} className="flex items-start gap-3 text-body">
                     <Dot tone={worker.stoppedAt === null ? 'mint' : 'neutral'} className="mt-1.5" />
                     <span className="min-w-0">
                       <span className="block break-all font-medium">{worker.workerId}</span>
-                      <span className="block text-xs text-muted">
+                      <span className="block text-meta text-muted">
                         {worker.stoppedAt !== null
-                          ? `已于 ${when(worker.stoppedAt)} 停止`
-                          : `最近心跳 ${worker.silentSeconds.toFixed(0)} 秒前`}
+                          ? `已停止 · 于 ${when(worker.stoppedAt)} 停止`
+                          : `运行中 · 最近心跳 ${worker.silentSeconds.toFixed(0)} 秒前`}
                         {typeof worker.detail.lastModelFailure === 'string' &&
                           `；最近模型故障 ${worker.detail.lastModelFailure}`}
                         {typeof worker.detail.lastError === 'string' &&
@@ -430,11 +430,14 @@ export default function AdminPage() {
         </div>
 
         <Card title="备份恢复" icon={ArchiveRestore} tone="apricot">
-          <div className="space-y-4 text-sm">
+          <div className="space-y-4 text-body">
             {deployment.lastFence === null ? (
               <p className="text-muted">暂无数据库恢复围栏记录</p>
             ) : (
-              <p data-testid="fence" className="rounded-field bg-canvas p-4 text-ink-soft">
+              <p
+                data-testid="fence"
+                className="rounded-field border border-line-subtle bg-subtle p-4 text-ink-soft"
+              >
                 最近一次恢复围栏：{when(deployment.lastFence.fencedAt)}（
                 {deployment.lastFence.reason}
                 ）；作废租约 {deployment.lastFence.leasesExpired} 个，禁用批准{' '}
@@ -477,7 +480,7 @@ export default function AdminPage() {
               }
             />
             {deployment.hold && (
-              <p className="text-xs text-muted">
+              <p className="text-meta text-muted">
                 放行后，被暂停的运行仍需逐个恢复；旧批准不会重新生效，需重新批准。
               </p>
             )}
@@ -491,7 +494,7 @@ export default function AdminPage() {
           tone="rose"
           testId="retention"
         >
-          <Table>
+          <Table label="数据保留与清理策略">
             <thead>
               <tr>
                 <th>类别</th>

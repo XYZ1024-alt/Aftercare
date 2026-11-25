@@ -54,7 +54,7 @@ export default function CasePage({ params }: { readonly params: Promise<{ caseId
     <>
       <Link
         href="/cases"
-        className="group mb-4 inline-flex items-center gap-1.5 text-sm font-medium text-ink-soft transition-colors duration-(--duration-quick) hover:text-ink"
+        className="group mb-4 inline-flex items-center gap-1.5 text-body font-medium text-ink-soft transition-colors duration-(--duration-quick) hover:text-ink"
       >
         <ArrowLeft
           aria-hidden
@@ -63,7 +63,7 @@ export default function CasePage({ params }: { readonly params: Promise<{ caseId
         返回案例列表
       </Link>
       <CaseProvider caseId={caseId}>
-        <section className="t-enter mb-5 rounded-panel bg-card p-7 shadow-soft max-sm:p-5">
+        <section className="t-enter @container/card mb-5 rounded-panel border border-line-subtle bg-card p-7 shadow-soft max-sm:p-5">
           <CaseHeader />
           <Progress />
         </section>

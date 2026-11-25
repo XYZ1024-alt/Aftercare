@@ -98,57 +98,61 @@ const MARKER: Readonly<
   current: { fill: 'bg-apricot text-white', caption: 'text-apricot-ink' },
   blocked: { fill: 'bg-rose text-white', caption: 'text-rose-ink', icon: X },
   stale: { fill: 'bg-apricot-wash text-apricot-ink', caption: 'text-apricot-ink', icon: History },
-  ended: { fill: 'bg-canvas-2 text-ink-soft', caption: 'text-ink-soft', icon: Minus },
-  todo: { fill: 'bg-track text-muted', caption: 'text-muted' },
+  ended: { fill: 'bg-sunken text-ink-soft', caption: 'text-ink-soft', icon: Minus },
+  todo: { fill: 'bg-sunken text-muted', caption: 'text-muted' },
 };
 
 export function Progress() {
   const { view } = useCase();
   const steps = stepsOf(view);
   return (
-    <ol
-      aria-label="案例进度"
-      className="mt-7 grid grid-cols-5 border-line border-t pt-6 max-md:grid-cols-1 max-md:gap-y-4"
-    >
-      {steps.map((step, index) => {
-        const marker = MARKER[step.state];
-        const Icon = marker.icon;
-        const last = index === steps.length - 1;
-        return (
-          <li
-            key={step.label}
-            aria-current={step.state === 'current' ? 'step' : undefined}
-            className="relative flex min-w-0 flex-col items-center px-2 text-center max-md:flex-row max-md:gap-3 max-md:px-0 max-md:text-left"
-          >
-            {/* Runs from this marker to the centre of the next one, leaving a gap around both. */}
-            {!last && (
-              <span
-                aria-hidden
-                className={`absolute top-[15px] left-[calc(50%+24px)] h-0.5 w-[calc(100%-48px)] rounded-full max-md:hidden ${step.state === 'done' ? 'bg-mint' : 'bg-track'}`}
-              />
-            )}
-            <span
-              className={`relative grid size-8 shrink-0 place-items-center rounded-full text-meta font-semibold tabular-nums transition-colors duration-(--duration-slow) ease-smooth-out ${marker.fill}`}
+    <div className="@container/progress">
+      <ol
+        aria-label="案例进度"
+        className="mt-7 grid grid-cols-1 gap-y-4 border-line border-t pt-6 @md/progress:grid-cols-5 @md/progress:gap-y-0"
+      >
+        {steps.map((step, index) => {
+          const marker = MARKER[step.state];
+          const Icon = marker.icon;
+          const last = index === steps.length - 1;
+          return (
+            <li
+              key={step.label}
+              aria-current={step.state === 'current' ? 'step' : undefined}
+              className="relative flex min-w-0 flex-row items-start gap-3 px-0 text-left @md/progress:flex-col @md/progress:items-center @md/progress:gap-0 @md/progress:px-2 @md/progress:text-center"
             >
-              {step.state === 'current' && (
+              {/* Runs from this marker to the centre of the next one, leaving a gap around both. */}
+              {!last && (
                 <span
                   aria-hidden
-                  className="absolute -inset-1 rounded-full bg-apricot/20 motion-safe:animate-pulse"
+                  className={`absolute top-9 -bottom-3 left-4 w-0.5 rounded-full @md/progress:top-4 @md/progress:bottom-auto @md/progress:left-[calc(50%+1.5rem)] @md/progress:h-0.5 @md/progress:w-[calc(100%-3rem)] ${step.state === 'done' ? 'bg-mint' : 'bg-line'}`}
                 />
               )}
-              {Icon === undefined ? (
-                <span className="relative">{index + 1}</span>
-              ) : (
-                <Icon aria-hidden className="size-4" strokeWidth={2.6} />
-              )}
-            </span>
-            <div className="mt-2.5 min-w-0 max-md:mt-0">
-              <span className="block text-sm font-medium">{step.label}</span>
-              <span className={`mt-0.5 block text-xs ${marker.caption}`}>{step.caption}</span>
-            </div>
-          </li>
-        );
-      })}
-    </ol>
+              <span className="relative isolate shrink-0">
+                {step.state === 'current' && (
+                  <span
+                    aria-hidden
+                    className="absolute -inset-1 -z-10 rounded-full bg-apricot/20 motion-safe:animate-pulse"
+                  />
+                )}
+                <span
+                  className={`relative grid size-8 place-items-center rounded-full text-meta font-semibold tabular-nums transition-colors duration-(--duration-slow) ease-smooth-out ${marker.fill}`}
+                >
+                  {Icon === undefined ? (
+                    <span className="relative">{index + 1}</span>
+                  ) : (
+                    <Icon aria-hidden className="size-4" strokeWidth={2.6} />
+                  )}
+                </span>
+              </span>
+              <div className="min-w-0 @md/progress:mt-2.5">
+                <span className="block text-body font-medium">{step.label}</span>
+                <span className={`mt-0.5 block text-meta ${marker.caption}`}>{step.caption}</span>
+              </div>
+            </li>
+          );
+        })}
+      </ol>
+    </div>
   );
 }

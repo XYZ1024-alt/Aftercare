@@ -5,15 +5,19 @@ import { Download, FileCheck2, History, RotateCcw } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
 import { downloadFile } from '../../lib/api.ts';
 import {
+  AGENT_RUN_STATUS_LABEL,
   fieldKey,
   fieldTitle,
   fieldValue,
+  OBLIGATION_STATUS_LABEL,
   REVOKE_ARTEFACT_REASONS,
+  RUN_PHASE_LABEL,
   reasonLabel,
   reasonOptions,
   shortId,
   type Tone,
   VERDICT_LABEL,
+  VERIFICATION_LAYER_LABEL,
   when,
 } from '../../lib/labels.ts';
 import { useCan, useSession } from '../../lib/session.tsx';
@@ -26,6 +30,7 @@ import {
   Empty,
   Field,
   INPUT_CLASS,
+  Inset,
   Json,
   Notice,
   OPTION_CLASS,
@@ -40,12 +45,7 @@ import { UntrustedText } from '../untrusted-text.tsx';
 import { useCase, useCaseAction } from './case-context.tsx';
 import { Promotions } from './promotion.tsx';
 
-const LAYER: Readonly<Record<string, string>> = {
-  input_sufficiency: '输入充分性',
-  compiled_semantics: '语义编译',
-  execution_conformance: '执行一致性',
-  business_appropriateness: '业务合理性',
-};
+const LAYER: Readonly<Record<string, string>> = VERIFICATION_LAYER_LABEL;
 const LAYER_STATUS: Readonly<Record<string, readonly [Tone, string]>> = {
   holds: ['mint', '通过'],
   fails: ['rose', '未通过'],
@@ -129,7 +129,7 @@ function Artefacts({ report }: { readonly report: VerificationReport }) {
                 data-testid="artefact"
                 data-kind={artefact.kind}
                 data-status={artefact.status}
-                className="space-y-2 text-sm"
+                className="space-y-2 text-body"
               >
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
                   <span className="font-medium">
@@ -181,7 +181,7 @@ function Artefacts({ report }: { readonly report: VerificationReport }) {
                   </span>
                 </div>
                 {revoking?.artefactId === artefact.artefactId && (
-                  <div className="space-y-3 rounded-field bg-canvas p-4">
+                  <Inset className="space-y-3 p-4">
                     <p className="text-meta text-apricot-ink">
                       撤销登记后，该产物将无法再从控制台下载。{NOT_RECALLABLE}
                     </p>
@@ -221,7 +221,7 @@ function Artefacts({ report }: { readonly report: VerificationReport }) {
                         取消
                       </Button>
                     </div>
-                  </div>
+                  </Inset>
                 )}
               </li>
             );
@@ -229,7 +229,7 @@ function Artefacts({ report }: { readonly report: VerificationReport }) {
         </ul>
       )}
       {repair && current && (
-        <div className="flex flex-wrap items-end gap-3 rounded-field bg-canvas p-4">
+        <Inset className="flex flex-wrap items-end gap-3 p-4">
           <Button
             tone="primary"
             pending={produce.pending}
@@ -281,7 +281,7 @@ function Artefacts({ report }: { readonly report: VerificationReport }) {
               </div>
             </Disclosure>
           </div>
-        </div>
+        </Inset>
       )}
       <RefusalNote refusal={produce.refusal ?? revoke.refusal ?? downloadRefusal} />
     </section>
@@ -336,8 +336,11 @@ function Objects({
   readonly entries: readonly { readonly key: string; readonly text: ReactNode }[];
 }) {
   return (
-    <section data-testid={testId} className="min-w-0 rounded-field bg-canvas p-4">
-      <h3 className="mb-2.5 flex items-center gap-2 text-sm font-medium">
+    <section
+      data-testid={testId}
+      className="min-w-0 rounded-field border border-line-subtle bg-subtle p-4"
+    >
+      <h3 className="mb-2.5 flex items-center gap-2 text-body font-medium">
         <Dot tone={tone} />
         {title}
         <span className="text-meta font-normal text-muted tabular-nums">{entries.length}</span>
@@ -345,7 +348,7 @@ function Objects({
       {entries.length === 0 ? (
         <p className="text-meta text-muted">暂无</p>
       ) : (
-        <ul className="space-y-1.5 break-words tabular-nums">
+        <ul className="space-y-1.5 break-all tabular-nums">
           {entries.map((entry) => (
             <li key={entry.key}>{entry.text}</li>
           ))}
@@ -397,7 +400,7 @@ function Report({
           ”失效；结论只代表当时的依据。
         </Notice>
       )}
-      <div className="grid grid-cols-2 gap-4 text-sm max-md:grid-cols-1">
+      <div className="grid grid-cols-1 gap-4 text-body @md/card:grid-cols-2">
         <Objects
           testId="objects-modified"
           tone="mint"
@@ -432,13 +435,16 @@ function Report({
           entries={objects.affectedOnly.map((entry) => ({ key: entry, text: entry }))}
         />
       </div>
-      <section className="text-sm">
+      <section className="text-body">
         <h3 className="mb-2.5 font-medium">四维核验结论</h3>
-        <ul className="grid grid-cols-4 gap-3 max-lg:grid-cols-2">
+        <ul className="grid grid-cols-2 gap-3 @xl/card:grid-cols-4">
           {Object.entries(layers).map(([layer, status]) => {
             const [tone, label] = LAYER_STATUS[status] ?? ['neutral', status];
             return (
-              <li key={layer} className="rounded-input bg-canvas px-3 py-2.5">
+              <li
+                key={layer}
+                className="rounded-input border border-line-subtle bg-subtle px-3 py-2.5"
+              >
                 <span className="block text-meta text-muted">{LAYER[layer] ?? layer}</span>
                 <span className="mt-1.5 block">
                   <Pill tone={tone}>{label}</Pill>
@@ -454,7 +460,7 @@ function Report({
       </section>
       <Technical label={`校验项明细（共 ${findings.length} 项，${failing} 项未通过）`}>
         <div className="font-sans">
-          <Table>
+          <Table label="校验项明细">
             <thead>
               <tr>
                 <th>校验项</th>
@@ -466,9 +472,9 @@ function Report({
             <tbody>
               {findings.map((finding) => (
                 <tr key={finding.obligationRef}>
-                  <td>{finding.obligationRef}</td>
-                  <td>{finding.layer}</td>
-                  <td>{finding.status}</td>
+                  <td className="break-all">{finding.obligationRef}</td>
+                  <td>{VERIFICATION_LAYER_LABEL[finding.layer]}</td>
+                  <td>{OBLIGATION_STATUS_LABEL[finding.status]}</td>
                   <td>{finding.detail}</td>
                 </tr>
               ))}
@@ -517,7 +523,7 @@ function Reopen() {
       tone="apricot"
       testId="reopen"
     >
-      <div className="space-y-4 text-sm">
+      <div className="space-y-4 text-body">
         {held && (
           <label className={OPTION_CLASS}>
             <Checkbox
@@ -590,21 +596,22 @@ export function Results() {
       <Card title="运行历史" icon={History} tone="sky" testId="runs">
         <ul className={ROWS_CLASS}>
           {view.caseRuns.map((run) => (
-            <li key={run.runId} className="flex items-start gap-3 text-sm">
+            <li key={run.runId} className="flex items-start gap-3 text-body">
               <Dot tone="violet" className="mt-1.5" />
               <span className="min-w-0">
-                <span className="font-medium">调查轮次 #{run.runSeq}</span>：{run.phase}，发起原因：
+                <span className="font-medium">调查轮次 #{run.runSeq}</span>：
+                {RUN_PHASE_LABEL[run.phase]}，发起原因：
                 <UntrustedText text={run.openedReason} />（{run.openedBy}）
-                {run.endReason !== null && `；结束：${run.endReason}`}
+                {run.endReason !== null && `；结束：${reasonLabel(run.endReason)}`}
               </span>
             </li>
           ))}
           {view.agentRuns.map((run) => (
-            <li key={run.agentRunId} className="flex items-start gap-3 text-sm">
+            <li key={run.agentRunId} className="flex items-start gap-3 text-body">
               <Dot tone="sky" className="mt-1.5" />
               <span className="min-w-0">
                 <span className="font-medium">Agent 运行 {shortId(run.agentRunId)}</span>：
-                {run.status}
+                {AGENT_RUN_STATUS_LABEL[run.status]}
                 {run.statusReason === null ? '' : `（${reasonLabel(run.statusReason)}）`}，
                 {when(run.createdAt)}，由 {run.startedBy} 启动
               </span>

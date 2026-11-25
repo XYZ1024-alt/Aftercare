@@ -16,6 +16,7 @@ import { z } from 'zod';
 import { useAssistant } from '../../lib/assistant.tsx';
 import { useCases } from '../../lib/cases.ts';
 import {
+  STAGE_GROUPS,
   STAGE_LABEL,
   shortId,
   stageTone,
@@ -23,7 +24,7 @@ import {
   TURN_MODE_LABEL,
   TURN_MODE_TONE,
 } from '../../lib/labels.ts';
-import { Button, Dot, Empty, Notice, Pill, Table } from '../ui.tsx';
+import { Button, Empty, Notice, Pill, StatusDot, Table } from '../ui.tsx';
 import { UntrustedMarkdown, UntrustedText } from '../untrusted-text.tsx';
 import { CaseWorkbench } from './case-workbench.tsx';
 
@@ -96,7 +97,7 @@ const AgentTurnView: ComponentRenderer<AssistantUiProps['AgentTurn']> = ({ props
 const AgentStateView: ComponentRenderer<AssistantUiProps['AgentState']> = ({ props }) => (
   <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
     <Pill tone={TURN_MODE_TONE[props.mode]}>{TURN_MODE_LABEL[props.mode]}</Pill>
-    <p className="min-w-0 text-sm leading-[22px]">
+    <p className="min-w-0 text-body">
       <UntrustedText text={props.headline} />
     </p>
   </div>
@@ -118,7 +119,7 @@ const EventItemView: ComponentRenderer<AssistantUiProps['EventItem']> = ({ props
       data-kind={props.kind}
       data-corroborated={corroborated === null ? 'pending' : String(corroborated)}
       title={corroborated === true ? undefined : '未在本回合的工具记录中核实'}
-      className={`inline-flex max-w-full flex-wrap items-center gap-x-2 gap-y-1 text-meta ${corroborated === true ? 'text-ink-soft' : 'text-muted opacity-60'}`}
+      className={`inline-flex min-w-0 max-w-full flex-wrap items-center gap-x-2 gap-y-1 text-meta ${corroborated === true ? 'text-ink-soft' : 'rounded-input border border-dashed border-line px-2 py-0.5 text-muted'}`}
     >
       <span className="font-medium">{TURN_EVENT_LABEL[props.kind]}</span>
       <span className="min-w-0">
@@ -130,10 +131,13 @@ const EventItemView: ComponentRenderer<AssistantUiProps['EventItem']> = ({ props
           data-testid={opened ? 'opened-case' : undefined}
           data-case-id={opened ? caseId : undefined}
           onClick={() => openCase(caseId, props.tab ?? undefined)}
-          className="inline-flex max-w-64 items-center gap-1.5 rounded-full bg-card px-2.5 py-0.5 shadow-soft transition-[background-color,color,scale] duration-(--duration-quick) ease-smooth-out hover:text-ink active:scale-[0.97] motion-reduce:transition-none"
+          className="inline-flex min-h-7 max-w-full items-center gap-2 rounded-full border border-line-subtle bg-subtle px-2.5 py-0.5 text-meta text-ink-soft transition-[background-color,border-color,color,scale] duration-(--duration-quick) ease-smooth-out hover:border-line hover:text-ink active:scale-[0.97] motion-reduce:transition-none"
         >
-          <Dot tone={row === undefined ? 'neutral' : stageTone(row.stage)} className="size-2" />
-          <span className="truncate">
+          <StatusDot
+            tone={row === undefined ? 'neutral' : stageTone(row.stage)}
+            label={row === undefined ? '读取中' : STAGE_GROUPS[row.group].label}
+          />
+          <span className="min-w-0 truncate">
             <UntrustedText text={row?.title ?? shortId(caseId)} />
           </span>
         </button>
@@ -195,9 +199,12 @@ const CaseWorkbenchBlockView: ComponentRenderer<AssistantUiProps['CaseWorkbenchB
   if (streaming) {
     return (
       <div data-testid="genui-block" data-block="CaseWorkbenchBlock">
-        <div className="flex flex-wrap items-center gap-2 rounded-panel bg-card px-3.5 py-3 shadow-soft">
-          <Dot tone={row === undefined ? 'neutral' : stageTone(row.stage)} />
-          <span className="min-w-0 flex-1 truncate text-sm font-medium">
+        <div className="flex flex-wrap items-center gap-2 rounded-field border border-line-subtle bg-subtle px-3.5 py-3">
+          <StatusDot
+            tone={row === undefined ? 'neutral' : stageTone(row.stage)}
+            label={row === undefined ? '读取中' : STAGE_GROUPS[row.group].label}
+          />
+          <span className="min-w-0 flex-1 truncate text-body font-medium">
             <UntrustedText text={title} />
           </span>
           <span className="text-meta text-muted">生成中…</span>
@@ -218,12 +225,14 @@ const CaseWorkbenchBlockView: ComponentRenderer<AssistantUiProps['CaseWorkbenchB
   }
   return (
     <div data-testid="genui-block" data-block="CaseWorkbenchBlock" className="space-y-2">
-      <div className="flex flex-wrap items-center gap-2 rounded-panel bg-card px-3.5 py-3 shadow-soft">
-        <Dot tone={row === undefined ? 'neutral' : stageTone(row.stage)} />
-        <span className="min-w-0 flex-1 truncate text-sm font-medium">
+      <div className="flex flex-wrap items-center gap-2 rounded-field border border-line-subtle bg-subtle px-3.5 py-3">
+        <StatusDot
+          tone={row === undefined ? 'neutral' : stageTone(row.stage)}
+          label={row === undefined ? '读取中' : STAGE_LABEL[row.stage]}
+        />
+        <span className="min-w-0 flex-1 truncate text-body font-medium">
           <UntrustedText text={title} />
         </span>
-        {row !== undefined && <Pill tone={stageTone(row.stage)}>{STAGE_LABEL[row.stage]}</Pill>}
         <Button size="sm" onClick={() => setExpanded((current) => !current)}>
           {expanded ? '收起' : '展开'}
         </Button>
@@ -253,7 +262,7 @@ const CaseSummaryBlockView: ComponentRenderer<AssistantUiProps['CaseSummaryBlock
       <div
         data-testid="genui-block"
         data-block="CaseSummaryBlock"
-        className="rounded-panel bg-card px-3.5 py-3 text-meta text-muted shadow-soft"
+        className="rounded-field border border-line-subtle bg-subtle px-3.5 py-3 text-meta text-muted"
       >
         {rows === undefined ? '读取中…' : '案例不存在'}
       </div>
@@ -263,12 +272,12 @@ const CaseSummaryBlockView: ComponentRenderer<AssistantUiProps['CaseSummaryBlock
     <div
       data-testid="genui-block"
       data-block="CaseSummaryBlock"
-      className="rounded-panel bg-card p-4 shadow-soft"
+      className="rounded-field border border-line-subtle bg-subtle p-4"
     >
       <div className="flex flex-wrap items-start gap-x-3 gap-y-2">
         <div className="min-w-0 flex-1 space-y-1">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="min-w-0 text-sm font-medium">
+            <span className="min-w-0 text-body font-medium">
               <UntrustedText text={row.title} />
             </span>
             <Pill tone={stageTone(row.stage)}>{STAGE_LABEL[row.stage]}</Pill>
@@ -305,7 +314,7 @@ const CaseListBlockView: ComponentRenderer<AssistantUiProps['CaseListBlock']> = 
   const { openCase } = useAssistant();
   return (
     <div data-testid="genui-block" data-block="CaseListBlock" className="space-y-2">
-      <h3 className="text-sm font-medium">
+      <h3 className="text-body font-medium">
         <UntrustedText text={props.title} />
       </h3>
       {props.caseIds.length === 0 ? (
@@ -326,7 +335,7 @@ const CaseListBlockView: ComponentRenderer<AssistantUiProps['CaseListBlock']> = 
               return (
                 <tr key={caseId}>
                   <td className="max-w-72">
-                    <span className="line-clamp-1">
+                    <span className="block truncate">
                       <UntrustedText text={row?.title ?? shortId(caseId)} />
                     </span>
                   </td>

@@ -90,8 +90,6 @@ export async function answerOpenQuestion(
   await expect(question).toBeVisible();
   const kind = (await question.getAttribute('data-kind')) ?? '';
   const questionId = (await question.getAttribute('data-question')) ?? '';
-  await question.locator('textarea[name=statement]').fill('经定价负责人核对确认。');
-  await question.locator('input[name=source-reference]').fill('定价复核记录 2026-11');
   if (kind === 'incident_scope') {
     const boxes = question.locator('input[name=operation]');
     const count = choose.operations ?? (await boxes.count());
@@ -100,11 +98,12 @@ export async function answerOpenQuestion(
     }
     await question.getByRole('button', { name: /确认所选 \d+ 个操作为事故/ }).click();
   } else if (kind === 'baseline') {
-    await question.getByRole('button', { name: '确认以上基线价格正确' }).click();
+    await question.getByRole('button', { name: '确认这些数对' }).click();
   } else if (kind === 'replay_policy') {
     await question.locator('input[name=policy]').first().check();
     await question.getByRole('button', { name: '确认适用所选策略' }).click();
   } else if (kind === 'clarification') {
+    await question.locator('textarea[name=statement]').fill('经定价负责人核对确认。');
     await question.getByRole('button', { name: '记录业务说明' }).click();
   } else {
     throw new Error(`not a business question: ${kind}`);
@@ -137,6 +136,5 @@ export async function approveInBrowser(scope: CaseScope): Promise<void> {
   for (const box of await approval.locator('input[name=acknowledge]').all()) {
     await box.check();
   }
-  await approval.locator('textarea[name=approval-statement]').fill('已逐项审核修改与未决项。');
   await approval.getByTestId('approve-button').click();
 }

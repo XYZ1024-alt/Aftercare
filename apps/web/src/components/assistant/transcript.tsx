@@ -22,8 +22,8 @@ import {
 import { useEffect, useMemo, useRef } from 'react';
 import { type AssistantPreview, useAssistant } from '../../lib/assistant.tsx';
 import { useCases } from '../../lib/cases.ts';
-import { shortId, stageTone, whenShort } from '../../lib/labels.ts';
-import { Chip, Dot, IconTile, Json, Loading, Notice, Technical } from '../ui.tsx';
+import { STAGE_GROUPS, shortId, stageTone, whenShort } from '../../lib/labels.ts';
+import { Chip, IconTile, Json, Loading, Notice, StatusDot, Technical } from '../ui.tsx';
 import { UntrustedMarkdown, UntrustedText } from '../untrusted-text.tsx';
 import { assistantUiLibrary, TurnUiProvider, useAssistantUiAction } from './openui-library.tsx';
 
@@ -64,7 +64,7 @@ const TOOL_ICON: Readonly<Record<string, LucideIcon>> = {
 const NO_CASE_IDS: ReadonlySet<string> = new Set();
 
 const BUBBLE_CLASS =
-  'max-w-[85%] rounded-2xl rounded-br-md bg-ink px-4 py-2.5 text-sm leading-[22px] text-white';
+  'max-w-[85%] rounded-2xl rounded-br-md bg-ink px-4 py-2.5 text-body text-white';
 
 /** The refusal a tool returned, when the tool message says it did not run. */
 const refusalOfResult = (
@@ -202,7 +202,7 @@ function UserMessageView({
       <div className={BUBBLE_CLASS}>
         <UntrustedText text={text} />
       </div>
-      <span className="text-xs text-muted">{whenShort(recordedAt)}</span>
+      <span className="text-meta text-muted">{whenShort(recordedAt)}</span>
     </div>
   );
 }
@@ -228,10 +228,15 @@ function CaseChip({ caseId }: { readonly caseId: string }) {
       type="button"
       data-case-id={caseId}
       onClick={() => openCase(caseId)}
-      className="inline-flex max-w-64 cursor-pointer items-center gap-1.5 rounded-full bg-card px-2.5 py-1 text-xs text-ink-soft shadow-soft transition-colors duration-(--duration-quick) ease-smooth-out hover:text-ink"
+      className="inline-flex min-h-7 max-w-full cursor-pointer items-center gap-2 rounded-full border border-line-subtle bg-subtle px-2.5 py-1 text-meta text-ink-soft transition-colors duration-(--duration-quick) ease-smooth-out hover:border-line hover:text-ink"
     >
-      <Dot tone={row === undefined ? 'neutral' : stageTone(row.stage)} className="size-2" />
-      <span className="truncate">{row?.title ?? shortId(caseId)}</span>
+      <StatusDot
+        tone={row === undefined ? 'neutral' : stageTone(row.stage)}
+        label={row === undefined ? '读取中' : STAGE_GROUPS[row.group].label}
+      />
+      <span className="min-w-0 truncate">
+        <UntrustedText text={row?.title ?? shortId(caseId)} />
+      </span>
     </button>
   );
 }
@@ -287,7 +292,7 @@ function ToolCaseChips({ tool }: { readonly tool: ToolMessage }) {
 /** A call of the running turn: it says what the assistant does now, not what it has done. */
 function RunningToolCall({ record }: { readonly record: ToolRecord }) {
   return (
-    <div className="rounded-field bg-canvas px-3 py-2">
+    <div className="rounded-field border border-line-subtle bg-subtle px-3 py-2">
       <ToolLine call={record.call} tool={record.tool} running />
       {record.tool !== undefined && <ToolCaseChips tool={record.tool} />}
     </div>
@@ -495,10 +500,8 @@ export function Transcript() {
           {pendingText !== null && <PendingUserMessage text={pendingText} />}
           {preview !== null && <AssistantPreviewView preview={preview} />}
           {pending && preview === null && !waitingTool && !replied && (
-            <p role="status" className="pl-9 text-meta">
-              <span className="t-shimmer" data-text="思考中…">
-                思考中…
-              </span>
+            <p role="status" className="pl-9 text-meta text-ink-soft">
+              思考中…
             </p>
           )}
         </>

@@ -2,7 +2,14 @@
 
 import { X } from 'lucide-react';
 import { type ReactNode, type RefObject, useEffect, useId, useRef, useState } from 'react';
-import { Button, type ButtonTone, Field, TEXTAREA_CLASS } from './ui.tsx';
+import {
+  Button,
+  type ButtonTone,
+  closeTopLayer,
+  Field,
+  TEXTAREA_CLASS,
+  waitForAnimations,
+} from './ui.tsx';
 
 // Modal surfaces on the native <dialog>: focus stays inside, Esc and a click
 // on the backdrop close it. The dialog scales in (modal open / close) and the
@@ -11,49 +18,38 @@ import { Button, type ButtonTone, Field, TEXTAREA_CLASS } from './ui.tsx';
 
 type SurfaceKind = 'drawer' | 'modal';
 
-/** The exit duration of a surface in milliseconds, read from its :root token (written as ms or s). */
-function closeDuration(kind: SurfaceKind): number {
-  const token = kind === 'modal' ? '--modal-close-dur' : '--panel-close-dur';
-  const value = getComputedStyle(document.documentElement).getPropertyValue(token).trim();
-  const amount = Number.parseFloat(value);
-  if (Number.isNaN(amount)) return 0;
-  return value.endsWith('ms') ? amount : amount * 1000;
-}
-
-/** Opens and closes the dialog with its transition; `shown` stays true until the exit has finished. */
-function useModal(
-  open: boolean,
-  kind: SurfaceKind,
-): { ref: RefObject<HTMLDialogElement | null>; entered: boolean; shown: boolean } {
+/** Opens and closes the dialog with its native top-layer transition; `shown` stays true until the exit finishes. */
+function useModal(open: boolean): { ref: RefObject<HTMLDialogElement | null>; shown: boolean } {
   const ref = useRef<HTMLDialogElement>(null);
-  const [entered, setEntered] = useState(false);
   const [shown, setShown] = useState(open);
   useEffect(() => {
     const dialog = ref.current;
     if (dialog === null) return;
     if (open) {
       setShown(true);
+      dialog.removeAttribute('data-closing');
       if (!dialog.open) {
         dialog.showModal();
-        // The closed styles must be computed before they change, or nothing transitions.
-        void dialog.offsetWidth;
       }
-      const frame = requestAnimationFrame(() => setEntered(true));
-      return () => cancelAnimationFrame(frame);
+      return;
     }
-    setEntered(false);
-    if (!dialog.open) return;
-    const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    const timer = setTimeout(
-      () => {
-        dialog.close();
-        setShown(false);
-      },
-      reduced ? 0 : closeDuration(kind),
-    );
-    return () => clearTimeout(timer);
-  }, [open, kind]);
-  return { ref, entered, shown };
+    if (!dialog.open) {
+      setShown(false);
+      return;
+    }
+    let cancelled = false;
+    void closeTopLayer(dialog, () => {
+      if (dialog.open) dialog.close();
+    })
+      .then(() => waitForAnimations(dialog))
+      .then(() => {
+        if (!cancelled) setShown(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
+  return { ref, shown };
 }
 
 interface SurfaceProps {
@@ -61,6 +57,11 @@ interface SurfaceProps {
   readonly onClose: () => void;
   readonly title: ReactNode;
   readonly children: ReactNode;
+}
+
+function isOutsideDialog(clientX: number, clientY: number, dialog: HTMLDialogElement): boolean {
+  const rect = dialog.getBoundingClientRect();
+  return clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom;
 }
 
 function Surface({
@@ -76,27 +77,38 @@ function Surface({
   readonly kicker?: ReactNode;
   readonly className: string;
 }) {
-  const { ref, entered, shown } = useModal(open, kind);
+  const { ref, shown } = useModal(open);
   const titleId = useId();
-  // Leaving starts on the render that closes, not one effect later.
-  const visible = open && entered;
-  const state =
-    kind === 'modal'
-      ? { className: `t-modal ${visible ? 'is-open' : shown ? 'is-closing' : ''}` }
-      : { className: 't-panel-slide', 'data-open': visible };
+  const pressedOutside = useRef(false);
+  const lastTitle = useRef(title);
+  const lastChildren = useRef(children);
+  if (open) {
+    lastTitle.current = title;
+    lastChildren.current = children;
+  }
+  const displayTitle = open ? title : lastTitle.current;
+  const displayChildren = open ? children : lastChildren.current;
+  const surfaceClass = kind === 'modal' ? 't-modal' : 't-panel-slide';
   return (
-    // biome-ignore lint/a11y/useKeyWithClickEvents: a click on the backdrop closes; the keyboard closes with Esc (the cancel event).
     <dialog
       ref={ref}
       aria-labelledby={titleId}
-      {...state}
-      className={`bg-card p-0 text-ink ${state.className} ${className}`}
+      className={`p-0 text-ink ${surfaceClass} ${className}`}
       onCancel={(event) => {
         event.preventDefault();
         onClose();
       }}
-      onClick={(event) => {
-        if (event.target === event.currentTarget) onClose();
+      onPointerDown={(event) => {
+        pressedOutside.current = isOutsideDialog(event.clientX, event.clientY, event.currentTarget);
+      }}
+      onPointerUp={(event) => {
+        if (
+          pressedOutside.current &&
+          isOutsideDialog(event.clientX, event.clientY, event.currentTarget)
+        ) {
+          onClose();
+        }
+        pressedOutside.current = false;
       }}
     >
       <div className="flex max-h-full flex-col p-7 max-sm:p-5">
@@ -105,33 +117,40 @@ function Surface({
             {kicker}
             <h2
               id={titleId}
-              className={`text-[22px] leading-7 font-semibold tracking-[-0.015em] ${kicker === undefined ? '' : 'mt-2'}`}
+              className={`text-figure font-semibold ${kicker === undefined ? '' : 'mt-2'}`}
             >
-              {title}
+              {displayTitle}
             </h2>
           </div>
           <button
             type="button"
             aria-label="关闭"
             onClick={onClose}
-            className="-mt-1 -mr-1 grid size-9 shrink-0 place-items-center rounded-full bg-canvas text-muted transition-colors duration-(--duration-quick) hover:bg-canvas-2 hover:text-ink"
+            className="-mt-1 -mr-1 grid size-9 min-h-6 min-w-6 shrink-0 place-items-center rounded-input bg-sunken text-muted transition-colors duration-(--duration-quick) hover:bg-line-subtle hover:text-ink pointer-coarse:min-h-11 pointer-coarse:min-w-11"
           >
-            <X aria-hidden className="size-[18px]" />
+            <X aria-hidden className="size-4.5" />
           </button>
         </header>
-        <div className="min-h-0 flex-1 overflow-y-auto">{(open || shown) && children}</div>
+        <div className="min-h-0 flex-1 overflow-y-auto">{(open || shown) && displayChildren}</div>
       </div>
     </dialog>
   );
 }
 
 /** A side panel from the right, for the full text of a record. */
-export function Drawer(props: SurfaceProps & { readonly kicker?: ReactNode }) {
+export function Drawer({
+  size = 'md',
+  ...props
+}: SurfaceProps & { readonly kicker?: ReactNode; readonly size?: 'md' | 'lg' }) {
+  const sizeClass =
+    size === 'lg'
+      ? 'w-[min(600px,calc(100%-24px))] bg-canvas'
+      : 'w-[min(440px,calc(100%-24px))] bg-card';
   return (
     <Surface
       kind="drawer"
       {...props}
-      className="fixed inset-y-3 right-3 left-auto m-0 h-[calc(100dvh-24px)] max-h-none w-[min(440px,calc(100%-24px))] max-w-none rounded-drawer shadow-drawer [&>div]:h-full"
+      className={`fixed inset-y-3 right-3 left-auto m-0 h-[calc(100dvh-24px)] max-h-none max-w-none rounded-drawer shadow-drawer [&>div]:h-full ${sizeClass}`}
     />
   );
 }
@@ -160,7 +179,7 @@ export function ConfirmDialog({
       open={open}
       onClose={onClose}
       title={title}
-      className="m-auto w-[min(480px,calc(100%-32px))] rounded-panel shadow-lift"
+      className="m-auto max-h-[calc(100dvh-32px)] w-[min(480px,calc(100%-32px))] rounded-panel bg-card shadow-lift [&>div]:max-h-[calc(100dvh-32px)]"
     >
       <ConfirmBody
         {...options}
@@ -198,7 +217,7 @@ function ConfirmBody({
       }}
     >
       {warning !== undefined && (
-        <p className="rounded-field bg-apricot-soft px-4 py-3 text-meta text-apricot-ink">
+        <p className="rounded-field border border-apricot-line bg-apricot-soft px-4 py-3 text-meta text-apricot-ink">
           {warning}
         </p>
       )}
@@ -208,6 +227,8 @@ function ConfirmBody({
           <textarea
             name={reason.name}
             rows={3}
+            // biome-ignore lint/a11y/noAutofocus: focus moves to the required reason field when the dialog opens
+            autoFocus
             className={TEXTAREA_CLASS}
             value={text}
             onChange={(event) => setText(event.target.value)}
@@ -215,7 +236,9 @@ function ConfirmBody({
         </Field>
       )}
       <div className="flex flex-wrap justify-end gap-2 pt-2">
-        <Button onClick={onCancel}>{dismissLabel}</Button>
+        <Button onClick={onCancel} autoFocus={tone === 'danger' && reason === undefined}>
+          {dismissLabel}
+        </Button>
         <Button type="submit" tone={tone} disabled={!ready}>
           {confirmLabel}
         </Button>

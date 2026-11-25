@@ -7,7 +7,10 @@ export const dynamic = 'force-dynamic';
 
 // The display name is deployment configuration, read on the server.
 export function generateMetadata(): Metadata {
-  return { title: process.env.AFTERCARE_DISPLAY_NAME ?? 'Aftercare Trace' };
+  return {
+    title: process.env.AFTERCARE_DISPLAY_NAME ?? 'Aftercare Trace',
+    other: { 'text-scale': 'scale' },
+  };
 }
 
 export default function RootLayout({ children }: { readonly children: ReactNode }) {

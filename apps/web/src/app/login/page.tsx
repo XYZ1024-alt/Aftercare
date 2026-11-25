@@ -25,10 +25,10 @@ export default function LoginPage() {
 
   return (
     <main className="grid min-h-dvh place-items-center px-4 py-14">
-      <div className="t-enter w-full max-w-[400px] rounded-panel bg-card px-8 pt-8 pb-7 shadow-card max-sm:px-6">
+      <div className="t-enter w-full max-w-100 rounded-panel border border-line-subtle bg-card px-8 pt-8 pb-7 shadow-card max-sm:px-6">
         <span
           aria-hidden
-          className="grid size-11 place-items-center rounded-[14px] bg-ink text-white"
+          className="grid size-11 place-items-center rounded-panel bg-ink text-white"
         >
           <Activity className="size-5" strokeWidth={2.4} />
         </span>

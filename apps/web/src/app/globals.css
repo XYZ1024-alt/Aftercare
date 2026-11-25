@@ -14,41 +14,55 @@
 @theme {
   --color-*: initial;
   --color-white: #ffffff;
-  --color-canvas: #f2f4f7;
-  --color-canvas-2: #e8ebf0;
+  --color-canvas: #f3f5f8;
   --color-card: #ffffff;
-  --color-ink: #121722;
-  --color-ink-soft: #3b4251;
-  --color-muted: #687083;
-  --color-line: #e7eaef;
-  --color-track: #edf0f4;
+  --color-subtle: #f7f8fa;
+  --color-sunken: #eef1f6;
 
-  --color-mint: #1ea36a;
-  --color-mint-ink: #0c6941;
-  --color-mint-wash: #d3f3e4;
-  --color-mint-soft: #ebfaf2;
-  --color-sky: #3478f6;
-  --color-sky-ink: #1b4fae;
-  --color-sky-wash: #dae7ff;
-  --color-sky-soft: #eef4ff;
-  --color-apricot: #f5853a;
-  --color-apricot-ink: #9b4510;
-  --color-apricot-wash: #ffe2cd;
-  --color-apricot-soft: #fff4ea;
-  --color-violet: #7c62f6;
-  --color-violet-ink: #4a33b5;
-  --color-violet-wash: #e6e0ff;
-  --color-violet-soft: #f4f1ff;
-  --color-rose: #ec4f5f;
-  --color-rose-ink: #a32433;
-  --color-rose-wash: #ffdde0;
-  --color-rose-soft: #fff1f2;
+  --color-line-subtle: #e2e6ee;
+  --color-line: #cfd6e2;
+  --color-line-strong: #aeb8ca;
+  --color-line-control: #788397;
+  --color-line-control-hover: #5b667a;
 
-  --radius-panel: 24px;
-  --radius-block: 18px;
-  --radius-drawer: 28px;
-  --radius-field: 16px;
-  --radius-input: 12px;
+  --color-ink: #0f172a;
+  --color-ink-soft: #334155;
+  --color-muted: #525e71;
+
+  --color-sky: #1d63dc;
+  --color-sky-ink: #1547a6;
+  --color-sky-soft: #f0f6ff;
+  --color-sky-wash: #dbe8ff;
+  --color-sky-line: #b9d3ff;
+
+  --color-violet: #6546e6;
+  --color-violet-ink: #462bb8;
+  --color-violet-soft: #f5f3ff;
+  --color-violet-wash: #e7e1ff;
+  --color-violet-line: #cec2ff;
+
+  --color-apricot: #c2510c;
+  --color-apricot-ink: #8f3905;
+  --color-apricot-soft: #fff6ee;
+  --color-apricot-wash: #ffdfc8;
+  --color-apricot-line: #fdba8c;
+
+  --color-mint: #13794e;
+  --color-mint-ink: #0b5838;
+  --color-mint-soft: #eefbf4;
+  --color-mint-wash: #d1f2e2;
+  --color-mint-line: #9ee2c1;
+
+  --color-rose: #cf2e42;
+  --color-rose-ink: #961b2b;
+  --color-rose-soft: #fff1f3;
+  --color-rose-wash: #ffdce0;
+  --color-rose-line: #f9b4bd;
+
+  --radius-panel: 14px;
+  --radius-drawer: 16px;
+  --radius-field: 10px;
+  --radius-input: 8px;
   --radius-bar: 6px;
 
   --shadow-card: 0 1px 2px rgb(18 23 34 / 0.04), 0 8px 24px -6px rgb(18 23 34 / 0.08);
@@ -56,19 +70,24 @@
   --shadow-lift: 0 2px 4px rgb(18 23 34 / 0.04), 0 16px 36px -10px rgb(18 23 34 / 0.16);
   --shadow-drawer: -16px 0 48px -12px rgb(18 23 34 / 0.18);
 
-  --text-display: 44px;
-  --text-display--line-height: 1;
-  --text-display--letter-spacing: -0.035em;
-  --text-figure: 24px;
-  --text-figure--line-height: 1.1;
-  --text-figure--letter-spacing: -0.03em;
-  --text-title: 30px;
-  --text-title--line-height: 38px;
-  --text-title--letter-spacing: -0.025em;
-  --text-body: 15px;
-  --text-body--line-height: 22px;
-  --text-meta: 13px;
-  --text-meta--line-height: 18px;
+  --text-*: initial;
+  --text-display: 2.25rem;
+  --text-display--line-height: 1.15;
+  --text-display--letter-spacing: -0.02em;
+  --text-title: 1.625rem;
+  --text-title--line-height: 1.31;
+  --text-title--letter-spacing: -0.01em;
+  --text-figure: 1.375rem;
+  --text-figure--line-height: 1.27;
+  --text-figure--letter-spacing: -0.015em;
+  --text-heading: 1.0625rem;
+  --text-heading--line-height: 1.41;
+  --text-body: 0.9375rem;
+  --text-body--line-height: 1.6;
+  --text-meta: 0.8125rem;
+  --text-meta--line-height: 1.54;
+  --text-code: 0.75rem;
+  --text-code--line-height: 1.5;
 
   /* Motion easings (transitions.dev scale), as `ease-*` utilities. */
   --ease-smooth-out: cubic-bezier(0.22, 1, 0.36, 1);
@@ -103,38 +122,6 @@
   --scale-medium: 0.97;
   --scale-small: 0.98;
   --scale-tiny: 0.99;
-  --blur-small: 2px;
-  --blur-medium: 3px;
-  --blur-large: 8px;
-
-  /* Modal open / close */
-  --modal-open-dur: 250ms;
-  --modal-close-dur: 150ms;
-  --modal-scale: 0.96;
-  --modal-scale-close: 0.96;
-  --modal-ease: cubic-bezier(0.22, 1, 0.36, 1);
-  /* Panel reveal (the drawer travels on X) */
-  --panel-open-dur: 400ms;
-  --panel-close-dur: 350ms;
-  --panel-translate-x: 48px;
-  --panel-blur: 2px;
-  --panel-ease: cubic-bezier(0.22, 1, 0.36, 1);
-  /* Accordion expand */
-  --acc-expand: 250ms;
-  --acc-collapse: 250ms;
-  --acc-chevron: 250ms;
-  --acc-ease: cubic-bezier(0.22, 1, 0.36, 1);
-  /* Shimmer text */
-  --shimmer-dur: 2000ms;
-  --shimmer-base: #8a92a3;
-  --shimmer-highlight: #121722;
-  --shimmer-band: 400%;
-  --shimmer-ease: linear;
-  /* Page and section entrance (page slide scale) */
-  --enter-dur: 250ms;
-  --enter-distance: 8px;
-  --enter-blur: 3px;
-  --enter-ease: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 @layer base {
@@ -143,20 +130,20 @@
     scrollbar-gutter: stable;
   }
 
-  /* The page behind an open drawer or dialog does not scroll. */
-  html:has(dialog:modal) {
+  /* Prevent scroll chaining from modal dialogs and their backdrops to the underlying page. */
+  dialog:modal {
+    overscroll-behavior: contain;
+  }
+
+  dialog::backdrop {
     overflow: hidden;
+    overscroll-behavior: contain;
   }
 
   body {
-    @apply min-h-screen font-sans text-body text-ink antialiased;
+    @apply min-h-screen bg-canvas font-sans text-body text-ink antialiased;
     font-synthesis: none;
     text-rendering: optimizeLegibility;
-    background:
-      radial-gradient(900px 420px at 0% -8%, var(--color-sky-soft), transparent 70%),
-      radial-gradient(760px 380px at 100% -12%, var(--color-violet-soft), transparent 70%),
-      var(--color-canvas);
-    background-repeat: no-repeat;
   }
 
   h1,
@@ -176,224 +163,193 @@
 }
 
 /* ── Entrance: page slide on mount (@starting-style), optional stagger ── */
-.t-enter {
-  transition:
-    opacity var(--enter-dur) var(--enter-ease),
-    translate var(--enter-dur) var(--enter-ease),
-    filter var(--enter-dur) var(--enter-ease);
-  transition-delay: calc(var(--duration-stagger) * var(--enter-index, 0));
+@media (prefers-reduced-motion: no-preference) {
+  .t-enter {
+    transition-property: opacity, translate;
+    transition-duration: var(--duration-fast);
+    transition-timing-function: var(--ease-smooth-out);
+    transition-delay: calc(var(--duration-stagger) * var(--enter-index, 0));
+
+    @starting-style {
+      opacity: 0;
+      translate: 0 var(--distance-base);
+    }
+  }
+}
+
+/* ── Top-layer <dialog> surfaces (modal scale + drawer slide) ── */
+dialog.t-modal {
+  opacity: 0;
+  transform-origin: center;
+  transition-property: opacity, transform, display, overlay;
+  transition-duration: var(--duration-quick);
+  transition-timing-function: var(--ease-smooth-out);
+  transition-behavior: allow-discrete;
+
+  @media (prefers-reduced-motion: no-preference) {
+    transform: scale(var(--scale-large));
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    transition-duration: 100ms;
+  }
+}
+
+dialog.t-modal[open]:where(:not([data-closing])) {
+  opacity: 1;
+  transition-duration: var(--duration-fast);
+
   @starting-style {
     opacity: 0;
-    translate: 0 var(--enter-distance);
-    filter: blur(var(--enter-blur));
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    transform: scale(1);
+
+    @starting-style {
+      transform: scale(var(--scale-large));
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    transition-duration: 100ms;
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .t-enter {
-    /* biome-ignore lint/complexity/noImportantStyles: the reduced-motion guard must beat every state selector */
-    transition: none !important;
+dialog.t-panel-slide {
+  opacity: 0;
+  transition-property: opacity, transform, display, overlay;
+  transition-duration: var(--duration-medium);
+  transition-timing-function: var(--ease-smooth-out);
+  transition-behavior: allow-discrete;
+
+  @media (prefers-reduced-motion: no-preference) {
+    transform: translateX(48px);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    transition-duration: 100ms;
   }
 }
 
-/* ── Modal open / close (transitions.dev) on the native <dialog> ── */
-.t-modal {
-  transform-origin: center;
-  transform: scale(var(--modal-scale));
-  opacity: 0;
-  pointer-events: none;
-  transition:
-    transform var(--modal-open-dur) var(--modal-ease),
-    opacity var(--modal-open-dur) var(--modal-ease);
-  will-change: transform, opacity;
-}
-.t-modal.is-open {
-  transform: scale(1);
+dialog.t-panel-slide[open]:where(:not([data-closing])) {
   opacity: 1;
-  pointer-events: auto;
-}
-.t-modal.is-closing {
-  transform: scale(var(--modal-scale-close));
-  opacity: 0;
-  pointer-events: none;
-  transition:
-    transform var(--modal-close-dur) var(--modal-ease),
-    opacity var(--modal-close-dur) var(--modal-ease);
+  transition-duration: var(--duration-slow);
+
+  @starting-style {
+    opacity: 0;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    transform: translateX(0);
+
+    @starting-style {
+      transform: translateX(48px);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    transition-duration: 100ms;
+  }
 }
 
-/* ── Panel reveal (transitions.dev), travelling in from the right ── */
-.t-panel-slide {
-  transform: translateX(var(--panel-translate-x));
-  opacity: 0;
-  filter: blur(var(--panel-blur));
+dialog[data-closing] {
   pointer-events: none;
-  transition:
-    transform var(--panel-close-dur) var(--panel-ease),
-    opacity var(--panel-close-dur) var(--panel-ease),
-    filter var(--panel-close-dur) var(--panel-ease);
-  will-change: transform, opacity, filter;
-}
-.t-panel-slide[data-open="true"] {
-  transform: translateX(0);
-  opacity: 1;
-  filter: blur(0);
-  pointer-events: auto;
-  transition:
-    transform var(--panel-open-dur) var(--panel-ease),
-    opacity var(--panel-open-dur) var(--panel-ease),
-    filter var(--panel-open-dur) var(--panel-ease);
 }
 
-/* The backdrop of either surface fades with it. */
-.t-modal::backdrop,
-.t-panel-slide::backdrop {
+:is(dialog.t-modal, dialog.t-panel-slide)::backdrop {
   background: rgb(18 23 34 / 0.32);
   backdrop-filter: blur(2px);
   opacity: 0;
-  transition: opacity var(--modal-close-dur) var(--modal-ease);
+  transition-property: opacity, display, overlay;
+  transition-duration: var(--duration-quick);
+  transition-timing-function: var(--ease-smooth-out);
+  transition-behavior: allow-discrete;
+
+  @media (prefers-reduced-motion: reduce) {
+    transition-duration: 100ms;
+  }
 }
-.t-modal.is-open::backdrop,
-.t-panel-slide[data-open="true"]::backdrop {
+
+:is(dialog.t-modal, dialog.t-panel-slide)[open]:where(:not([data-closing]))::backdrop {
   opacity: 1;
-  transition-duration: var(--modal-open-dur);
-}
+  transition-duration: var(--duration-fast);
 
-@media (prefers-reduced-motion: reduce) {
-  .t-modal,
-  .t-modal::backdrop {
-    /* biome-ignore lint/complexity/noImportantStyles: the reduced-motion guard must beat every state selector */
-    transition: none !important;
+  @starting-style {
+    opacity: 0;
   }
-  .t-panel-slide,
-  .t-panel-slide::backdrop {
-    /* biome-ignore lint/complexity/noImportantStyles: the reduced-motion guard must beat every state selector */
-    transition: none !important;
+
+  @media (prefers-reduced-motion: reduce) {
+    transition-duration: 100ms;
   }
 }
 
-/* ── Dropdown open / close (transitions.dev) on the native popover list ── */
+/* ── Dropdown open / close on the native popover list ── */
 .t-dropdown {
   transform-origin: top;
   opacity: 0;
-  transform: translateY(calc(var(--distance-micro) * -1)) scale(var(--scale-small));
-  transition:
-    opacity var(--duration-quick) var(--ease-smooth-out),
-    transform var(--duration-quick) var(--ease-smooth-out),
-    display var(--duration-quick) var(--ease-smooth-out) allow-discrete,
-    overlay var(--duration-quick) var(--ease-smooth-out) allow-discrete;
-}
-/* An upward list hangs from the trigger: it grows from its bottom edge and enters from below. */
-.t-dropdown[data-side="top"] {
-  transform-origin: bottom;
-  transform: translateY(var(--distance-micro)) scale(var(--scale-small));
-}
-.t-dropdown:popover-open {
-  opacity: 1;
-  transform: none;
-}
-@starting-style {
-  .t-dropdown:popover-open {
-    opacity: 0;
+  transition-property: opacity, transform, display, overlay;
+  transition-duration: var(--duration-quick);
+  transition-timing-function: var(--ease-smooth-out);
+  transition-behavior: allow-discrete;
+
+  @media (prefers-reduced-motion: no-preference) {
     transform: translateY(calc(var(--distance-micro) * -1)) scale(var(--scale-small));
   }
-  .t-dropdown[data-side="top"]:popover-open {
+
+  @media (prefers-reduced-motion: reduce) {
+    transition-duration: 100ms;
+  }
+}
+
+.t-dropdown[data-side="top"] {
+  transform-origin: bottom;
+
+  @media (prefers-reduced-motion: no-preference) {
     transform: translateY(var(--distance-micro)) scale(var(--scale-small));
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .t-dropdown {
-    /* biome-ignore lint/complexity/noImportantStyles: the reduced-motion guard must beat every state selector */
-    transition: none !important;
-  }
-}
-
-/* ── Accordion expand (transitions.dev) ── */
-.t-acc-panel {
-  display: grid;
-  grid-template-rows: 0fr;
-  transition: grid-template-rows var(--acc-collapse) var(--acc-ease);
-}
-.t-acc[data-open="true"] .t-acc-panel {
-  grid-template-rows: 1fr;
-  transition: grid-template-rows var(--acc-expand) var(--acc-ease);
-}
-.t-acc-panel-inner {
-  overflow: hidden;
-  opacity: 0;
-  filter: blur(2px);
-  transition:
-    opacity var(--acc-collapse) var(--acc-ease),
-    filter var(--acc-collapse) var(--acc-ease);
-}
-.t-acc[data-open="true"] .t-acc-panel-inner {
+.t-dropdown:popover-open:where(:not([data-closing])) {
   opacity: 1;
-  filter: blur(0);
-  transition:
-    opacity var(--acc-expand) var(--acc-ease),
-    filter var(--acc-expand) var(--acc-ease);
-}
-.t-acc-chevron {
-  display: inline-flex;
-  transform: scaleY(1);
-  transform-origin: center;
-  transition: transform var(--acc-chevron) var(--acc-ease);
-}
-.t-acc-chevron path {
-  vector-effect: non-scaling-stroke;
-}
-.t-acc[data-open="true"] .t-acc-chevron {
-  transform: scaleY(-1);
-}
 
-@media (prefers-reduced-motion: reduce) {
-  .t-acc-panel,
-  .t-acc-panel-inner,
-  .t-acc-chevron {
-    /* biome-ignore lint/complexity/noImportantStyles: the reduced-motion guard must beat every state selector */
-    transition: none !important;
+  @starting-style {
+    opacity: 0;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    transform: none;
+
+    @starting-style {
+      transform: translateY(calc(var(--distance-micro) * -1)) scale(var(--scale-small));
+    }
   }
 }
 
-/* ── Shimmer text (transitions.dev): in-progress labels ── */
-.t-shimmer {
-  position: relative;
-  display: inline-block;
-  color: var(--shimmer-base);
-}
-.t-shimmer::before {
-  content: attr(data-text);
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background-image: linear-gradient(
-    90deg,
-    transparent 0%,
-    transparent 40%,
-    var(--shimmer-highlight) 50%,
-    transparent 60%,
-    transparent 100%
-  );
-  background-size: var(--shimmer-band) 100%;
-  background-repeat: no-repeat;
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-  -webkit-text-fill-color: transparent;
-  animation: t-shimmer var(--shimmer-dur) var(--shimmer-ease) infinite;
-}
-@keyframes t-shimmer {
-  0% {
-    background-position: 100% 0;
-  }
-  100% {
-    background-position: 0% 0;
+.t-dropdown[data-side="top"]:popover-open:where(:not([data-closing])) {
+  @media (prefers-reduced-motion: no-preference) {
+    @starting-style {
+      transform: translateY(var(--distance-micro)) scale(var(--scale-small));
+    }
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .t-shimmer::before {
-    /* biome-ignore lint/complexity/noImportantStyles: the reduced-motion guard must beat every state selector */
-    animation: none !important;
+/* ── Native <details> disclosure animation ── */
+details::details-content {
+  interpolate-size: allow-keywords;
+  overflow: clip;
+  contain: layout;
+}
+
+details:not([open])::details-content {
+  block-size: 0;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  details::details-content {
+    transition-property: block-size, content-visibility, display;
+    transition-duration: var(--duration-fast);
+    transition-timing-function: var(--ease-smooth-out);
+    transition-behavior: allow-discrete;
   }
 }
