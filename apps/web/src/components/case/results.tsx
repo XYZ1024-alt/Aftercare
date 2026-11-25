@@ -33,6 +33,7 @@ import {
   Inset,
   Json,
   Notice,
+  Num,
   OPTION_CLASS,
   Pill,
   RefusalNote,
@@ -247,7 +248,7 @@ function Artefacts({ report }: { readonly report: VerificationReport }) {
           >
             生成差异报告
           </Button>
-          <div className="flex min-w-64 flex-1 flex-wrap items-end gap-3">
+          <div className="flex min-w-0 w-full flex-1 flex-wrap items-end gap-3 @sm/card:w-auto @sm/card:min-w-64">
             <Button
               pending={produce.pending}
               disabled={!mayExport || schema === ''}
@@ -263,9 +264,10 @@ function Artefacts({ report }: { readonly report: VerificationReport }) {
             </Button>
             <Disclosure
               summary={`高级选项（目标 schema：${schema}）`}
+              className="min-w-0 max-w-full"
               summaryClassName="text-meta text-ink-soft hover:text-ink"
             >
-              <div className="mt-2 min-w-64">
+              <div className="mt-2 min-w-0 w-full @sm/card:w-64">
                 <Field
                   label="SQL 导出的本地演练目标 schema"
                   hint="以小写字母开头，可含数字与下划线；数据库会拒绝指向本系统的 schema。"
@@ -348,7 +350,7 @@ function Objects({
       {entries.length === 0 ? (
         <p className="text-meta text-muted">暂无</p>
       ) : (
-        <ul className="space-y-1.5 break-all tabular-nums">
+        <ul className="space-y-1.5 wrap-break-word tabular-nums">
           {entries.map((entry) => (
             <li key={entry.key}>{entry.text}</li>
           ))}
@@ -407,7 +409,17 @@ function Report({
           title="已修改"
           entries={objects.modified.map((entry) => ({
             key: fieldKey(entry),
-            text: `${entry.objectType}/${entry.objectId} ${fieldTitle(registry, entry.fieldId)}：${fieldValue(registry, entry.fieldId, entry.valueBefore)} → ${fieldValue(registry, entry.fieldId, entry.valueAfter)}`,
+            text: (
+              <>
+                <span className="font-mono text-code text-ink-soft wrap-anywhere">
+                  {entry.objectType}/{entry.objectId}
+                </span>{' '}
+                {fieldTitle(registry, entry.fieldId)}：
+                <Num>{fieldValue(registry, entry.fieldId, entry.valueBefore)}</Num>
+                {' → '}
+                <Num>{fieldValue(registry, entry.fieldId, entry.valueAfter)}</Num>
+              </>
+            ),
           }))}
         />
         <Objects
@@ -416,7 +428,14 @@ function Report({
           title="已保留"
           entries={objects.preserved.map((entry) => ({
             key: fieldKey(entry),
-            text: `${fieldKey(entry)}：保持 ${fieldValue(registry, entry.fieldId, entry.value)}`,
+            text: (
+              <>
+                <span className="font-mono text-code text-ink-soft wrap-anywhere">
+                  {fieldKey(entry)}
+                </span>
+                ：保持 <Num>{fieldValue(registry, entry.fieldId, entry.value)}</Num>
+              </>
+            ),
           }))}
         />
         <Objects
@@ -425,14 +444,22 @@ function Report({
           title="未决项"
           entries={objects.unresolved.map((entry) => ({
             key: entry,
-            text: `${entry}：暂按快照原样保留（本次修复未处理）`,
+            text: (
+              <>
+                <span className="font-mono text-code text-ink-soft wrap-anywhere">{entry}</span>
+                ：暂按快照原样保留（本次修复未处理）
+              </>
+            ),
           }))}
         />
         <Objects
           testId="objects-affected"
           tone="neutral"
           title="受影响但未修改"
-          entries={objects.affectedOnly.map((entry) => ({ key: entry, text: entry }))}
+          entries={objects.affectedOnly.map((entry) => ({
+            key: entry,
+            text: <span className="font-mono text-code text-ink-soft wrap-anywhere">{entry}</span>,
+          }))}
         />
       </div>
       <section className="text-body">
@@ -472,7 +499,9 @@ function Report({
             <tbody>
               {findings.map((finding) => (
                 <tr key={finding.obligationRef}>
-                  <td className="break-all">{finding.obligationRef}</td>
+                  <td className="min-w-24 wrap-anywhere font-mono text-code">
+                    {finding.obligationRef}
+                  </td>
                   <td>{VERIFICATION_LAYER_LABEL[finding.layer]}</td>
                   <td>{OBLIGATION_STATUS_LABEL[finding.status]}</td>
                   <td>{finding.detail}</td>

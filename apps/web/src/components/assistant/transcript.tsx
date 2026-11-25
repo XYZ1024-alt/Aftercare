@@ -320,7 +320,7 @@ function ToolRecordView({ record }: { readonly record: ToolRecord }) {
 /** The note the model wrote beside its tool calls: secondary to the reply that follows. */
 function AssistantNote({ text }: { readonly text: string }) {
   return (
-    <div className="text-meta text-muted [&>div]:text-meta [&>div]:leading-5">
+    <div className="text-body text-ink-soft">
       <UntrustedMarkdown text={text} />
     </div>
   );
@@ -330,13 +330,15 @@ function AssistantNote({ text }: { readonly text: string }) {
 function FinalReply({
   message,
   expandedCaseIds,
+  isLatestTurn,
 }: {
   readonly message: AssistantReply;
   readonly expandedCaseIds: ReadonlySet<string>;
+  readonly isLatestTurn: boolean;
 }) {
   const onAction = useAssistantUiAction();
   return (
-    <TurnUiProvider meta={message.ui} expandedCaseIds={expandedCaseIds}>
+    <TurnUiProvider meta={message.ui} expandedCaseIds={expandedCaseIds} isLatestTurn={isLatestTurn}>
       <Renderer
         response={message.content}
         library={assistantUiLibrary}
@@ -347,69 +349,38 @@ function FinalReply({
   );
 }
 
-function AssistantStepView({
+function isStepVisible(step: AssistantStep, running: boolean): boolean {
+  if (step.message.ui !== null) return true;
+  if ((step.message.content?.trim() ?? '') !== '') return true;
+  return running && step.tools.length > 0;
+}
+
+function AssistantStepContent({
   step,
   running,
   expandedCaseIds,
+  isLatestTurn,
 }: {
   readonly step: AssistantStep;
   readonly running: boolean;
   readonly expandedCaseIds: ReadonlySet<string>;
+  readonly isLatestTurn: boolean;
 }) {
   const note = step.message.content?.trim() ?? '';
+  if (step.message.ui !== null) {
+    return (
+      <FinalReply
+        message={step.message}
+        expandedCaseIds={expandedCaseIds}
+        isLatestTurn={isLatestTurn}
+      />
+    );
+  }
   return (
-    <div data-testid="assistant-message" data-role="assistant" className="flex gap-2.5">
-      <IconTile icon={Bot} tone="sky" size="sm" />
-      <div className="min-w-0 flex-1 space-y-2">
-        {step.message.ui !== null ? (
-          <FinalReply message={step.message} expandedCaseIds={expandedCaseIds} />
-        ) : (
-          <>
-            {note !== '' && <AssistantNote text={note} />}
-            {running &&
-              step.tools.map((record) => <RunningToolCall key={record.key} record={record} />)}
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function TurnView({
-  turn,
-  running,
-  expandedCases,
-}: {
-  readonly turn: Turn;
-  readonly running: boolean;
-  readonly expandedCases: ReadonlyMap<number, ReadonlySet<string>>;
-}) {
-  // The record of a finished turn holds every call it made: a running turn
-  // shows its calls as they happen instead, and the record waits for it.
-  const records = turn.steps.flatMap((step) => step.tools);
-  return (
-    <div className="space-y-3">
-      {turn.user !== null && (
-        <UserMessageView text={turn.user.message.content} recordedAt={turn.user.recordedAt} />
-      )}
-      {turn.steps.map((step) => (
-        <AssistantStepView
-          key={step.seq}
-          step={step}
-          running={running}
-          expandedCaseIds={expandedCases.get(step.seq) ?? NO_CASE_IDS}
-        />
-      ))}
-      {!running && records.length > 0 && (
-        <Technical label={`工具调用记录（${records.length}）`}>
-          <div className="space-y-3">
-            {records.map((record) => (
-              <ToolRecordView key={record.key} record={record} />
-            ))}
-          </div>
-        </Technical>
-      )}
-    </div>
+    <>
+      {note !== '' && <AssistantNote text={note} />}
+      {running && step.tools.map((record) => <RunningToolCall key={record.key} record={record} />)}
+    </>
   );
 }
 
@@ -422,7 +393,7 @@ const ignorePreviewErrors = (): void => {
 function AssistantPreviewView({ preview }: { readonly preview: AssistantPreview }) {
   const onAction = useAssistantUiAction();
   return (
-    <div data-testid="assistant-preview" data-phase={preview.phase} className="space-y-2 pl-9">
+    <div data-testid="assistant-preview" data-phase={preview.phase} className="space-y-2">
       {preview.phase === 'repairing' && (
         <p className="text-meta text-muted">
           回复格式有误，正在自动修正（第 {preview.attempt}/3 次）…
@@ -446,12 +417,88 @@ function AssistantPreviewView({ preview }: { readonly preview: AssistantPreview 
   );
 }
 
+function TurnView({
+  turn,
+  running,
+  expandedCases,
+  latestUiSeq,
+  preview,
+  showThinking,
+}: {
+  readonly turn: Turn;
+  readonly running: boolean;
+  readonly expandedCases: ReadonlyMap<number, ReadonlySet<string>>;
+  readonly latestUiSeq: number | null;
+  readonly preview: AssistantPreview | null;
+  readonly showThinking: boolean;
+}) {
+  // The record of a finished turn holds every call it made: a running turn
+  // shows its calls as they happen instead, and the record waits for it.
+  const records = turn.steps.flatMap((step) => step.tools);
+  const visibleSteps = turn.steps.filter((step) => isStepVisible(step, running));
+  const showRecords = !running && records.length > 0;
+  const showAssistant = visibleSteps.length > 0 || showRecords || preview !== null || showThinking;
+  return (
+    <div className="space-y-3">
+      {turn.user !== null && (
+        <UserMessageView text={turn.user.message.content} recordedAt={turn.user.recordedAt} />
+      )}
+      {showAssistant && (
+        <div
+          data-testid="assistant-message"
+          data-role="assistant"
+          className="flex items-start gap-2.5"
+        >
+          <IconTile icon={Bot} tone="sky" size="sm" />
+          <div className="min-w-0 flex-1 space-y-2.5">
+            {visibleSteps.map((step) => (
+              <AssistantStepContent
+                key={step.seq}
+                step={step}
+                running={running}
+                expandedCaseIds={expandedCases.get(step.seq) ?? NO_CASE_IDS}
+                isLatestTurn={step.seq === latestUiSeq}
+              />
+            ))}
+            {preview !== null && <AssistantPreviewView preview={preview} />}
+            {showThinking && (
+              <p role="status" className="text-meta text-ink-soft">
+                思考中…
+              </p>
+            )}
+            {showRecords && (
+              <Technical label={`工具调用记录（${records.length}）`}>
+                <div className="space-y-3">
+                  {records.map((record) => (
+                    <ToolRecordView key={record.key} record={record} />
+                  ))}
+                </div>
+              </Technical>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function Transcript() {
   const { entries, pending, pendingText, preview, loading, runningElsewhere, selection, setDraft } =
     useAssistant();
   const scroller = useRef<HTMLDivElement>(null);
+  const lastSelection = useRef<number | null>(null);
+  const stickToBottom = useRef(true);
   const turns = useMemo(() => turnsOf(entries), [entries]);
   const expandedCases = useMemo(() => expandedCasesOf(entries), [entries]);
+  const latestUiSeq = useMemo((): number | null => {
+    for (let index = entries.length - 1; index >= 0; index -= 1) {
+      const entry = entries[index];
+      if (entry?.message.role === 'assistant' && entry.message.ui !== null) {
+        return entry.seq;
+      }
+    }
+    return null;
+  }, [entries]);
   // A turn whose user message is still only local has no stored entries: the
   // last stored turn is finished and must keep its record.
   const runningKey = pending && pendingText === null ? (turns.at(-1)?.key ?? null) : null;
@@ -460,17 +507,30 @@ export function Transcript() {
     running?.steps.some((step) => step.tools.some((record) => record.tool === undefined)) ?? false;
   const lastStep = running?.steps.at(-1);
   const replied = lastStep !== undefined && lastStep.message.ui !== null;
+  const showThinking = pending && preview === null && !waitingTool && !replied;
+  const trailingAssistant = runningKey === null && (preview !== null || showThinking);
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: the transcript is scrolled after a message, the running turn or the preview changed, not read here.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: scroll reacts to conversation, entries, pending turn and streaming preview changes.
   useEffect(() => {
     const element = scroller.current;
-    if (element !== null) element.scrollTop = element.scrollHeight;
-  }, [entries, pending, pendingText, preview]);
+    if (element === null) return;
+    const selectionChanged = lastSelection.current !== selection;
+    lastSelection.current = selection;
+    if (selectionChanged || pendingText !== null || stickToBottom.current) {
+      element.scrollTop = element.scrollHeight;
+      stickToBottom.current = true;
+    }
+  }, [entries, pending, pendingText, preview, selection]);
 
   return (
     <div
       ref={scroller}
-      className="h-[60dvh] min-h-0 flex-1 space-y-4 overflow-y-auto pr-1 lg:h-auto"
+      data-testid="transcript-scroller"
+      onScroll={(event) => {
+        const target = event.currentTarget;
+        stickToBottom.current = target.scrollHeight - target.scrollTop - target.clientHeight <= 120;
+      }}
+      className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1"
     >
       {loading ? (
         <Loading />
@@ -487,22 +547,39 @@ export function Transcript() {
         </div>
       ) : (
         <>
-          {turns.map((turn) => (
+          {turns.map((turn) => {
+            const isRunningTurn = turn.key === runningKey;
             // The selection scopes the local state of the rendered reply: a
             // workbench opened in one conversation is not open in the next.
-            <TurnView
-              key={`${selection}:${turn.key}`}
-              turn={turn}
-              running={turn.key === runningKey}
-              expandedCases={expandedCases}
-            />
-          ))}
+            return (
+              <TurnView
+                key={`${selection}:${turn.key}`}
+                turn={turn}
+                running={isRunningTurn}
+                expandedCases={expandedCases}
+                latestUiSeq={latestUiSeq}
+                preview={isRunningTurn ? preview : null}
+                showThinking={isRunningTurn && showThinking}
+              />
+            );
+          })}
           {pendingText !== null && <PendingUserMessage text={pendingText} />}
-          {preview !== null && <AssistantPreviewView preview={preview} />}
-          {pending && preview === null && !waitingTool && !replied && (
-            <p role="status" className="pl-9 text-meta text-ink-soft">
-              思考中…
-            </p>
+          {trailingAssistant && (
+            <div
+              data-testid="assistant-message"
+              data-role="assistant"
+              className="flex items-start gap-2.5"
+            >
+              <IconTile icon={Bot} tone="sky" size="sm" />
+              <div className="min-w-0 flex-1 space-y-2.5">
+                {preview !== null && <AssistantPreviewView preview={preview} />}
+                {showThinking && (
+                  <p role="status" className="text-meta text-ink-soft">
+                    思考中…
+                  </p>
+                )}
+              </div>
+            </div>
           )}
         </>
       )}

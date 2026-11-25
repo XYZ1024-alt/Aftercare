@@ -178,7 +178,9 @@ export function Pill({
       data-testid={testId}
       className={`inline-flex max-w-full items-center gap-1 rounded-full border px-2.5 py-0.5 text-meta font-medium ${SOFT_CLASS[tone]} ${LINE_CLASS[tone]}`}
     >
-      <span className="min-w-0 truncate">{children}</span>
+      <span className="min-w-0 truncate hover:whitespace-normal focus-visible:whitespace-normal [*:focus-visible>&]:whitespace-normal [*:hover>&]:whitespace-normal">
+        {children}
+      </span>
     </span>
   );
 }
@@ -261,7 +263,7 @@ export function Card({
   return (
     <section
       data-testid={testId}
-      className={`@container/card min-w-0 rounded-panel border border-line-subtle bg-card p-5 shadow-soft max-sm:p-4 ${className}`}
+      className={`@container/card min-w-0 rounded-panel border border-line-subtle bg-card p-5 shadow-soft [--surface-bg:var(--color-card)] max-sm:p-4 in-[dialog]:p-4 ${className}`}
     >
       {(title !== undefined || aside !== undefined) && (
         <header className="mb-5 flex flex-wrap items-start justify-between gap-x-3 gap-y-2">
@@ -287,10 +289,23 @@ export function Inset({ children, className = '', ...props }: ComponentPropsWith
   return (
     <div
       {...props}
-      className={`rounded-field border border-line-subtle bg-subtle p-3.5 ${className}`}
+      className={`rounded-field border border-line-subtle bg-subtle p-3.5 [--surface-bg:var(--color-subtle)] ${className}`}
     >
       {children}
     </div>
+  );
+}
+
+/** An atomic numeric or currency value that never breaks across lines. */
+export function Num({
+  children,
+  className = '',
+}: {
+  readonly children: ReactNode;
+  readonly className?: string;
+}) {
+  return (
+    <span className={`whitespace-nowrap tabular-nums lining-nums ${className}`}>{children}</span>
   );
 }
 
@@ -342,12 +357,14 @@ export function PageHead({
  */
 export type ButtonTone = 'primary' | 'secondary' | 'sandbox' | 'approval' | 'danger';
 const BUTTON_TONE: Readonly<Record<ButtonTone, string>> = {
-  primary: 'bg-ink text-white shadow-soft enabled:hover:bg-ink-soft',
+  primary: 'border border-transparent bg-ink text-white shadow-soft enabled:hover:bg-ink-soft',
   secondary:
     'border border-line-control bg-card text-ink shadow-soft enabled:hover:border-line-control-hover enabled:hover:bg-canvas',
-  sandbox: 'bg-mint-ink text-white shadow-soft enabled:hover:bg-mint-ink/88',
-  approval: 'bg-apricot-ink text-white shadow-soft enabled:hover:bg-apricot-ink/88',
-  danger: 'bg-rose-soft text-rose-ink enabled:hover:bg-rose-wash',
+  sandbox:
+    'border border-transparent bg-mint-ink text-white shadow-soft enabled:hover:bg-mint-ink/88',
+  approval:
+    'border border-transparent bg-apricot-ink text-white shadow-soft enabled:hover:bg-apricot-ink/88',
+  danger: 'border border-transparent bg-rose-soft text-rose-ink enabled:hover:bg-rose-wash',
 };
 const BUTTON_SIZE = {
   md: 'min-h-10 px-4.5 py-2 text-body',
@@ -358,7 +375,7 @@ export const buttonClass = (
   tone: ButtonTone = 'secondary',
   size: keyof typeof BUTTON_SIZE = 'md',
 ) =>
-  `inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-input font-medium transition-[background-color,border-color,color,scale] ${MOTION} enabled:active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-45 ${BUTTON_TONE[tone]} ${BUTTON_SIZE[size]}`;
+  `inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-input font-medium transition-[background-color,border-color,color,scale] ${MOTION} enabled:active:scale-[0.97] disabled:cursor-not-allowed disabled:border-line disabled:bg-sunken disabled:text-muted disabled:shadow-none ${BUTTON_TONE[tone]} ${BUTTON_SIZE[size]}`;
 
 export function Button({
   tone = 'secondary',
@@ -413,7 +430,7 @@ export function Chip({
     <button
       type="button"
       {...rest}
-      className={`inline-flex min-h-9 shrink-0 items-center gap-2 rounded-full border border-transparent px-3.5 py-1.5 text-meta font-medium transition-[background-color,color,scale] ${MOTION} active:scale-[0.97] ${active ? `${SELECTED_CLASS[tone]} forced-colors:outline-2 forced-colors:outline-offset-1 forced-colors:outline-[Highlight]` : 'bg-card text-ink-soft shadow-soft hover:text-ink'}`}
+      className={`inline-flex min-h-9 shrink-0 items-center gap-2 rounded-full border px-3.5 py-1.5 text-meta font-medium transition-[background-color,border-color,color,scale] ${MOTION} active:scale-[0.97] ${active ? `border-transparent ${SELECTED_CLASS[tone]} forced-colors:outline-2 forced-colors:outline-offset-1 forced-colors:outline-[Highlight]` : 'border-line-subtle bg-card text-ink-soft shadow-soft hover:border-line hover:text-ink in-[.bg-card]:bg-subtle in-[.bg-card]:shadow-none in-[.bg-card]:hover:bg-sunken'}`}
     >
       {tone !== 'neutral' && !active && <Dot tone={tone} className="size-2" />}
       {children}
@@ -619,7 +636,7 @@ export function Technical({
       className="mt-3 text-meta text-muted"
       summaryClassName="text-left hover:text-ink-soft"
     >
-      <div className="mt-2 space-y-1 break-all rounded-input border border-line-subtle bg-subtle px-3 py-2.5 font-mono text-code text-ink-soft">
+      <div className="mt-2 space-y-1 wrap-anywhere rounded-input border border-line-subtle bg-subtle px-3 py-2.5 font-mono text-code text-ink-soft [--surface-bg:var(--color-subtle)]">
         {children}
       </div>
     </Disclosure>
@@ -988,7 +1005,7 @@ export function Table({
         aria-label={label}
         className="@container/table max-w-full overflow-x-auto focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky"
       >
-        <table className="w-full min-w-[24rem] border-collapse text-body [&_.num]:text-right [&_.num]:tabular-nums [&_td]:border-line-subtle [&_td]:py-3 [&_td]:pr-4 [&_td]:align-top [&_th]:border-line-subtle [&_th]:border-b [&_th]:pr-4 [&_th]:pb-2.5 [&_th]:text-left [&_th]:font-medium [&_th]:text-muted [&_th]:text-meta [&_thead_th]:sticky [&_thead_th]:top-0 [&_thead_th]:bg-card [&_tr:not(:last-child)_td]:border-b [&_td:last-child]:pr-0 [&_th:last-child]:pr-0">
+        <table className="w-full border-collapse text-body [&_.num]:whitespace-nowrap [&_.num]:text-right [&_.num]:tabular-nums [&_.num]:lining-nums [&_td]:border-line-subtle [&_td]:py-3 [&_td]:pr-4 [&_td]:align-top [&_th]:border-line-subtle [&_th]:border-b [&_th]:pr-4 [&_th]:pb-2.5 [&_th]:text-left [&_th]:font-medium [&_th]:whitespace-nowrap [&_th]:text-muted [&_th]:text-meta [&_thead_th]:sticky [&_thead_th]:top-0 [&_thead_th]:bg-(--surface-bg,var(--color-card)) [&_tr:not(:last-child)_td]:border-b [&_td:last-child]:pr-0 [&_th:last-child]:pr-0">
           {children}
         </table>
       </div>

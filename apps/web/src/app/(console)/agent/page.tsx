@@ -71,7 +71,7 @@ function CasePicker() {
   const [chosen, setChosen] = useState<string | null>(null);
   const options = useMemo(() => caseOptions(rows, followed), [rows, followed]);
   return (
-    <div className="w-44 shrink-0 max-sm:w-32">
+    <div className="w-44 shrink-0 max-sm:min-w-0 max-sm:flex-1">
       <Select
         value={chosen}
         options={options}
@@ -98,21 +98,21 @@ function AgentLayout() {
     '新对话';
   return (
     <>
-      <div className="flex gap-5 max-lg:flex-col lg:min-h-[600px] lg:flex-1">
+      <div className="flex min-h-0 flex-1 gap-5">
         <aside className="hidden w-64 shrink-0 flex-col rounded-panel border border-line-subtle bg-card p-4 shadow-soft xl:flex xl:min-h-0">
           <ConversationHistory />
         </aside>
-        <section className="flex min-w-0 flex-1 flex-col rounded-panel border border-line-subtle bg-card p-5 shadow-soft lg:min-h-0">
+        <section className="flex min-h-0 min-w-0 flex-1 flex-col rounded-panel border border-line-subtle bg-card p-5 shadow-soft max-sm:p-3.5">
           <div className="mx-auto flex min-h-0 w-full max-w-[920px] flex-1 flex-col">
-            <header className="mb-3 flex flex-wrap items-center justify-between gap-3">
-              <h1 className="min-w-0 flex-1 truncate text-heading font-medium">
+            <header className="mb-3 flex shrink-0 flex-wrap items-center justify-between gap-x-3 gap-y-2 max-sm:mb-2.5">
+              <h1 className="min-w-0 flex-1 truncate text-heading font-medium max-sm:w-full max-sm:basis-full">
                 <UntrustedText text={title} />
               </h1>
-              <div className="flex shrink-0 items-center gap-2">
+              <div className="flex shrink-0 items-center gap-2 max-sm:w-full">
                 <CasePicker />
                 <Button
                   size="sm"
-                  className="xl:hidden max-sm:min-w-8 max-sm:px-2 pointer-coarse:max-sm:min-h-11 pointer-coarse:max-sm:min-w-11"
+                  className="xl:hidden max-sm:min-w-9 max-sm:px-2.5 pointer-coarse:min-h-11 pointer-coarse:min-w-11"
                   onClick={() => setHistoryOpen(true)}
                 >
                   <History aria-hidden className="size-3.5" />
@@ -121,7 +121,8 @@ function AgentLayout() {
                 {/* From xl on, the history column beside the conversation has this button. */}
                 <Button
                   size="sm"
-                  className="xl:hidden max-sm:min-w-8 max-sm:px-2 pointer-coarse:max-sm:min-h-11 pointer-coarse:max-sm:min-w-11"
+                  data-testid="new-conversation"
+                  className="xl:hidden max-sm:min-w-9 max-sm:px-2.5 pointer-coarse:min-h-11 pointer-coarse:min-w-11"
                   disabled={pending}
                   onClick={() => select(null)}
                 >
@@ -131,12 +132,16 @@ function AgentLayout() {
               </div>
             </header>
             {latestState !== null && (
-              <div className="sticky top-0 z-10 bg-card pb-3">
+              <div className="shrink-0 pb-3 max-sm:pb-2.5">
                 <AgentStateBar />
               </div>
             )}
             <Transcript />
-            <RefusalNote refusal={refusal} />
+            {refusal !== null && (
+              <div className="shrink-0">
+                <RefusalNote refusal={refusal} />
+              </div>
+            )}
             <Composer />
           </div>
         </section>
@@ -172,7 +177,7 @@ export default function AgentPage() {
   return (
     <Suspense
       fallback={
-        <div className="rounded-panel border border-line-subtle bg-card p-5 shadow-soft">
+        <div className="flex min-h-0 flex-1 flex-col rounded-panel border border-line-subtle bg-card p-5 shadow-soft">
           <Loading label="正在读取对话…" />
         </div>
       }

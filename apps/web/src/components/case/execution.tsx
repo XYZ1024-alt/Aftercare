@@ -18,6 +18,7 @@ import {
   Inset,
   Json,
   MonoId,
+  Num,
   Pill,
   ROWS_CLASS,
   Table,
@@ -114,7 +115,7 @@ export function Execution() {
               <li
                 key={application.applicationId}
                 data-testid="application"
-                className="rounded-field border border-line-subtle bg-subtle p-4"
+                className="rounded-field border border-line-subtle bg-subtle p-4 [--surface-bg:var(--color-subtle)]"
               >
                 <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1.5">
                   <Dot tone="mint" />
@@ -141,15 +142,15 @@ export function Execution() {
                   <tbody>
                     {application.written.map((entry) => (
                       <tr key={fieldKey(entry)}>
-                        <td className="break-all">
+                        <td className="min-w-24 wrap-anywhere font-mono text-code">
                           {entry.objectType}/{entry.objectId}
                         </td>
                         <td>{fieldTitle(registry, entry.fieldId)}</td>
                         <td className="num text-muted">
-                          {fieldValue(registry, entry.fieldId, entry.valueBefore)}
+                          <Num>{fieldValue(registry, entry.fieldId, entry.valueBefore)}</Num>
                         </td>
                         <td className="num font-semibold">
-                          {fieldValue(registry, entry.fieldId, entry.valueAfter)}
+                          <Num>{fieldValue(registry, entry.fieldId, entry.valueAfter)}</Num>
                         </td>
                       </tr>
                     ))}

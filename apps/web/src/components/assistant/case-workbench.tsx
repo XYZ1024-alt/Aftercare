@@ -1,15 +1,16 @@
 'use client';
 
-import type { CaseTabId } from '@aftercare/console/client';
+import type { CaseTabId, CaseView } from '@aftercare/console/client';
 import { ArrowUpRight } from 'lucide-react';
 import Link from 'next/link';
 import { useState } from 'react';
+import { useAssistant } from '../../lib/assistant.tsx';
 import { STAGE_LABEL, stageTone } from '../../lib/labels.ts';
 import { AutonomyBadge } from '../case/autonomy.tsx';
 import { CaseProvider, useCase } from '../case/case-context.tsx';
 import { Budget, Controls } from '../case/header.tsx';
 import { CasePanel, CaseTabBar, useUrgentTab } from '../case/sections.tsx';
-import { Pill } from '../ui.tsx';
+import { Button, Pill } from '../ui.tsx';
 import { UntrustedText } from '../untrusted-text.tsx';
 
 // A case shown inside a conversation: the panels of the case page, so an
@@ -90,6 +91,144 @@ function Workbench({
         )}
         <CasePanel tab={tab} />
       </div>
+    </section>
+  );
+}
+
+/** What waits on a person in this case right now, in one concise phrase. */
+function waitingSummary(view: CaseView): string | null {
+  const openQuestions = view.questions.filter(
+    (question) => question.state === 'open' && question.kind !== 'execution_approval',
+  ).length;
+  if (openQuestions > 0) return `${openQuestions} 个业务问题待回答`;
+  if (view.stage.stage === 'awaiting_approval') return '执行契约待批准';
+  if (view.stage.waitingOnOperator) return '等待操作员处理';
+  if (view.stage.stage === 'verified_sealed' || view.stage.stage === 'partially_resolved') {
+    return '验证报告已封存';
+  }
+  return null;
+}
+
+/**
+ * Compact live case summary card for the conversation stream (Option A):
+ * heavy evidence/plan/timeline work opens in the 600px drawer, while an
+ * optional bounded inline view stays available on demand.
+ */
+export function CaseCompactWorkbench({
+  caseId,
+  initialTab = null,
+  reason = null,
+  trackStage = false,
+  defaultExpanded = false,
+}: {
+  readonly caseId: string;
+  readonly initialTab?: CaseTabId | null;
+  readonly reason?: string | null;
+  readonly trackStage?: boolean;
+  readonly defaultExpanded?: boolean;
+}) {
+  return (
+    <CaseProvider caseId={caseId}>
+      <CompactCard
+        caseId={caseId}
+        initialTab={initialTab}
+        reason={reason}
+        trackStage={trackStage}
+        defaultExpanded={defaultExpanded}
+      />
+    </CaseProvider>
+  );
+}
+
+function CompactCard({
+  caseId,
+  initialTab,
+  reason,
+  trackStage,
+  defaultExpanded,
+}: {
+  readonly caseId: string;
+  readonly initialTab: CaseTabId | null;
+  readonly reason: string | null;
+  readonly trackStage: boolean;
+  readonly defaultExpanded: boolean;
+}) {
+  const { view } = useCase();
+  const { openCase } = useAssistant();
+  const urgent = useUrgentTab();
+  const [expanded, setExpanded] = useState(defaultExpanded);
+  const [selected, setSelected] = useState<CaseTabId | null>(initialTab);
+  const tab = selected ?? urgent;
+  const { overview, stage } = view;
+  const title = overview.agentRun?.description ?? overview.title;
+  const waiting = waitingSummary(view);
+  return (
+    <section
+      aria-label="案例摘要"
+      className="min-w-0 rounded-field border border-line-subtle bg-subtle p-3.5 [--surface-bg:var(--color-subtle)]"
+    >
+      <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-2.5">
+        <div className="min-w-0 flex-1 basis-56 space-y-1.5">
+          <div className="flex min-w-0 items-center gap-2.5">
+            <h3 className="min-w-0 flex-1 truncate text-body font-medium text-ink">
+              <UntrustedText text={title} />
+            </h3>
+            <Link
+              href={`/cases/${caseId}`}
+              data-testid="open-case-page"
+              className="inline-flex shrink-0 items-center gap-1 text-meta font-medium text-ink-soft transition-colors duration-(--duration-quick) ease-smooth-out hover:text-ink"
+            >
+              案例页
+              <ArrowUpRight aria-hidden className="size-3.5" />
+            </Link>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span
+              data-testid={trackStage ? 'stage' : undefined}
+              data-stage={trackStage ? stage.stage : undefined}
+            >
+              <Pill tone={stageTone(stage.stage)}>{STAGE_LABEL[stage.stage]}</Pill>
+            </span>
+            <AutonomyBadge />
+            {waiting !== null ? (
+              <span className="text-meta text-ink-soft">{waiting}</span>
+            ) : (
+              reason !== null &&
+              reason !== '' && (
+                <span className="min-w-0 truncate text-meta text-muted">
+                  <UntrustedText text={reason} />
+                </span>
+              )
+            )}
+          </div>
+        </div>
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
+          <Button size="sm" onClick={() => setExpanded((current) => !current)}>
+            {expanded ? '收起' : '展开内嵌视图'}
+          </Button>
+          <Button
+            size="sm"
+            tone="primary"
+            onClick={() => openCase(caseId, initialTab ?? undefined)}
+          >
+            在抽屉中处理
+          </Button>
+        </div>
+      </div>
+      {expanded && (
+        <div className="mt-3 border-t border-line-subtle pt-3">
+          <CaseTabBar tab={tab} onSelect={setSelected} compact />
+          <div className="mt-3 max-h-[26rem] space-y-4 overflow-y-auto pr-1">
+            {tab === 'process' && (
+              <>
+                <Controls />
+                <Budget />
+              </>
+            )}
+            <CasePanel tab={tab} />
+          </div>
+        </div>
+      )}
     </section>
   );
 }

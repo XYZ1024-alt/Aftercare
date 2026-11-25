@@ -11,7 +11,7 @@ import {
   type Tone,
   when,
 } from '../../lib/labels.ts';
-import { Card, Json, Notice, Pill, Table, Technical } from '../ui.tsx';
+import { Card, Json, Notice, Num, Pill, Table, Technical } from '../ui.tsx';
 import { UntrustedText } from '../untrusted-text.tsx';
 import { useCase } from './case-context.tsx';
 
@@ -70,15 +70,15 @@ function PromotionEntry({
         <tbody>
           {promotion.targets.map((target) => (
             <tr key={fieldKey(target)}>
-              <td className="break-all">
+              <td className="min-w-24 wrap-anywhere font-mono text-code">
                 {target.objectType}/{target.objectId}
               </td>
               <td>{fieldTitle(registry, target.fieldId)}</td>
               <td className="num text-muted">
-                {fieldValue(registry, target.fieldId, target.fromValue)}
+                <Num>{fieldValue(registry, target.fieldId, target.fromValue)}</Num>
               </td>
               <td className="num font-semibold">
-                {fieldValue(registry, target.fieldId, target.toValue)}
+                <Num>{fieldValue(registry, target.fieldId, target.toValue)}</Num>
               </td>
               <td className="num">{versionOf(target)}</td>
             </tr>

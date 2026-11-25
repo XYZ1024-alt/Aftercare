@@ -121,7 +121,7 @@ export function ConversationHistory({
           {groups.map((group) => (
             <li key={group.id}>
               <p className="px-2 pt-2 pb-1 text-meta text-muted">{group.label}</p>
-              <ul className="[&>li:not(:last-child)]:border-b [&>li:not(:last-child)]:border-line-subtle">
+              <ul className="space-y-1">
                 {group.conversations.map((conversation) => {
                   const active = conversation.conversationId === conversationId;
                   return (
@@ -140,7 +140,7 @@ export function ConversationHistory({
                           select(conversation.conversationId);
                           onPicked?.();
                         }}
-                        className={`w-full min-w-0 rounded-field px-3 py-2.5 pr-11 text-left text-body transition-colors duration-(--duration-quick) ease-smooth-out hover:bg-subtle disabled:cursor-not-allowed disabled:opacity-60 ${active ? 'bg-subtle' : ''}`}
+                        className={`w-full min-w-0 rounded-field border px-3 py-2.5 pr-11 text-left text-body transition-colors duration-(--duration-quick) ease-smooth-out disabled:cursor-not-allowed disabled:opacity-60 ${active ? 'border-sky-line bg-sky-soft font-medium text-ink forced-colors:outline-2 forced-colors:outline-offset-[-2px] forced-colors:outline-[Highlight]' : 'border-transparent hover:bg-subtle'}`}
                       >
                         <span className={`block truncate ${active ? 'font-medium' : ''}`}>
                           <UntrustedText text={conversation.title} />
@@ -158,7 +158,7 @@ export function ConversationHistory({
                         aria-label="删除对话"
                         disabled={deleting === conversation.conversationId}
                         onClick={() => setConfirming(conversation)}
-                        className="absolute top-1/2 right-2 grid size-8 -translate-y-1/2 place-items-center rounded-full border border-line-subtle bg-card text-muted opacity-0 transition-[opacity,background-color,color] duration-(--duration-quick) ease-smooth-out group-hover:opacity-100 group-focus-within:opacity-100 hover:bg-subtle hover:text-rose-ink disabled:cursor-not-allowed pointer-coarse:min-h-11 pointer-coarse:min-w-11"
+                        className="absolute top-1/2 right-2 grid size-8 -translate-y-1/2 place-items-center rounded-full border border-line-subtle bg-card text-muted opacity-0 transition-[opacity,background-color,color] duration-(--duration-quick) ease-smooth-out group-hover:opacity-100 group-focus-within:opacity-100 hover:bg-subtle hover:text-rose-ink disabled:cursor-not-allowed pointer-coarse:min-h-11 pointer-coarse:min-w-11 pointer-coarse:opacity-100"
                       >
                         <Trash2 aria-hidden className="size-4" />
                       </button>

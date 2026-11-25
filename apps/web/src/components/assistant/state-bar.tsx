@@ -105,9 +105,9 @@ export function AgentStateBar() {
     <section
       data-testid="agent-state-bar"
       aria-label="助手状态"
-      className="rounded-field border border-line-subtle bg-subtle p-4"
+      className="rounded-field border border-line-subtle bg-subtle p-3.5 [--surface-bg:var(--color-subtle)] max-sm:p-2.5"
     >
-      <div className="flex flex-wrap items-start gap-x-3 gap-y-2">
+      <div className="flex flex-wrap items-start gap-x-3 gap-y-1.5">
         <Pill tone={TURN_MODE_TONE[latestState.mode]}>{TURN_MODE_LABEL[latestState.mode]}</Pill>
         <div className="min-w-0 flex-1">
           <p className="text-body">
@@ -122,16 +122,16 @@ export function AgentStateBar() {
         </div>
       </div>
       {items.length > 0 && (
-        <ul aria-label="等你处理" className="mt-3 flex gap-2 overflow-x-auto pb-1">
+        <ul aria-label="等你处理" className="mt-2.5 flex gap-2 overflow-x-auto pb-0.5 max-sm:mt-2">
           {items.map((item) => (
-            <li key={item.caseId} className="shrink-0">
+            <li key={item.caseId} className="max-w-full shrink-0">
               <button
                 type="button"
                 data-testid="state-attention-pill"
                 data-case-id={item.caseId}
                 data-tab={item.tab}
                 onClick={() => openCase(item.caseId, item.tab)}
-                className="inline-flex min-h-8 max-w-72 items-center gap-2 rounded-full border border-line-subtle bg-card py-1.5 pr-3 pl-2.5 text-meta text-ink-soft transition-[background-color,border-color,color,scale] duration-(--duration-quick) ease-smooth-out hover:border-line hover:text-ink active:scale-[0.97] motion-reduce:transition-none"
+                className="inline-flex min-h-8 max-w-[min(18rem,calc(100vw-4rem))] items-center gap-2 rounded-full border border-line-subtle bg-card py-1 pr-3 pl-2.5 text-meta text-ink-soft transition-[background-color,border-color,color,scale] duration-(--duration-quick) ease-smooth-out hover:border-line hover:text-ink active:scale-[0.97] motion-reduce:transition-none"
               >
                 <Dot tone={item.tone} />
                 <span className="min-w-0 truncate">

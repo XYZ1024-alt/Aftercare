@@ -28,6 +28,7 @@ import {
   Json,
   MonoId,
   Notice,
+  Num,
   OPTION_CLASS,
   Pill,
   RefusalNote,
@@ -56,7 +57,7 @@ function Group({
   readonly children: ReactNode;
 }) {
   return (
-    <section className="min-w-0 rounded-field border border-line-subtle bg-subtle p-4 [&_li]:break-words [&_p]:break-words">
+    <section className="min-w-0 rounded-field border border-line-subtle bg-subtle p-4 [--surface-bg:var(--color-subtle)] [&_li]:wrap-break-word [&_p]:wrap-break-word">
       <h3 className="mb-2 flex items-center gap-2 font-medium">
         <Dot tone={tone} />
         {title}
@@ -96,15 +97,15 @@ function PlanPreview({ plan }: { readonly plan: PlanSummaryView }) {
             <tbody>
               {content.patch.map((entry) => (
                 <tr key={fieldKey(entry)} data-testid="patch-row" data-object={entry.objectId}>
-                  <td className="break-all">
+                  <td className="min-w-24 wrap-anywhere font-mono text-code">
                     {entry.objectType}/{entry.objectId}
                   </td>
                   <td>{fieldTitle(registry, entry.fieldId)}</td>
                   <td className="num text-muted">
-                    {fieldValue(registry, entry.fieldId, entry.fromValue)}
+                    <Num>{fieldValue(registry, entry.fieldId, entry.fromValue)}</Num>
                   </td>
                   <td className="num font-semibold">
-                    {fieldValue(registry, entry.fieldId, entry.toValue)}
+                    <Num>{fieldValue(registry, entry.fieldId, entry.toValue)}</Num>
                   </td>
                   <td className="num">{entry.expectedObjectVersion}</td>
                 </tr>
@@ -122,14 +123,12 @@ function PlanPreview({ plan }: { readonly plan: PlanSummaryView }) {
                 data-testid="preserved-row"
                 data-object={entry.objectId}
               >
-                <span className="font-medium">
+                <span className="wrap-anywhere font-mono text-code font-medium">
                   {entry.objectType}/{entry.objectId}
                 </span>{' '}
                 · {fieldTitle(registry, entry.fieldId)}：{entry.operationType} 记录的{' '}
-                <span className="tabular-nums">
-                  {fieldValue(registry, entry.fieldId, entry.recordedValue)}
-                </span>{' '}
-                — {TREATMENT[entry.treatment] ?? entry.treatment}
+                <Num>{fieldValue(registry, entry.fieldId, entry.recordedValue)}</Num> —{' '}
+                {TREATMENT[entry.treatment] ?? entry.treatment}
                 {entry.ruleIds.length > 0 && (
                   <span className="text-meta text-muted">（规则 {entry.ruleIds.join('，')}）</span>
                 )}
@@ -145,16 +144,20 @@ function PlanPreview({ plan }: { readonly plan: PlanSummaryView }) {
                 data-testid="affected-row"
                 data-object={impact.readerObjectId}
               >
-                <span className="font-medium">
+                <span className="wrap-anywhere font-mono text-code font-medium">
                   {impact.readerObjectType}/{impact.readerObjectId}
                 </span>{' '}
-                读到 {impact.readObjectType}/{impact.readObjectId} 的{' '}
-                {fieldTitle(registry, impact.fieldId)}，记录{' '}
-                <span className="tabular-nums">
-                  {fieldValue(registry, impact.fieldId, impact.recordedValue)}
-                </span>
-                {impact.replayedValue !== null &&
-                  `，回放 ${fieldValue(registry, impact.fieldId, impact.replayedValue)}`}
+                读到{' '}
+                <span className="wrap-anywhere font-mono text-code">
+                  {impact.readObjectType}/{impact.readObjectId}
+                </span>{' '}
+                的 {fieldTitle(registry, impact.fieldId)}，记录{' '}
+                <Num>{fieldValue(registry, impact.fieldId, impact.recordedValue)}</Num>
+                {impact.replayedValue !== null && (
+                  <>
+                    ，回放 <Num>{fieldValue(registry, impact.fieldId, impact.replayedValue)}</Num>
+                  </>
+                )}
                 （读者记录不修改）
               </li>
             ))}
@@ -176,12 +179,12 @@ function PlanPreview({ plan }: { readonly plan: PlanSummaryView }) {
                     : fieldValue(registry, domain.field, entry.snapshotValue);
               return (
                 <li key={key} data-testid="unresolved-row" data-object={domain.objectId}>
-                  <span className="font-medium">
+                  <span className="wrap-anywhere font-mono text-code font-medium">
                     {domain.objectType}/{domain.objectId}
                   </span>
                   {domain.field !== null && <> · {fieldTitle(registry, domain.field)}</>}
-                  ：保持快照中的 <span className="tabular-nums">{held}</span> 不动 —{' '}
-                  {entry.counterexample.code}：{entry.counterexample.expected.condition}
+                  ：保持快照中的 <Num>{held}</Num> 不动 — {entry.counterexample.code}：
+                  {entry.counterexample.expected.condition}
                 </li>
               );
             })}
@@ -195,16 +198,19 @@ function PlanPreview({ plan }: { readonly plan: PlanSummaryView }) {
           )}
         </Group>
       </div>
-      <section className="rounded-field border border-line-subtle bg-subtle p-4">
+      <section className="rounded-field border border-line-subtle bg-subtle p-4 [--surface-bg:var(--color-subtle)]">
         <h3 className="mb-2 font-medium">基线与事故范围</h3>
-        <p className="text-meta text-ink-soft">
+        <p className="wrap-break-word text-meta text-ink-soft">
           基线：可信水位 {content.baseline.trustedWatermark}，
-          {content.baseline.entries
-            .map(
-              (entry) =>
-                `${entry.objectType}/${entry.objectId}@${entry.fieldVersion}=${fieldValue(registry, entry.fieldId, entry.value)}`,
-            )
-            .join('，')}
+          {content.baseline.entries.map((entry, index) => (
+            <span key={fieldKey(entry)}>
+              {index > 0 && '，'}
+              <span className="wrap-anywhere font-mono text-code">
+                {entry.objectType}/{entry.objectId}@{entry.fieldVersion}
+              </span>
+              =<Num>{fieldValue(registry, entry.fieldId, entry.value)}</Num>
+            </span>
+          ))}
         </p>
         <p className="text-meta text-ink-soft">
           共纳入 {content.incident.operationIds.length} 个事故操作
@@ -287,15 +293,15 @@ function Approval({ contract }: { readonly contract: ContractView }) {
             <tbody>
               {contract.changes.map((change) => (
                 <tr key={fieldKey(change)}>
-                  <td className="break-all">
+                  <td className="min-w-24 wrap-anywhere font-mono text-code">
                     {change.objectType}/{change.objectId}
                   </td>
                   <td>{fieldTitle(registry, change.fieldId)}</td>
                   <td className="num text-muted">
-                    {fieldValue(registry, change.fieldId, change.fromValue)}
+                    <Num>{fieldValue(registry, change.fieldId, change.fromValue)}</Num>
                   </td>
                   <td className="num font-semibold">
-                    {fieldValue(registry, change.fieldId, change.toValue)}
+                    <Num>{fieldValue(registry, change.fieldId, change.toValue)}</Num>
                   </td>
                   <td className="num">{change.expectedObjectVersion}</td>
                 </tr>

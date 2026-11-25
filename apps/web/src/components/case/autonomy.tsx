@@ -14,7 +14,7 @@ import {
   when,
   whenShort,
 } from '../../lib/labels.ts';
-import { Card, Empty, Inset, Json, Notice, Pill, ROWS_CLASS, Technical } from '../ui.tsx';
+import { Card, Empty, Inset, Json, Notice, Num, Pill, ROWS_CLASS, Technical } from '../ui.tsx';
 import { UntrustedText } from '../untrusted-text.tsx';
 import { useCase } from './case-context.tsx';
 
@@ -107,15 +107,18 @@ export function AutonomyDecisions() {
             </p>
             <ul className="space-y-1 text-meta text-muted">
               {autonomy.finding.matchedOperations.map((op) => (
-                <li key={`${op.operationId}-${op.fieldId}`} className="break-words">
-                  <span className="break-all">
+                <li key={`${op.operationId}-${op.fieldId}`} className="wrap-break-word">
+                  <span className="wrap-anywhere font-mono text-code">
                     {op.objectType}/{op.objectId}
                   </span>{' '}
                   · {fieldTitle(view.registry, op.fieldId)}：
-                  {op.fromValue === null
-                    ? '∅'
-                    : fieldValue(view.registry, op.fieldId, op.fromValue)}{' '}
-                  → {fieldValue(view.registry, op.fieldId, op.toValue)}（{op.operationType}）
+                  {op.fromValue === null ? (
+                    '∅'
+                  ) : (
+                    <Num>{fieldValue(view.registry, op.fieldId, op.fromValue)}</Num>
+                  )}{' '}
+                  → <Num>{fieldValue(view.registry, op.fieldId, op.toValue)}</Num>（
+                  {op.operationType}）
                 </li>
               ))}
             </ul>

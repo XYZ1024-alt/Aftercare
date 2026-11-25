@@ -34,6 +34,7 @@ import {
   Json,
   MonoId,
   Notice,
+  Num,
   OPTION_CLASS,
   Pill,
   Radio,
@@ -129,12 +130,14 @@ function Subject({ question }: { readonly question: QuestionView }) {
           <tbody>
             {body.entries.map((entry) => (
               <tr key={fieldKey(entry)}>
-                <td className="break-all">
+                <td className="min-w-24 wrap-anywhere font-mono text-code">
                   {entry.objectType}/{entry.objectId}
                 </td>
                 <td>{fieldTitle(registry, entry.fieldId)}</td>
                 <td className="tabular-nums">{entry.fieldVersion}</td>
-                <td className="num">{fieldValue(registry, entry.fieldId, entry.value)}</td>
+                <td className="num">
+                  <Num>{fieldValue(registry, entry.fieldId, entry.value)}</Num>
+                </td>
               </tr>
             ))}
           </tbody>

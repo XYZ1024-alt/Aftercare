@@ -10,6 +10,7 @@ import {
 } from '@aftercare/console/client';
 import type { ComponentRenderer, LibraryActionEvent } from '@openuidev/react-lang';
 import { useIsStreaming, useTriggerAction } from '@openuidev/react-lang';
+import { ArrowUpRight } from 'lucide-react';
 import Link from 'next/link';
 import { createContext, type ReactNode, use, useCallback, useState } from 'react';
 import { z } from 'zod';
@@ -26,7 +27,7 @@ import {
 } from '../../lib/labels.ts';
 import { Button, Empty, Notice, Pill, StatusDot, Table } from '../ui.tsx';
 import { UntrustedMarkdown, UntrustedText } from '../untrusted-text.tsx';
-import { CaseWorkbench } from './case-workbench.tsx';
+import { CaseCompactWorkbench } from './case-workbench.tsx';
 
 // The React side of the one OpenUI library the console defines: every renderer
 // takes the props of its component schema and draws only records this page
@@ -36,8 +37,10 @@ import { CaseWorkbench } from './case-workbench.tsx';
 interface TurnUiContextValue {
   /** The server's corroboration flags, or null while a preview streams. */
   readonly meta: AssistantUiMeta | null;
-  /** Case ids whose workbench is expanded by default in this message. */
+  /** Case ids whose live summary is owned by this message (newest mention per case). */
   readonly expandedCaseIds: ReadonlySet<string>;
+  /** True for the newest stored UI reply, whose state the top AgentStateBar already renders. */
+  readonly isLatestTurn: boolean;
 }
 
 const TurnUiContext = createContext<TurnUiContextValue | null>(null);
@@ -50,13 +53,15 @@ const TurnUiContext = createContext<TurnUiContextValue | null>(null);
 export function TurnUiProvider({
   meta,
   expandedCaseIds,
+  isLatestTurn = false,
   children,
 }: {
   readonly meta: AssistantUiMeta | null;
   readonly expandedCaseIds: ReadonlySet<string>;
+  readonly isLatestTurn?: boolean;
   readonly children: ReactNode;
 }) {
-  return <TurnUiContext value={{ meta, expandedCaseIds }}>{children}</TurnUiContext>;
+  return <TurnUiContext value={{ meta, expandedCaseIds, isLatestTurn }}>{children}</TurnUiContext>;
 }
 
 function useTurnUi(): TurnUiContextValue {
@@ -74,34 +79,41 @@ function useEventIndex(): number | null {
   return use(EventIndexContext);
 }
 
-const AgentTurnView: ComponentRenderer<AssistantUiProps['AgentTurn']> = ({ props, renderNode }) => (
-  <div className="space-y-3">
-    {renderNode(props.state)}
-    {props.events.length > 0 && (
-      <div
-        data-testid="agent-event-strip"
-        className="flex flex-wrap items-center gap-x-3 gap-y-1.5"
-      >
-        {props.events.map((event, index) => (
-          // biome-ignore lint/suspicious/noArrayIndexKey: an event has no id of its own, and the list only grows at its end during a turn.
-          <EventIndexContext key={index} value={index}>
-            {renderNode(event)}
-          </EventIndexContext>
-        ))}
-      </div>
-    )}
-    <div className="space-y-3">{renderNode(props.blocks)}</div>
-  </div>
-);
+const AgentTurnView: ComponentRenderer<AssistantUiProps['AgentTurn']> = ({ props, renderNode }) => {
+  const { isLatestTurn } = useTurnUi();
+  return (
+    <div className="space-y-3">
+      {!isLatestTurn && renderNode(props.state)}
+      {props.events.length > 0 && (
+        <div
+          data-testid="agent-event-strip"
+          className="flex flex-wrap items-center gap-x-3 gap-y-1.5"
+        >
+          {props.events.map((event, index) => (
+            // biome-ignore lint/suspicious/noArrayIndexKey: an event has no id of its own, and the list only grows at its end during a turn.
+            <EventIndexContext key={index} value={index}>
+              {renderNode(event)}
+            </EventIndexContext>
+          ))}
+        </div>
+      )}
+      <div className="space-y-3">{renderNode(props.blocks)}</div>
+    </div>
+  );
+};
 
-const AgentStateView: ComponentRenderer<AssistantUiProps['AgentState']> = ({ props }) => (
-  <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-    <Pill tone={TURN_MODE_TONE[props.mode]}>{TURN_MODE_LABEL[props.mode]}</Pill>
-    <p className="min-w-0 text-body">
-      <UntrustedText text={props.headline} />
-    </p>
-  </div>
-);
+const AgentStateView: ComponentRenderer<AssistantUiProps['AgentState']> = ({ props }) => {
+  const { isLatestTurn } = useTurnUi();
+  if (isLatestTurn) return null;
+  return (
+    <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+      <Pill tone={TURN_MODE_TONE[props.mode]}>{TURN_MODE_LABEL[props.mode]}</Pill>
+      <p className="min-w-0 text-body">
+        <UntrustedText text={props.headline} />
+      </p>
+    </div>
+  );
+};
 
 const EventItemView: ComponentRenderer<AssistantUiProps['EventItem']> = ({ props }) => {
   const { meta } = useTurnUi();
@@ -149,7 +161,7 @@ const EventItemView: ComponentRenderer<AssistantUiProps['EventItem']> = ({ props
 const NarrativeBlockView: ComponentRenderer<AssistantUiProps['NarrativeBlock']> = ({ props }) => (
   <div data-testid="genui-block" data-block="NarrativeBlock" className="space-y-1.5">
     {props.title !== undefined && props.title !== '' && (
-      <h3 className="text-meta font-medium text-ink-soft">
+      <h3 className="text-body font-semibold text-ink">
         <UntrustedText text={props.title} />
       </h3>
     )}
@@ -212,41 +224,66 @@ const CaseWorkbenchBlockView: ComponentRenderer<AssistantUiProps['CaseWorkbenchB
       </div>
     );
   }
-  if (expandedCaseIds.has(caseId)) {
+  if (expandedCaseIds.has(caseId) || expanded) {
     return (
       <div data-testid="genui-block" data-block="CaseWorkbenchBlock">
-        <CaseWorkbench
+        <CaseCompactWorkbench
           caseId={caseId}
           initialTab={props.tab ?? null}
           reason={props.reason ?? null}
+          trackStage={expandedCaseIds.has(caseId)}
+          defaultExpanded={expanded}
         />
       </div>
     );
   }
+  const openQuestions = row?.overview.openQuestions ?? 0;
   return (
-    <div data-testid="genui-block" data-block="CaseWorkbenchBlock" className="space-y-2">
-      <div className="flex flex-wrap items-center gap-2 rounded-field border border-line-subtle bg-subtle px-3.5 py-3">
-        <StatusDot
-          tone={row === undefined ? 'neutral' : stageTone(row.stage)}
-          label={row === undefined ? '读取中' : STAGE_LABEL[row.stage]}
-        />
-        <span className="min-w-0 flex-1 truncate text-body font-medium">
-          <UntrustedText text={title} />
-        </span>
-        <Button size="sm" onClick={() => setExpanded((current) => !current)}>
-          {expanded ? '收起' : '展开'}
-        </Button>
-        <Button size="sm" tone="primary" onClick={() => openCase(caseId, props.tab ?? undefined)}>
-          在抽屉打开
-        </Button>
-      </div>
-      {expanded && (
-        <CaseWorkbench
-          caseId={caseId}
-          initialTab={props.tab ?? null}
-          reason={props.reason ?? null}
-        />
-      )}
+    <div data-testid="genui-block" data-block="CaseWorkbenchBlock">
+      <section
+        aria-label="案例摘要"
+        className="min-w-0 rounded-field border border-line-subtle bg-subtle p-3.5 [--surface-bg:var(--color-subtle)]"
+      >
+        <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-2.5">
+          <div className="min-w-0 flex-1 basis-56 space-y-1.5">
+            <div className="flex min-w-0 items-center gap-2.5">
+              <h3 className="min-w-0 flex-1 truncate text-body font-medium text-ink">
+                <UntrustedText text={title} />
+              </h3>
+              <Link
+                href={`/cases/${caseId}`}
+                data-testid="open-case-page"
+                className="inline-flex shrink-0 items-center gap-1 text-meta font-medium text-ink-soft transition-colors duration-(--duration-quick) ease-smooth-out hover:text-ink"
+              >
+                案例页
+                <ArrowUpRight aria-hidden className="size-3.5" />
+              </Link>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              {row === undefined ? (
+                <StatusDot tone="neutral" label="读取中" />
+              ) : (
+                <Pill tone={stageTone(row.stage)}>{STAGE_LABEL[row.stage]}</Pill>
+              )}
+              {openQuestions > 0 && (
+                <span className="text-meta text-ink-soft">{openQuestions} 个业务问题待回答</span>
+              )}
+            </div>
+          </div>
+          <div className="flex shrink-0 flex-wrap items-center gap-2">
+            <Button size="sm" onClick={() => setExpanded(true)}>
+              展开内嵌视图
+            </Button>
+            <Button
+              size="sm"
+              tone="primary"
+              onClick={() => openCase(caseId, props.tab ?? undefined)}
+            >
+              在抽屉中处理
+            </Button>
+          </div>
+        </div>
+      </section>
     </div>
   );
 };

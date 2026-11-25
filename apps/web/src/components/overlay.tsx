@@ -111,8 +111,8 @@ function Surface({
         pressedOutside.current = false;
       }}
     >
-      <div className="flex max-h-full flex-col p-7 max-sm:p-5">
-        <header className="mb-5 flex items-start justify-between gap-3">
+      <div className="flex max-h-full flex-col overflow-hidden">
+        <header className="flex shrink-0 items-start justify-between gap-3 border-b border-line-subtle px-6 pt-5 pb-4 max-sm:px-4 max-sm:pt-4 max-sm:pb-3">
           <div className="min-w-0">
             {kicker}
             <h2
@@ -131,7 +131,9 @@ function Surface({
             <X aria-hidden className="size-4.5" />
           </button>
         </header>
-        <div className="min-h-0 flex-1 overflow-y-auto">{(open || shown) && displayChildren}</div>
+        <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5 max-sm:px-4 max-sm:py-4">
+          {(open || shown) && displayChildren}
+        </div>
       </div>
     </dialog>
   );

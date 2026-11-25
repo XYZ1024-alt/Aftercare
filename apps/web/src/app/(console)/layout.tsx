@@ -31,7 +31,7 @@ function TopNav({ wide }: { readonly wide: boolean }) {
     window.location.assign('/login');
   };
   return (
-    <header className="sticky top-0 z-30 border-b border-line-subtle bg-canvas/70 backdrop-blur-xl">
+    <header className="sticky top-0 z-30 shrink-0 border-b border-line-subtle bg-canvas/70 backdrop-blur-xl">
       <div
         className={`mx-auto grid min-h-16 ${wide ? 'max-w-[1600px]' : 'max-w-[1240px]'} grid-cols-[1fr_auto_1fr] items-center gap-x-5 gap-y-2 px-6 max-md:grid-cols-[1fr_auto] max-md:px-4 max-md:py-2.5`}
       >
@@ -93,13 +93,16 @@ function TopNav({ wide }: { readonly wide: boolean }) {
   );
 }
 
-function ModeBanner() {
+function ModeBanner({ compact = false }: { readonly compact?: boolean }) {
   const { modelMode } = useSession();
+  const spacing = compact
+    ? 'mb-3 shrink-0 py-1.5 max-sm:mb-2 max-sm:px-3 max-sm:py-1'
+    : 'mb-6 py-2';
   if (modelMode === 'scripted_test') {
     return (
       <p
         data-testid="test-mode-banner"
-        className="mb-6 flex w-fit items-center gap-2 rounded-full border border-apricot-line bg-apricot-soft px-4 py-2 text-meta font-medium text-apricot-ink max-sm:rounded-field"
+        className={`flex w-fit items-center gap-2 rounded-full border border-apricot-line bg-apricot-soft px-4 text-meta font-medium text-apricot-ink max-sm:rounded-field ${spacing}`}
       >
         <FlaskConical aria-hidden className="size-4 shrink-0" />
         测试模式：当前由脚本化测试替身驱动，非真实模型自主调查
@@ -108,7 +111,9 @@ function ModeBanner() {
   }
   if (modelMode === 'unconfigured') {
     return (
-      <p className="mb-6 flex w-fit items-center gap-2 rounded-full border border-line-subtle bg-subtle px-4 py-2 text-meta text-ink-soft max-sm:rounded-field">
+      <p
+        className={`flex w-fit items-center gap-2 rounded-full border border-line-subtle bg-subtle px-4 text-meta text-ink-soft max-sm:rounded-field ${spacing}`}
+      >
         <PlugZap aria-hidden className="size-4 shrink-0" />
         尚未配置模型服务：当前仅支持查看案例，无法发起新调查
       </p>
@@ -119,18 +124,28 @@ function ModeBanner() {
 
 export default function ConsoleLayout({ children }: { readonly children: ReactNode }) {
   const path = usePathname();
-  // The assistant page holds three columns: it uses the width of the screen, and from lg on the
-  // height below the navigation, so each column scrolls inside instead of the page.
+  // The assistant page is an app shell across all breakpoints: the viewport stays fixed
+  // and only the transcript and sidebar scroll internally.
   const wide = path.startsWith('/agent');
   return (
     <SessionGate>
-      <TopNav wide={wide} />
-      <main
-        className={`mx-auto px-6 pt-6 max-md:px-4 max-md:pt-4 ${wide ? 'max-w-[1600px] pb-6 lg:flex lg:h-[calc(100dvh-4rem)] lg:flex-col' : 'max-w-[1240px] pb-16'}`}
-      >
-        <ModeBanner />
-        {children}
-      </main>
+      {wide ? (
+        <div className="flex h-dvh min-h-[480px] flex-col overflow-hidden">
+          <TopNav wide />
+          <main className="mx-auto flex min-h-0 w-full max-w-[1600px] flex-1 flex-col px-6 py-4 max-md:px-3 max-md:py-2.5">
+            <ModeBanner compact />
+            {children}
+          </main>
+        </div>
+      ) : (
+        <>
+          <TopNav wide={false} />
+          <main className="mx-auto max-w-[1240px] px-6 pt-6 pb-16 max-md:px-4 max-md:pt-4">
+            <ModeBanner />
+            {children}
+          </main>
+        </>
+      )}
     </SessionGate>
   );
 }
